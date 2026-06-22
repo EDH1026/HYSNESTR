@@ -1,4 +1,5 @@
 import { useAuth } from '@/context/AuthContext'
+import { useMobile } from './useMobile'
 import type { GrantLevel, GrantScope } from '@/types'
 
 // Level ordering for "meets or exceeds" comparison
@@ -17,6 +18,7 @@ function meetsNeed(have: GrantLevel, need: 'view' | 'edit'): boolean {
  */
 export function useAuthz() {
   const { profile, grants, myPersonId } = useAuth()
+  const isMobile = useMobile()
 
   function effectiveLevel(
     scope: GrantScope,
@@ -61,8 +63,10 @@ export function useAuthz() {
 
   /**
    * Returns true when the current user can create/update/delete the given resource.
+   * Always false on mobile (§6.6 MOB-2): mobile is read-only regardless of role.
    */
   function canEdit(scope: GrantScope, resourceId?: string | null): boolean {
+    if (isMobile) return false
     const level = effectiveLevel(scope, resourceId)
     return level !== null && meetsNeed(level, 'edit')
   }
@@ -72,5 +76,5 @@ export function useAuthz() {
     return profile?.global_role === 'admin' && profile.status === 'active'
   }
 
-  return { canView, canEdit, isAdmin }
+  return { canView, canEdit, isAdmin, isMobile }
 }

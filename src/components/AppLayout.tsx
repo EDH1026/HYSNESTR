@@ -19,9 +19,11 @@ import {
   Undo2,
   Redo2,
   AlertTriangle,
+  Lock,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useHistory } from '@/lib/history'
+import { useMobile } from '@/hooks/useMobile'
 import type { GlobalRole } from '@/types'
 
 const NAV: {
@@ -56,12 +58,13 @@ export default function AppLayout() {
   const { profile, signOut } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const { canUndo, canRedo, undoLabel, redoLabel, error, undo, redo, clearError } = useHistory()
+  const isMobile = useMobile()
 
   const displayName    = profile?.name ?? '—'
   const role           = profile?.global_role ?? 'viewer'
   const isAdmin        = role === 'admin'
   const isViewer       = role === 'viewer'
-  const canUseHistory  = !isViewer
+  const canUseHistory  = !isViewer && !isMobile
 
   useEffect(() => {
     function handler(e: KeyboardEvent) {
@@ -215,6 +218,13 @@ export default function AppLayout() {
             </div>
           )}
         </div>
+        {/* Mobile read-only banner (§6.6 MOB-3) */}
+        {isMobile && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-700 flex-shrink-0">
+            <Lock size={12} className="flex-shrink-0" />
+            <span>모바일에서는 읽기 전용으로 제공됩니다.</span>
+          </div>
+        )}
         {/* History error banner */}
         {error && (
           <div className="flex items-start gap-2 px-4 py-2 bg-red-50 border-b border-red-200 text-xs text-red-700 flex-shrink-0">
