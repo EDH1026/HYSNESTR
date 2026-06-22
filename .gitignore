@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment variables — NEVER commit secrets
+.env
+.env.local
+.env.*.local
+
+# Vite / TypeScript caches
+*.local
+.vite/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Claude Code project settings (may contain tool permissions / API keys)
+.claude/
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db

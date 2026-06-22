@@ -1,0 +1,518 @@
+/**
+ * AssignmentModal — create / edit / view an Assignment.
+ *
+ * Features added beyond the draft version:
+ *   • kind=work: selecting a work item auto-fills start/end dates (editable)
+ *   • Weekend actual-workday picker with Saturday=0.5 / Sunday+Holiday=1.0 validation
+ *   • Leave type dropdown with paid/unpaid label
+ *   • Date validation: start ≤ end
+ *   • Read-only mode (no save button) when readOnly=true
+ */
+import { useState, useEffect, useMemo, type FormEvent } from 'react'
+import { Loader2, Trash2, Plus, X as XIcon } from 'lucide-react'
+import { dateToNum, numToStr, isSaturday, isWeekend, numToDate, nextWorkday } from '@/lib/date'
+import Modal                            from '@/components/Modal'
+import { useAllHolidays, useLeaveTypes }  from '@/features/admin/hooks'
+import { useCreateAssignment, useUpdateAssignment, useDeleteAssignment } from './hooks'
+import { useHistory }  from '@/lib/history'
+import { makeAssignmentCreate, makeAssignmentModalEdit, makeAssignmentDelete } from '@/lib/historyOps'
+import type { WorkItem, Person, LeaveType } from '@/types'
+import type { ModalState } from './types'
+
+// ── Leave paid/unpaid metadata (client-side; not stored in DB) ──
+const LEAVE_PAID: Record<string, boolean> = {
+  '리프레시':          false,
+  '지정휴가':          true,
+  '프로젝트휴가':      true,
+  '주말/휴일대체':     true,
+  '포상휴가':          true,
+  '특별휴가':          true,
+  '지연보상':          true,
+  '휴직':              false,
+  '종료 후 잔여 소진': true,
+}
+
+// ── Weekend date picker ───────────────────────────────────────
+
+interface WeekendPickerProps {
+  value:      string[]
+  onChange:   (dates: string[]) => void
+  holidaySet: Set<number>
+  disabled:   boolean
+}
+
+function WeekendPicker({ value, onChange, holidaySet, disabled }: WeekendPickerProps) {
+  const [input, setInput] = useState('')
+  const [pickerErr, setPickerErr] = useState<string | null>(null)
+
+  function dayValue(dateStr: string): 0.5 | 1.0 {
+    const n = dateToNum(dateStr)
+    return isSaturday(n) && !holidaySet.has(n) ? 0.5 : 1.0
+  }
+
+  function addDate() {
+    if (!input) return
+    const n = dateToNum(input)
+    if (!isWeekend(n) && !holidaySet.has(n)) {
+      setPickerErr('주말 또는 공휴일만 추가할 수 있습니다')
+      return
+    }
+    if (value.includes(input)) {
+      setPickerErr('이미 추가된 날짜입니다')
+      return
+    }
+    onChange([...value, input].sort())
+    setInput('')
+    setPickerErr(null)
+  }
+
+  const totalDays = value.reduce((s, d) => s + dayValue(d), 0)
+
+  return (
+    <div className="space-y-2">
+      {/* Chip list */}
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {value.map(d => (
+            <span
+              key={d}
+              className="inline-flex items-center gap-1 rounded-full bg-violet-100 text-violet-700 px-2 py-0.5 text-xs font-medium"
+            >
+              {d}
+              <span className="opacity-70">(+{dayValue(d)})</span>
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={() => onChange(value.filter(x => x !== d))}
+                  className="hover:text-violet-900"
+                >
+                  <XIcon size={10} />
+                </button>
+              )}
+            </span>
+          ))}
+          <span className="text-xs text-muted self-center">
+            합계 {totalDays}일
+          </span>
+        </div>
+      )}
+
+      {/* Add row */}
+      {!disabled && (
+        <div className="flex gap-2 items-start">
+          <div className="flex-1">
+            <input
+              type="date"
+              className="input"
+              value={input}
+              onChange={e => { setInput(e.target.value); setPickerErr(null) }}
+            />
+            {pickerErr && (
+              <p className="mt-1 text-xs text-red-600">{pickerErr}</p>
+            )}
+          </div>
+          <button type="button" onClick={addDate} className="btn-secondary gap-1 flex-shrink-0">
+            <Plus size={13} /> Add
+          </button>
+        </div>
+      )}
+      <p className="text-[11px] text-muted">
+        토요일 = +0.5일, 일요일·공휴일 = +1.0일
+      </p>
+    </div>
+  )
+}
+
+// ── Main modal ────────────────────────────────────────────────
+
+interface Props {
+  state:           ModalState
+  people:          Person[]
+  workItems:       WorkItem[]
+  canEditPipeline: boolean   // hides pipeline items in selector when false
+  readOnly?:       boolean   // true → view only (no save button)
+  onClose:         () => void
+}
+
+export default function AssignmentModal({
+  state, people, workItems, canEditPipeline, readOnly = false, onClose,
+}: Props) {
+  const create = useCreateAssignment()
+  const update = useUpdateAssignment()
+  const remove = useDeleteAssignment()
+  const { push } = useHistory()
+
+  const { data: holidays    = [] } = useAllHolidays()
+  const { data: leaveTypeRows = [] } = useLeaveTypes()
+
+  // Active DB types (sort_order asc) + '종료 후 잔여 소진' pinned last (not in master table)
+  const leaveOptions = useMemo(
+    () => [
+      ...leaveTypeRows.filter(lt => lt.active),
+      { name: '종료 후 잔여 소진', active: true, sort_order: 99 },
+    ],
+    [leaveTypeRows],
+  )
+  const holidaySet = useMemo(() => {
+    const s = new Set<number>()
+    for (const h of holidays) {
+      const base = dateToNum(h.date)
+      if (!h.recurring) {
+        s.add(base)
+      } else {
+        const d  = numToDate(base)
+        const yr = new Date().getFullYear()
+        for (let y = yr - 2; y <= yr + 3; y++) {
+          s.add(dateToNum(new Date(Date.UTC(y, d.getUTCMonth(), d.getUTCDate()))))
+        }
+      }
+    }
+    return s
+  }, [holidays])
+
+  const blankForm = () => ({
+    personId:     state.prefill.personId    ?? '',
+    kind:         (state.prefill.kind       ?? 'work') as 'work' | 'leave',
+    workItemId:   state.prefill.workItemId  ?? '',
+    leaveType:    '' as LeaveType | '',
+    start:        state.prefill.startNum != null ? numToStr(state.prefill.startNum) : '',
+    end:          state.prefill.endNum   != null ? numToStr(state.prefill.endNum)   : '',
+    weekendDates: [] as string[],
+    note:         '',
+  })
+
+  const [form, setForm] = useState(blankForm)
+  const [err, setErr] = useState<string | null>(null)
+  // Track whether user has manually overridden the auto-filled dates
+  const [datesLocked, setDatesLocked] = useState(false)
+
+  // Re-initialize form every time the modal opens in create mode.
+  // AssignmentModal is always mounted (never unmounts), so useState() only
+  // runs once. Without this effect the form keeps stale data from a previous
+  // open, causing the "person not selected" bug when clicking a person row.
+  useEffect(() => {
+    if (!state.open || state.mode !== 'create') return
+    setForm(blankForm())
+    setDatesLocked(false)
+    setErr(null)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.open, state.prefill])
+
+  // Populate form in edit mode
+  useEffect(() => {
+    if (state.mode === 'edit' && state.editTarget) {
+      const a = state.editTarget
+      setForm({
+        personId:     a.person_id,
+        kind:         a.kind,
+        workItemId:   a.work_item_id  ?? '',
+        leaveType:    a.leave_type    ?? '',
+        start:        a.start,
+        end:          a.end_date,
+        weekendDates: a.weekend_dates ?? [],
+        note:         a.note          ?? '',
+      })
+      setDatesLocked(true)  // edit mode: don't auto-fill dates
+    }
+    setErr(null)
+  }, [state.editTarget, state.mode])
+
+  // Auto-fill dates when a work item is selected (create mode only)
+  useEffect(() => {
+    if (state.mode !== 'create' || datesLocked || form.kind !== 'work' || !form.workItemId) return
+    const wi = workItems.find(w => w.id === form.workItemId)
+    if (wi) {
+      setForm(f => ({ ...f, start: wi.start, end: wi.end_date }))
+    }
+  }, [form.workItemId])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // §5.3 #5: auto-set start to next workday after last project end when leave type
+  // '종료 후 잔여 소진' is selected and prefill carries lastProjectEndNum
+  useEffect(() => {
+    if (form.leaveType !== '종료 후 잔여 소진') return
+    if (state.prefill.lastProjectEndNum == null) return
+    const autoStart = numToStr(nextWorkday(state.prefill.lastProjectEndNum, n => holidaySet.has(n)))
+    setForm(f => ({ ...f, start: autoStart }))
+  }, [form.leaveType])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Exclude pipeline (unless authorized) and closed items from creation dropdown.
+  // Gantt chart still renders closed rows — only the modal selector is filtered.
+  const selectableWorkItems = workItems.filter(w => {
+    if (w.type === 'pipeline' && !canEditPipeline) return false
+    if ((w.status ?? w.project_status) === 'closed') return false
+    return true
+  })
+
+  // Exclude resigned people from person dropdown (they can still appear in edit
+  // if they were previously assigned, but hide from new-assignment selection).
+  const selectablePeople = (() => {
+    const active = people.filter(p => p.status !== 'resigned')
+    // Keep the currently-selected person even if resigned (preserves edit fidelity)
+    if (form.personId) {
+      const sel = people.find(p => p.id === form.personId)
+      if (sel && sel.status === 'resigned' && !active.find(p => p.id === sel.id)) {
+        return [...active, sel]
+      }
+    }
+    return active
+  })()
+
+  function validateDates(): string | null {
+    if (form.start && form.end && form.start > form.end)
+      return 'Start date must be on or before end date'
+    return null
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setErr(null)
+    const ve = validateDates()
+    if (ve) { setErr(ve); return }
+
+    const base = {
+      person_id:    form.personId,
+      kind:         form.kind,
+      work_item_id: form.kind === 'work'  ? (form.workItemId || null) : null,
+      leave_type:   form.kind === 'leave' ? (form.leaveType as LeaveType) || null : null,
+      start:        form.start,
+      end_date:     form.end,
+      weekend_dates: form.kind === 'work' ? form.weekendDates : [],
+      note:         form.note || null,
+    }
+    try {
+      if (state.mode === 'create') {
+        const created = await create.mutateAsync(base)
+        push(makeAssignmentCreate(created))
+      } else if (state.editTarget) {
+        await update.mutateAsync({ id: state.editTarget.id, ...base })
+        push(makeAssignmentModalEdit(state.editTarget, base))
+      }
+      onClose()
+    } catch (err) {
+      setErr(err instanceof Error ? err.message : 'Save failed')
+    }
+  }
+
+  async function handleDelete() {
+    if (!state.editTarget) return
+    if (!confirm('Delete this assignment?')) return
+    const target = state.editTarget
+    try {
+      await remove.mutateAsync(target.id)
+      push(makeAssignmentDelete(target))
+      onClose()
+    } catch (err) {
+      setErr(err instanceof Error ? err.message : 'Delete failed')
+    }
+  }
+
+  if (!state.open) return null
+
+  const isEdit    = state.mode === 'edit'
+  const isPending = create.isPending || update.isPending
+  const effectiveReadOnly = readOnly
+
+  return (
+    <Modal
+      title={effectiveReadOnly ? 'View Assignment' : isEdit ? 'Edit Assignment' : 'New Assignment'}
+      onClose={onClose}
+      size="md"
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Person */}
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-700">Person *</label>
+          <select
+            required
+            className="input"
+            value={form.personId}
+            disabled={effectiveReadOnly || (!isEdit && !!state.prefill.personId)}
+            onChange={e => setForm(f => ({ ...f, personId: e.target.value }))}
+          >
+            <option value="">— select person —</option>
+            {selectablePeople.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.rank}){p.status === 'resigned' ? ' — 퇴직' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Kind toggle */}
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-700">Kind</label>
+          <div className="flex rounded-md overflow-hidden border border-border">
+            {(['work', 'leave'] as const).map(k => (
+              <button
+                key={k}
+                type="button"
+                disabled={effectiveReadOnly}
+                onClick={() => setForm(f => ({ ...f, kind: k }))}
+                className={[
+                  'flex-1 py-2 text-xs font-medium transition-colors',
+                  form.kind === k
+                    ? 'bg-brand-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-surface-50',
+                  effectiveReadOnly ? 'cursor-default' : '',
+                ].join(' ')}
+              >
+                {k === 'work' ? 'Work' : 'Leave'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Work kind fields ── */}
+        {form.kind === 'work' && (
+          <>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">Work Item *</label>
+              <select
+                required
+                className="input"
+                value={form.workItemId}
+                disabled={effectiveReadOnly || (!!state.prefill.workItemId && !isEdit)}
+                onChange={e => {
+                  setForm(f => ({ ...f, workItemId: e.target.value }))
+                  setDatesLocked(false)   // allow re-fill when user picks new item
+                }}
+              >
+                <option value="">— select work item —</option>
+                {selectableWorkItems.map(w => (
+                  <option key={w.id} value={w.id}>
+                    [{w.type}] {w.name}{w.client ? ` — ${w.client}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Dates (auto-filled, editable) */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700">Start *</label>
+                <input
+                  required type="date" className="input"
+                  value={form.start}
+                  disabled={effectiveReadOnly}
+                  onChange={e => {
+                    setDatesLocked(true)
+                    setForm(f => ({ ...f, start: e.target.value }))
+                  }}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700">End *</label>
+                <input
+                  required type="date" className="input"
+                  value={form.end}
+                  disabled={effectiveReadOnly}
+                  onChange={e => {
+                    setDatesLocked(true)
+                    setForm(f => ({ ...f, end: e.target.value }))
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Weekend actual-workday dates */}
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">
+                Weekend / Holiday Work Dates
+                <span className="ml-1 text-[10px] text-muted">(주말·휴일 실근무일)</span>
+              </label>
+              <WeekendPicker
+                value={form.weekendDates}
+                onChange={dates => setForm(f => ({ ...f, weekendDates: dates }))}
+                holidaySet={holidaySet}
+                disabled={effectiveReadOnly}
+              />
+            </div>
+          </>
+        )}
+
+        {/* ── Leave kind fields ── */}
+        {form.kind === 'leave' && (
+          <>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">Leave Type *</label>
+              <select
+                required
+                className="input"
+                value={form.leaveType}
+                disabled={effectiveReadOnly}
+                onChange={e => setForm(f => ({ ...f, leaveType: e.target.value as LeaveType }))}
+              >
+                <option value="">— select type —</option>
+                {leaveOptions.map(lt => (
+                  <option key={lt.name} value={lt.name}>
+                    {lt.name} {LEAVE_PAID[lt.name] ? '(유급)' : '(무급)'}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700">Start *</label>
+                <input
+                  required type="date" className="input"
+                  value={form.start}
+                  disabled={effectiveReadOnly}
+                  onChange={e => setForm(f => ({ ...f, start: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700">End *</label>
+                <input
+                  required type="date" className="input"
+                  value={form.end}
+                  disabled={effectiveReadOnly}
+                  onChange={e => setForm(f => ({ ...f, end: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-700">Note</label>
+              <input
+                className="input"
+                value={form.note}
+                disabled={effectiveReadOnly}
+                onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
+                placeholder="Optional"
+              />
+            </div>
+          </>
+        )}
+
+        {err && (
+          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{err}</div>
+        )}
+
+        {/* Actions */}
+        {!effectiveReadOnly ? (
+          <div className="flex gap-2 pt-1">
+            <button type="submit" disabled={isPending} className="btn-primary flex-1">
+              {isPending
+                ? <Loader2 size={14} className="animate-spin" />
+                : isEdit ? 'Save' : 'Create'}
+            </button>
+            {isEdit && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={remove.isPending}
+                className="btn-danger"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+          </div>
+        ) : (
+          <button type="button" onClick={onClose} className="btn-secondary w-full">Close</button>
+        )}
+      </form>
+    </Modal>
+  )
+}

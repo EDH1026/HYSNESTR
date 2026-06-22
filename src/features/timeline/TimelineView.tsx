@@ -1,0 +1,1953 @@
+/**
+ * TimelineView — Gantt-style timeline (PRD §5.1–5.2)
+ *
+ * Layout:
+ *   ┌──────────────┬─────────────────────────────────────┐
+ *   │  Controls    │                                     │
+ *   ├──────────────┼─────────────────────────────────────┤
+ *   │  Labels col  │  Date header  (sticky top)          │
+ *   │  (sticky L)  ├─────────────────────────────────────┤
+ *   │              │  Grid body   (scroll X + Y)         │
+ *   │  (scroll Y)  │                                     │
+ *   └──────────────┴─────────────────────────────────────┘
+ *
+ * Coordinate system:
+ *   x = (dayNumber - viewStart) * dayWidth  (pixels from left of grid)
+ *   w = (endDayNum - startDayNum + 1) * dayWidth
+ */
+
+import {
+  useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect, Fragment,
+  type PointerEvent as ReactPointerEvent,
+  type MouseEvent as ReactMouseEvent,
+  type DragEvent as ReactDragEvent,
+} from 'react'
+import { createPortal } from 'react-dom'
+import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight } from 'lucide-react'
+
+import {
+  dateToNum, numToStr, today, isWeekend, isSaturday,
+  monthBoundaries, weekBoundaries, nextMonthStart, monthStart, addMonths,
+  monthYearLabel, dayOfMonthLabel, weekdayLabel, numToDate,
+  snapLeaveEnd, snapLeaveStart, workdayCount, nextWorkday,
+} from '@/lib/date'
+import { useAllPeople }                          from '@/features/people/hooks'
+import { useAllWorkItems, useUpdateWorkItem }     from '@/features/workitems/hooks'
+import {
+  useAllAssignments,
+  useUpdateAssignment,
+} from '@/features/timeline/hooks'
+import { useAllHolidays, useSettings }   from '@/features/admin/hooks'
+import { useAuthz }         from '@/hooks/useAuthz'
+import { useHistory }       from '@/lib/history'
+import { makeAssignmentDrag, makeWorkItemUpdate } from '@/lib/historyOps'
+import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
+import AssignmentModal      from './AssignmentModal'
+import WorkItemDetailModal  from '@/features/workitems/WorkItemDetailModal'
+import WorkItemModal        from '@/features/workitems/WorkItemModal'
+
+import type { Assignment, Person, WorkItem } from '@/types'
+import type { ViewMode, RowData, ModalState } from './types'
+import {
+  LABEL_W, ROW_H, HEADER_ROW_H, BAR_PAD, HANDLE_W, DRAG_THRESHOLD,
+  DAY_MIN, DAY_MAX, DAY_DEFAULT,
+  ZOOM_WEEK, ZOOM_DAY,
+  WEEKEND_BG, HOLIDAY_BG, TODAY_COLOR,
+  RANK_ORDER,
+} from './constants'
+import {
+  TYPE_FAMILY, LEAVE_GREEN, buildWorkItemColorMap, barColorOf,
+} from '@/lib/colors'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: person / work-item lookup maps
+// ─────────────────────────────────────────────────────────────────────────────
+
+function idx<T extends { id: string }>(arr: T[]): Map<string, T> {
+  return new Map(arr.map(x => [x.id, x]))
+}
+
+
+// Color derivation uses barColorOf from @/lib/colors (PRD v2.3 §4/§9.1).
+// barColor is now a thin wrapper used inside GridRow where colorMap is available.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: DateHeader
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface DateHeaderProps {
+  viewStart:  number
+  viewEnd:    number
+  dayWidth:   number
+  totalWidth: number
+}
+
+function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth }: DateHeaderProps) {
+  const showWeek = dayWidth >= ZOOM_WEEK
+  const showDay  = dayWidth >= ZOOM_DAY
+
+  const months = useMemo(
+    () => monthBoundaries(viewStart, viewEnd),
+    [viewStart, viewEnd],
+  )
+  const weeks = useMemo(
+    () => showWeek ? weekBoundaries(viewStart, viewEnd) : [],
+    [viewStart, viewEnd, showWeek],
+  )
+
+  return (
+    <div style={{ width: totalWidth, position: 'relative' }}>
+      {/* Month row */}
+      <div style={{ height: HEADER_ROW_H, position: 'relative' }} className="bg-surface-50">
+        {months.map(ms => {
+          const end      = nextMonthStart(ms) - 1
+          const cStart   = Math.max(ms, viewStart)
+          const cEnd     = Math.min(end, viewEnd)
+          const left     = (cStart - viewStart) * dayWidth
+          const width    = (cEnd - cStart + 1) * dayWidth
+          return (
+            <div
+              key={ms}
+              style={{ position: 'absolute', left, width, height: HEADER_ROW_H }}
+              className="flex items-center px-2 border-r border-border text-xs font-semibold text-gray-700 overflow-hidden whitespace-nowrap"
+            >
+              {width > 40 ? monthYearLabel(ms) : ''}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Week row */}
+      {showWeek && (
+        <div style={{ height: HEADER_ROW_H, position: 'relative' }} className="bg-surface-50">
+          {weeks.map(ws => {
+            const cStart = Math.max(ws, viewStart)
+            const cEnd   = Math.min(ws + 6, viewEnd)
+            const left   = (cStart - viewStart) * dayWidth
+            const width  = (cEnd - cStart + 1) * dayWidth
+            return (
+              <div
+                key={ws}
+                style={{ position: 'absolute', left, width, height: HEADER_ROW_H }}
+                className="flex items-center px-1 border-r border-border/50 text-[11px] text-muted overflow-hidden whitespace-nowrap"
+              >
+                {width > 20 ? dayOfMonthLabel(ws) : ''}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Day row */}
+      {showDay && (
+        <div style={{ height: HEADER_ROW_H, position: 'relative' }} className="bg-surface-50">
+          {Array.from({ length: viewEnd - viewStart + 1 }, (_, i) => {
+            const d   = viewStart + i
+            const wd  = isWeekend(d)
+            const sat = isSaturday(d)
+            return (
+              <div
+                key={d}
+                style={{
+                  position: 'absolute',
+                  left:   i * dayWidth,
+                  width:  dayWidth,
+                  height: HEADER_ROW_H,
+                }}
+                className={[
+                  'flex flex-col items-center justify-center border-r border-border/30 text-[10px] leading-none',
+                  wd ? (sat ? 'text-blue-500' : 'text-red-500') : 'text-muted',
+                ].join(' ')}
+              >
+                {dayWidth >= 14 && <span>{dayOfMonthLabel(d)}</span>}
+                {dayWidth >= 22 && <span>{weekdayLabel(d).slice(0, 1)}</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: Background layer (weekends, holidays, today line)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface BgLayerProps {
+  viewStart:   number
+  viewEnd:     number
+  dayWidth:    number
+  holidaySet:  Set<number>
+  todayNum:    number
+}
+
+function BgLayer({ viewStart, viewEnd, dayWidth, holidaySet, todayNum }: BgLayerProps) {
+  const strips = useMemo(() => {
+    const out: JSX.Element[] = []
+    for (let d = viewStart; d <= viewEnd; d++) {
+      if (holidaySet.has(d)) {
+        out.push(
+          <div key={d} style={{
+            position: 'absolute', left: (d - viewStart) * dayWidth, top: 0,
+            width: dayWidth, height: '100%', background: HOLIDAY_BG,
+          }} />,
+        )
+      } else if (isWeekend(d)) {
+        out.push(
+          <div key={d} style={{
+            position: 'absolute', left: (d - viewStart) * dayWidth, top: 0,
+            width: dayWidth, height: '100%', background: WEEKEND_BG,
+          }} />,
+        )
+      }
+    }
+    return out
+  }, [viewStart, viewEnd, dayWidth, holidaySet])
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden' }}>
+      {strips}
+      {/* Today line */}
+      {todayNum >= viewStart && todayNum <= viewEnd && (
+        <div style={{
+          position: 'absolute',
+          left: (todayNum - viewStart) * dayWidth + dayWidth / 2 - 1,
+          top: 0, bottom: 0, width: 2,
+          background: TODAY_COLOR, opacity: 0.55,
+          zIndex: 6,
+        }} />
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: WorkItem background band (work-item view)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface WorkItemBandProps {
+  color:         string
+  wi:            WorkItem
+  dayWidth:      number
+  viewStart:     number
+  canEdit:       boolean
+  onUpdate:      (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
+  onOpenDetail?: () => void
+}
+
+function WorkItemBand({ wi, color, dayWidth, viewStart, canEdit, onUpdate, onOpenDetail }: WorkItemBandProps) {
+  const startNum   = useMemo(() => dateToNum(wi.start), [wi.start])
+  const endNum     = useMemo(() => dateToNum(wi.end_date), [wi.end_date])
+  const mainNum    = useMemo(() => wi.main_start ? dateToNum(wi.main_start) : null, [wi.main_start])
+
+  const [live, setLive] = useState({ start: startNum, end: endNum, main: mainNum })
+  const dragRef = useRef<{
+    edge: 'left' | 'right' | 'body'
+    origStart: number; origEnd: number; origMain: number | null
+    startX: number; moved: boolean
+  } | null>(null)
+  const bandRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setLive({ start: startNum, end: endNum, main: mainNum })
+  }, [startNum, endNum, mainNum])
+
+  const x    = (live.start - viewStart) * dayWidth
+  const w    = Math.max((live.end - live.start + 1) * dayWidth, 4)
+  const preW = live.main ? (live.main - live.start) * dayWidth : 0
+
+  function handlePointerDown(e: ReactPointerEvent, edge: 'left' | 'right' | 'body') {
+    if (!canEdit) return
+    e.stopPropagation()
+    e.preventDefault()
+    dragRef.current = {
+      edge,
+      origStart: live.start, origEnd: live.end, origMain: live.main,
+      startX: e.clientX, moved: false,
+    }
+    bandRef.current?.setPointerCapture(e.pointerId)
+  }
+
+  function handlePointerMove(e: ReactPointerEvent) {
+    if (!dragRef.current) return
+    const dx = e.clientX - dragRef.current.startX
+    if (Math.abs(dx) > DRAG_THRESHOLD) dragRef.current.moved = true
+    const dd = Math.round(dx / dayWidth)
+    const { edge, origStart, origEnd, origMain } = dragRef.current
+
+    if (edge === 'body') {
+      setLive({ start: origStart + dd, end: origEnd + dd, main: origMain != null ? origMain + dd : null })
+    } else if (edge === 'left') {
+      setLive(l => ({ ...l, start: Math.min(origStart + dd, origEnd - 1) }))
+    } else {
+      setLive(l => ({ ...l, end: Math.max(origEnd + dd, origStart + 1) }))
+    }
+  }
+
+  function handlePointerUp() {
+    if (!dragRef.current) return
+    const { moved } = dragRef.current
+    dragRef.current = null
+    if (moved) {
+      onUpdate(wi.id, {
+        start:      numToStr(live.start),
+        end_date:   numToStr(live.end),
+        main_start: live.main ? numToStr(live.main) : null,
+      })
+    }
+  }
+
+  return (
+    <div
+      ref={bandRef}
+      data-band="true"
+      style={{
+        position: 'absolute', left: x,
+        top: 1, height: ROW_H - 2, width: w,
+        zIndex: 1, display: 'flex',
+        cursor: canEdit ? 'grab' : 'default',
+      }}
+      onPointerDown={e => handlePointerDown(e, 'body')}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={() => {
+        dragRef.current = null
+        setLive({ start: startNum, end: endNum, main: mainNum })
+      }}
+      onDoubleClick={onOpenDetail ? (e) => { e.stopPropagation(); onOpenDetail() } : undefined}
+    >
+      {/* Left resize handle */}
+      {canEdit && (
+        <div
+          style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: HANDLE_W, cursor: 'ew-resize', zIndex: 4 }}
+          onPointerDown={e => { e.stopPropagation(); handlePointerDown(e, 'left') }}
+        />
+      )}
+
+      {/* Pre-study section (hatched) */}
+      {live.main && live.main > live.start && (
+        <div style={{
+          width: preW, height: '100%', flexShrink: 0,
+          background: `repeating-linear-gradient(-45deg, transparent, transparent 3px, ${color}55 3px, ${color}55 7px)`,
+          border: `1px solid ${color}66`,
+          borderRadius: '3px 0 0 3px', borderRight: 'none',
+        }} />
+      )}
+
+      {/* Main phase (solid fill) */}
+      <div style={{
+        flex: 1, height: '100%',
+        background: `${color}30`,
+        border: `1px solid ${color}66`,
+        borderRadius: live.main && live.main > live.start ? '0 3px 3px 0' : '3px',
+        borderLeft: live.main && live.main > live.start ? `2px solid ${color}aa` : undefined,
+      }} />
+
+      {/* Right resize handle */}
+      {canEdit && (
+        <div
+          style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: HANDLE_W, cursor: 'ew-resize', zIndex: 4 }}
+          onPointerDown={e => { e.stopPropagation(); handlePointerDown(e, 'right') }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: AssignmentBar
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface TooltipInfo {
+  title: string
+  lines: string[]
+}
+
+interface AssignmentBarProps {
+  assignment:   Assignment
+  label:        string
+  color:        string
+  dayWidth:     number
+  viewStart:    number
+  topOffset?:   number      // px from row top (default BAR_PAD)
+  height?:      number      // px (default ROW_H - 2*BAR_PAD)
+  isLeave:      boolean
+  holidaySet:   Set<number>
+  canEdit:      boolean
+  hasConflict?: boolean     // §9.3: same person has overlapping work assignments
+  preStudyStart?: number | null // §5.6: main_start day of the work item; bars before this get hatched pre-study style
+  tooltipInfo?: TooltipInfo
+  onUpdate:     (id: string, patch: { start: string; end_date: string }) => void
+  onClick:      (a: Assignment) => void
+}
+
+function AssignmentBar({
+  assignment, label, color, dayWidth, viewStart,
+  topOffset = BAR_PAD,
+  height    = ROW_H - 2 * BAR_PAD,
+  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo, onUpdate, onClick,
+}: AssignmentBarProps) {
+  const origStart = useMemo(() => dateToNum(assignment.start),    [assignment.start])
+  const origEnd   = useMemo(() => dateToNum(assignment.end_date), [assignment.end_date])
+
+  const [liveStart, setLiveStart] = useState(origStart)
+  const [liveEnd,   setLiveEnd]   = useState(origEnd)
+  const barRef  = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{
+    kind:         'move' | 'resize-left' | 'resize-right'
+    origStart:    number; origEnd: number; startX: number; moved: boolean
+    origWorkdays: number   // captured at drag-start for leave snap
+  } | null>(null)
+
+  useEffect(() => { setLiveStart(origStart) }, [origStart])
+  useEffect(() => { setLiveEnd(origEnd)     }, [origEnd])
+
+  const x = (liveStart - viewStart) * dayWidth
+  const w = Math.max((liveEnd - liveStart + 1) * dayWidth, 3)
+
+  // Tooltip state
+  const [tipPos, setTipPos] = useState<{ x: number; y: number } | null>(null)
+
+  // isHoliday adapter — stable reference if holidaySet reference is stable
+  const isHolidayFn = useCallback((n: number) => holidaySet.has(n), [holidaySet])
+
+  function onPointerDown(e: ReactPointerEvent) {
+    setTipPos(null)   // hide tooltip during drag
+    e.stopPropagation()
+    if (!canEdit) return
+    e.preventDefault()
+    const rect  = e.currentTarget.getBoundingClientRect()
+    const posX  = e.clientX - rect.left
+    const kind  = posX <= HANDLE_W ? 'resize-left'
+                : posX >= rect.width - HANDLE_W ? 'resize-right'
+                : 'move'
+    const origWorkdays = isLeave ? workdayCount(liveStart, liveEnd, holidaySet) : 0
+    dragRef.current = { kind, origStart: liveStart, origEnd: liveEnd, startX: e.clientX, moved: false, origWorkdays }
+    barRef.current?.setPointerCapture(e.pointerId)
+  }
+
+  function onPointerMove(e: ReactPointerEvent) {
+    if (!dragRef.current) return
+    const dx = e.clientX - dragRef.current.startX
+    if (Math.abs(dx) > DRAG_THRESHOLD) dragRef.current.moved = true
+    const dd = Math.round(dx / dayWidth)
+    const { kind, origStart: os, origEnd: oe, origWorkdays } = dragRef.current
+    if (kind === 'move') {
+      const rawStart = os + dd
+      // §5.3 #2: snap leave start to first workday on/after the dragged position
+      const newStart = isLeave ? nextWorkday(rawStart - 1, isHolidayFn) : rawStart
+      setLiveStart(newStart)
+      if (isLeave && origWorkdays > 0) {
+        setLiveEnd(snapLeaveEnd(newStart, origWorkdays, isHolidayFn))
+      } else {
+        setLiveEnd(oe + dd)
+      }
+    } else if (kind === 'resize-left') {
+      setLiveStart(Math.min(os + dd, oe))
+    } else {
+      setLiveEnd(Math.max(oe + dd, os))
+    }
+  }
+
+  function onPointerUp() {
+    if (!dragRef.current) return
+    const moved = dragRef.current.moved
+    dragRef.current = null
+    if (!moved) {
+      onClick(assignment)
+    } else {
+      onUpdate(assignment.id, { start: numToStr(liveStart), end_date: numToStr(liveEnd) })
+    }
+  }
+
+  function onPointerCancel() {
+    dragRef.current = null
+    setLiveStart(origStart)
+    setLiveEnd(origEnd)
+  }
+
+  return (
+    <>
+      <div
+        ref={barRef}
+        data-assignment-bar="true"
+        style={{
+          position: 'absolute', left: x, top: topOffset,
+          width: w, height,
+          borderRadius: 4, overflow: 'hidden',
+          cursor: canEdit ? 'grab' : 'pointer',
+          zIndex: 10, userSelect: 'none',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onMouseEnter={e => tooltipInfo && setTipPos({ x: e.clientX, y: e.clientY })}
+        onMouseMove={e => tooltipInfo && setTipPos({ x: e.clientX, y: e.clientY })}
+        onMouseLeave={() => setTipPos(null)}
+      >
+        {/* §5.6 Pre-study background (hatched) — portion before main_start */}
+        {(() => {
+          const preStudyPx = (preStudyStart != null && preStudyStart > liveStart)
+            ? Math.max(0, Math.min((preStudyStart - liveStart) * dayWidth, w))
+            : 0
+          const mainPx = w - preStudyPx
+          const hPad   = canEdit && w > HANDLE_W * 3 ? HANDLE_W : 0
+
+          return (
+            <>
+              {/* Pre-study hatched fill */}
+              {preStudyPx > 0 && (
+                <div style={{
+                  position: 'absolute', left: 0, top: 0, width: preStudyPx, height: '100%',
+                  background: `repeating-linear-gradient(-45deg,${color}bb,${color}bb 2px,${color}44 2px,${color}44 5px)`,
+                  borderRight: mainPx > 0 ? `1.5px solid ${color}` : 'none',
+                }} />
+              )}
+
+              {/* Main phase solid fill */}
+              {mainPx > 0 && (
+                <div style={{
+                  position: 'absolute', left: preStudyPx, top: 0, right: 0, height: '100%',
+                  background: color,
+                }} />
+              )}
+
+              {/* Left resize handle */}
+              {canEdit && w > HANDLE_W * 3 && (
+                <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: HANDLE_W, cursor: 'ew-resize', zIndex: 2 }} />
+              )}
+
+              {/* Pre-study label ("Pre-study" italic) */}
+              {preStudyPx >= 36 && (
+                <div style={{
+                  position: 'absolute',
+                  left: hPad, top: 0, bottom: 0, width: preStudyPx - hPad,
+                  display: 'flex', alignItems: 'center', paddingInline: 3,
+                  fontSize: 10, fontStyle: 'italic', fontWeight: 400, color: 'white',
+                  overflow: 'hidden', whiteSpace: 'nowrap', zIndex: 1,
+                }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>Pre-study</span>
+                </div>
+              )}
+
+              {/* Main phase label (person/workitem name) */}
+              {mainPx >= 28 && (
+                <div style={{
+                  position: 'absolute',
+                  left: preStudyPx + (preStudyPx > 0 ? 4 : hPad),
+                  top: 0, bottom: 0,
+                  right: hPad,
+                  display: 'flex', alignItems: 'center', paddingInline: preStudyPx > 0 ? 2 : 2,
+                  fontSize: 11, fontWeight: 500, color: 'white',
+                  overflow: 'hidden', whiteSpace: 'nowrap', zIndex: 1,
+                }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{label}</span>
+                </div>
+              )}
+
+              {/* Right resize handle */}
+              {canEdit && w > HANDLE_W * 3 && (
+                <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: HANDLE_W, cursor: 'ew-resize', zIndex: 2 }} />
+              )}
+
+              {/* §9.3 Conflict indicator */}
+              {hasConflict && (
+                <div title="⚠ 중복 배정" style={{
+                  position: 'absolute', top: 3, right: 3,
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: '#f97316', border: '1.5px solid white', zIndex: 20, pointerEvents: 'none',
+                }} />
+              )}
+            </>
+          )
+        })()}
+      </div>
+
+      {/* Hover tooltip — portal so it renders above all stacking contexts */}
+      {tipPos && tooltipInfo && createPortal(
+        <div style={{
+          position: 'fixed',
+          left: tipPos.x + 14,
+          top:  tipPos.y - 8,
+          zIndex: 9999,
+          pointerEvents: 'none',
+          background: 'rgba(15,23,42,0.92)',
+          color: 'white',
+          borderRadius: 6,
+          padding: '6px 10px',
+          fontSize: 11,
+          lineHeight: 1.6,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          maxWidth: 260,
+          whiteSpace: 'pre-wrap',
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>{tooltipInfo.title}</div>
+          {tooltipInfo.lines.map((l, i) => (
+            <div key={i} style={{ color: 'rgba(255,255,255,0.8)', fontSize: 10 }}>{l}</div>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: Row label column entry
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RowLabelProps {
+  row:            RowData
+  color?:         string
+  isExpanded?:    boolean
+  onOpenDetail?:  () => void
+  onToggleExpand?: () => void
+}
+
+function RowLabel({ row, color = '#1e40af', isExpanded, onToggleExpand, onOpenDetail }: RowLabelProps) {
+  if (row.kind === 'person') {
+    const p = row.person
+    return (
+      <div style={{ height: ROW_H }} className="flex items-center gap-2 px-3 border-b border-border/50">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-gray-900 truncate">{p.name}</div>
+          <div className="text-[11px] text-muted">{p.rank}</div>
+        </div>
+      </div>
+    )
+  }
+  if (row.kind === 'workitem') {
+    const wi    = row.workItem
+    return (
+      <div
+        style={{ height: ROW_H }}
+        className="flex items-center gap-1.5 px-2 border-b border-border/50"
+        onDoubleClick={onOpenDetail ? (e) => { e.stopPropagation(); onOpenDetail() } : undefined}
+      >
+        {/* Expand / collapse toggle */}
+        <button
+          onClick={e => { e.stopPropagation(); onToggleExpand?.() }}
+          onDoubleClick={e => e.stopPropagation()}
+          className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-muted hover:text-gray-700 hover:bg-surface-100 transition-colors"
+          title={isExpanded ? '접기' : '인원 펼치기'}
+        >
+          {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+        <div style={{ width: 3, height: 22, borderRadius: 2, background: color, flexShrink: 0 }} />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-gray-900 truncate">{wi.name}</div>
+          <div className="text-[11px] text-muted">{wi.type}{wi.client ? ` · ${wi.client}` : ''}</div>
+        </div>
+      </div>
+    )
+  }
+  if (row.kind === 'workitem-sub') {
+    const p = row.person
+    return (
+      <div style={{ height: ROW_H }} className="flex items-center gap-2 pl-8 pr-3 border-b border-border/30 bg-surface-50/60">
+        <div style={{ width: 2, height: 16, borderRadius: 1, background: '#cbd5e1', flexShrink: 0 }} />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium text-gray-700 truncate">{p.name}</div>
+          <div className="text-[10px] text-muted">{p.rank}</div>
+        </div>
+      </div>
+    )
+  }
+  if (row.kind === 'leave-person-sub') {
+    const p = row.person
+    return (
+      <div style={{ height: ROW_H }} className="flex items-center gap-2 pl-8 pr-3 border-b border-border/30 bg-surface-50/60">
+        <div style={{ width: 2, height: 16, borderRadius: 1, background: '#10b981', flexShrink: 0 }} />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium text-gray-700 truncate">{p.name}</div>
+          <div className="text-[10px] text-muted">{p.rank}</div>
+        </div>
+      </div>
+    )
+  }
+  // leave-all — §5.2 T-3: collapsible
+  return (
+    <div style={{ height: ROW_H }} className="flex items-center gap-1.5 px-2 border-b border-border/50">
+      <button
+        onClick={e => { e.stopPropagation(); onToggleExpand?.() }}
+        className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-muted hover:text-gray-700 hover:bg-surface-100 transition-colors"
+        title={isExpanded ? '접기' : '인력별 펼치기'}
+      >
+        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+      <div style={{ width: 3, height: 22, borderRadius: 2, background: '#10b981', flexShrink: 0 }} />
+      <span className="text-sm font-medium text-emerald-700">휴가 (전체)</span>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: Ghost bar (while drag-creating)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function GhostBar({ startNum, endNum, dayWidth, viewStart }: {
+  startNum: number; endNum: number; dayWidth: number; viewStart: number
+}) {
+  const x = (startNum - viewStart) * dayWidth
+  const w = Math.max((endNum - startNum + 1) * dayWidth, 3)
+  return (
+    <div style={{
+      position: 'absolute', left: x, top: BAR_PAD, width: w, height: ROW_H - 2 * BAR_PAD,
+      background: 'rgba(99,102,241,0.18)',
+      border: '2px dashed rgba(99,102,241,0.55)',
+      borderRadius: 4, pointerEvents: 'none', zIndex: 8,
+    }} />
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legend
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Legend is rendered inline below — no constant needed.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: PersonChipStrip (§5.2 — drag-to-assign)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function PersonChipStrip({ people }: { people: Person[] }) {
+  // §5.2 T-7: group active people by rank order, name-sorted within each group
+  const groups = RANKS
+    .map(rank => ({
+      rank,
+      people: people
+        .filter(p => p.status === 'active' && p.rank === rank)
+        .sort((a, b) => a.name.localeCompare(b.name, 'ko')),
+    }))
+    .filter(g => g.people.length > 0)
+
+  return (
+    <div className="flex-shrink-0 flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-1.5 border-b border-border bg-blue-50/50">
+      <span className="text-[11px] text-blue-700 font-semibold flex-shrink-0 whitespace-nowrap">
+        인력 드래그 배정 →
+      </span>
+      {groups.map((g, gi) => (
+        <Fragment key={g.rank}>
+          {/* Rank group separator (not before first group) */}
+          {gi > 0 && (
+            <span style={{ width: 1, height: 14, background: '#bfdbfe', display: 'inline-block', flexShrink: 0 }} />
+          )}
+          {/* Rank label */}
+          <span className="text-[10px] font-bold text-blue-400 whitespace-nowrap flex-shrink-0">{g.rank}</span>
+          {/* Person chips */}
+          {g.people.map(p => (
+            <div
+              key={p.id}
+              draggable
+              onDragStart={e => {
+                e.dataTransfer.setData('text/plain', p.id)
+                e.dataTransfer.effectAllowed = 'copy'
+              }}
+              className="px-2 py-0.5 rounded-full bg-white border border-blue-200 text-[11px] text-blue-800 font-medium cursor-grab hover:bg-blue-50 hover:border-blue-400 hover:shadow-sm transition-all select-none"
+              title={`${p.name} (${p.rank}) — 작업 행으로 드래그`}
+            >
+              {p.name}
+            </div>
+          ))}
+        </Fragment>
+      ))}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: FilterBar (§5.2 F-1.8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RANKS = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern'] as const
+const WI_TYPES = ['project', 'proposal', 'pipeline'] as const
+
+type PersonSortBy = 'name' | 'rank' | 'role'
+type WiSortBy     = 'start' | 'name' | 'status' | 'type'
+
+interface FilterBarProps {
+  viewMode:      ViewMode
+  // person
+  personSort:    PersonSortBy; personDir: 'asc' | 'desc'
+  showResigned:  boolean;      rankFilter: string[]
+  // workitem
+  wiSort:        WiSortBy;     wiDir: 'asc' | 'desc'
+  showClosed:    boolean;      typeFilter: string[]
+  clientFilter:  string;       hashFilter: string
+  // callbacks
+  onPersonSort:  (by: PersonSortBy) => void
+  onShowResigned:(v: boolean) => void
+  onRankFilter:  (rank: string) => void
+  onWiSort:      (by: WiSortBy) => void
+  onShowClosed:  (v: boolean) => void
+  onTypeFilter:  (type: string) => void
+  onClientFilter:(v: string) => void
+  onHashFilter:  (v: string) => void
+}
+
+function SortBtn({ label, active, dir, onClick }: { label: string; active: boolean; dir: 'asc'|'desc'; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'inline-flex items-center gap-0.5 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors',
+        active
+          ? 'bg-brand-600 text-white border-brand-600'
+          : 'bg-white text-gray-600 border-border hover:bg-surface-100',
+      ].join(' ')}
+    >
+      {label}
+      {active && (dir === 'asc' ? <ChevronUp size={10} /> : <ChevronDown size={10} />)}
+    </button>
+  )
+}
+
+function ChipBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'px-2 py-0.5 rounded-full text-[11px] font-medium border transition-colors',
+        active
+          ? 'bg-brand-100 text-brand-700 border-brand-300'
+          : 'bg-white text-gray-500 border-border hover:bg-surface-100',
+      ].join(' ')}
+    >
+      {label}
+    </button>
+  )
+}
+
+function FilterBar({
+  viewMode,
+  personSort, personDir, showResigned, rankFilter,
+  wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter,
+  onPersonSort, onShowResigned, onRankFilter,
+  onWiSort, onShowClosed, onTypeFilter, onClientFilter, onHashFilter,
+}: FilterBarProps) {
+  // §9.3: debounce text-filter inputs (200 ms) so each keystroke doesn't rerender the whole grid
+  const [localClient, setLocalClient] = useState(clientFilter)
+  const [localHash,   setLocalHash]   = useState(hashFilter)
+  const clientTimer = useRef<ReturnType<typeof setTimeout>>()
+  const hashTimer   = useRef<ReturnType<typeof setTimeout>>()
+
+  useEffect(() => setLocalClient(clientFilter), [clientFilter])
+  useEffect(() => setLocalHash(hashFilter),   [hashFilter])
+
+  function handleClientChange(val: string) {
+    setLocalClient(val)
+    clearTimeout(clientTimer.current)
+    clientTimer.current = setTimeout(() => onClientFilter(val), 200)
+  }
+  function handleHashChange(val: string) {
+    setLocalHash(val)
+    clearTimeout(hashTimer.current)
+    hashTimer.current = setTimeout(() => onHashFilter(val), 200)
+  }
+
+  return (
+    <div className="flex-shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2 border-b border-border bg-surface-50 text-xs">
+      {viewMode === 'person' ? (
+        <>
+          <div className="flex items-center gap-1">
+            <span className="text-muted mr-1">정렬</span>
+            <SortBtn label="이름"  active={personSort === 'name'} dir={personDir} onClick={() => onPersonSort('name')} />
+            <SortBtn label="직급"  active={personSort === 'rank'} dir={personDir} onClick={() => onPersonSort('rank')} />
+            <SortBtn label="역할"  active={personSort === 'role'} dir={personDir} onClick={() => onPersonSort('role')} />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted mr-1">직급</span>
+            {RANKS.map(r => (
+              <ChipBtn key={r} label={r} active={rankFilter.includes(r)} onClick={() => onRankFilter(r)} />
+            ))}
+          </div>
+          <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
+            <input
+              type="checkbox"
+              checked={showResigned}
+              onChange={e => onShowResigned(e.target.checked)}
+              className="accent-brand-600"
+            />
+            퇴직자 표시
+          </label>
+        </>
+      ) : (
+        <>
+          <div className="flex items-center gap-1">
+            <span className="text-muted mr-1">정렬</span>
+            <SortBtn label="시작일" active={wiSort === 'start'}  dir={wiDir} onClick={() => onWiSort('start')} />
+            <SortBtn label="이름"   active={wiSort === 'name'}   dir={wiDir} onClick={() => onWiSort('name')}  />
+            <SortBtn label="상태"   active={wiSort === 'status'} dir={wiDir} onClick={() => onWiSort('status')}/>
+            <SortBtn label="유형"   active={wiSort === 'type'}   dir={wiDir} onClick={() => onWiSort('type')  }/>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted mr-1">유형</span>
+            {WI_TYPES.map(t => (
+              <ChipBtn key={t} label={t} active={typeFilter.includes(t)} onClick={() => onTypeFilter(t)} />
+            ))}
+          </div>
+          <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
+            <input
+              type="checkbox"
+              checked={showClosed}
+              onChange={e => onShowClosed(e.target.checked)}
+              className="accent-brand-600"
+            />
+            Closed 표시
+          </label>
+          <input
+            className="input py-0.5 px-2 text-[11px] w-28"
+            placeholder="Client"
+            value={localClient}
+            onChange={e => handleClientChange(e.target.value)}
+          />
+          <input
+            className="input py-0.5 px-2 text-[11px] w-28"
+            placeholder="#hashtag"
+            value={localHash}
+            onChange={e => handleHashChange(e.target.value)}
+          />
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main component: TimelineView
+// ─────────────────────────────────────────────────────────────────────────────
+
+export default function TimelineView() {
+  const { data: people    = [] } = useAllPeople()
+  const { data: workItems = [] } = useAllWorkItems()
+  const { data: assignments = [] } = useAllAssignments()
+  const { data: holidays  = [] } = useAllHolidays()
+  const { data: settings }       = useSettings()
+  const updateAssignment = useUpdateAssignment()
+  const updateWorkItem   = useUpdateWorkItem()
+  const { canEdit }      = useAuthz()
+  const { push }         = useHistory()
+  const startMonth       = settings?.fiscal_year_start_month ?? 7
+
+  useLayoutEffect(() => {
+    function updateLabelW() {
+      setLabelW(window.innerWidth < 768 ? 120 : LABEL_W)
+    }
+    window.addEventListener('resize', updateLabelW)
+    return () => window.removeEventListener('resize', updateLabelW)
+  }, [])
+
+  const [viewMode,          setViewMode]          = useState<ViewMode>('person')
+  const [dayWidth,          setDayWidth]          = useState(DAY_DEFAULT)
+  const [labelW,            setLabelW]            = useState(() => window.innerWidth < 768 ? 120 : LABEL_W)
+  const [modal,             setModal]             = useState<ModalState>({ open: false, mode: 'create', prefill: {} })
+  const [expandedWorkItems, setExpandedWorkItems] = useState<Set<string>>(new Set())
+  const [expandedLeave,     setExpandedLeave]     = useState(false)
+  const [detailWorkItem,    setDetailWorkItem]     = useState<WorkItem | null>(null)
+  const [editWorkItem,      setEditWorkItem]       = useState<WorkItem | null>(null)
+
+  // ─── Sort / filter state (§5.2 F-1.8) ────────────────────────────────────
+  const [showFilter,   setShowFilter]   = useState(false)
+  // Person view
+  const [personSort,   setPersonSort]   = useState<'name' | 'rank' | 'role'>('rank')
+  const [personDir,    setPersonDir]    = useState<'asc' | 'desc'>('asc')
+  const [showResigned, setShowResigned] = useState(false)
+  const [rankFilter,   setRankFilter]   = useState<string[]>([])
+  // Work-item view
+  const [wiSort,       setWiSort]       = useState<'start' | 'name' | 'status' | 'type'>('start')
+  const [wiDir,        setWiDir]        = useState<'asc' | 'desc'>('asc')
+  const [showClosed,   setShowClosed]   = useState(false)
+  const [typeFilter,   setTypeFilter]   = useState<string[]>([])
+  const [clientFilter, setClientFilter] = useState('')
+  const [hashFilter,   setHashFilter]   = useState('')
+  const [fyFilter,     setFyFilter]     = useState<FYFilter>({ mode: 'all' })
+
+  // Scroll refs
+  const labelsBodyRef = useRef<HTMLDivElement>(null)
+  const gridBodyRef   = useRef<HTMLDivElement>(null)
+  const isSyncingRef  = useRef(false)
+
+  // Lookup maps
+  const peopleMap    = useMemo(() => idx(people),    [people])
+  const workItemMap  = useMemo(() => idx(workItems), [workItems])
+  const colorMap     = useMemo(() => buildWorkItemColorMap(workItems), [workItems])
+
+  const todayNum = useMemo(() => today(), [])
+
+  // Permission helpers
+  const globalEdit  = canEdit('global')
+  const isWIClosed  = (wi: WorkItem) => (wi.status ?? wi.project_status ?? 'open') === 'closed'
+  // Full edit permission: role-based AND item must be open (W-4)
+  const canEditWI   = (wi: WorkItem) =>
+    !isWIClosed(wi) && (
+      wi.type === 'pipeline' ? canEdit('work_item', wi.id) || globalEdit : globalEdit || canEdit('work_item', wi.id)
+    )
+  // Status-toggle permission: role-based only, does NOT require item to be open
+  const canToggleWIStatus = (wi: WorkItem) =>
+    wi.type === 'pipeline' ? canEdit('work_item', wi.id) || globalEdit : globalEdit || canEdit('work_item', wi.id)
+  // Assignment edit: also blocked when linked work item is closed (W-5/W-6)
+  const canEditAsgn = (a: Assignment) => {
+    if (a.work_item_id) {
+      const wi = workItemMap.get(a.work_item_id)
+      if (wi && isWIClosed(wi)) return false
+    }
+    return globalEdit ||
+      canEdit('person', a.person_id) ||
+      (a.work_item_id ? canEdit('work_item', a.work_item_id) : false)
+  }
+  const canEditPipeline = canEdit('global') ||
+    workItems.some(w => w.type === 'pipeline' && canEdit('work_item', w.id))
+
+  // View range — FY/range override when active, otherwise all data ± padding
+  // T-10: fixed render window — no data-driven unbounded range
+  const { viewStart, viewEnd } = useMemo(() => {
+    const [fyFrom, fyTo] = resolveFYFilter(fyFilter, startMonth)
+    if (fyFrom && fyTo) {
+      // Filter active: range ±1 month (T-10 §1)
+      return {
+        viewStart: monthStart(addMonths(dateToNum(fyFrom), -1)),
+        viewEnd:   nextMonthStart(addMonths(dateToNum(fyTo),  1)) - 1,
+      }
+    }
+    // No filter: today ±7 months (T-10 §2)
+    return {
+      viewStart: monthStart(addMonths(todayNum, -7)),
+      viewEnd:   nextMonthStart(addMonths(todayNum,  7)) - 1,
+    }
+  }, [todayNum, fyFilter, startMonth])
+
+  const totalWidth  = (viewEnd - viewStart + 1) * dayWidth
+  const headerTiers = dayWidth < ZOOM_WEEK ? 1 : dayWidth < ZOOM_DAY ? 2 : 3
+  const headerH     = headerTiers * HEADER_ROW_H
+
+  // Holiday set (with recurring support)
+  const holidaySet = useMemo(() => {
+    const s = new Set<number>()
+    for (const h of holidays) {
+      const base = dateToNum(h.date)
+      if (!h.recurring) {
+        s.add(base)
+      } else {
+        const bd   = numToDate(base)
+        const bMon = bd.getUTCMonth()
+        const bDay = bd.getUTCDate()
+        const sy   = numToDate(viewStart).getUTCFullYear()
+        const ey   = numToDate(viewEnd).getUTCFullYear()
+        for (let y = sy; y <= ey; y++) {
+          const d = dateToNum(new Date(Date.UTC(y, bMon, bDay)))
+          if (d >= viewStart && d <= viewEnd) s.add(d)
+        }
+      }
+    }
+    return s
+  }, [holidays, viewStart, viewEnd])
+
+  // Build row list — filtered and sorted (§5.2 F-1.8)
+  const rows: RowData[] = useMemo(() => {
+    if (viewMode === 'person') {
+      let fp = people
+        .filter(p => showResigned || p.status !== 'resigned')
+        .filter(p => rankFilter.length === 0 || rankFilter.includes(p.rank))
+
+      fp = [...fp].sort((a, b) => {
+        let cmp = 0
+        if (personSort === 'name') cmp = a.name.localeCompare(b.name, 'ko')
+        if (personSort === 'rank') cmp = (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99)
+        if (personSort === 'role') cmp = (a.role ?? '').localeCompare(b.role ?? '', 'ko')
+        return personDir === 'desc' ? -cmp : cmp
+      })
+
+      return fp.map(p => ({ kind: 'person' as const, person: p, key: p.id }))
+    }
+
+    let fw = workItems.filter(wi => {
+      if (!showClosed && (wi.status ?? wi.project_status) === 'closed') return false
+      if (typeFilter.length > 0 && !typeFilter.includes(wi.type)) return false
+      if (clientFilter && !wi.client?.toLowerCase().includes(clientFilter.toLowerCase())) return false
+      if (hashFilter  && !wi.hashtags.some(h => h.toLowerCase().includes(hashFilter.toLowerCase()))) return false
+      return true
+    })
+
+    fw = [...fw].sort((a, b) => {
+      let cmp = 0
+      if (wiSort === 'start')  cmp = a.start.localeCompare(b.start)
+      if (wiSort === 'name')   cmp = a.name.localeCompare(b.name, 'ko')
+      if (wiSort === 'type')   cmp = a.type.localeCompare(b.type)
+      if (wiSort === 'status') cmp = (a.status ?? a.project_status ?? '').localeCompare(b.status ?? b.project_status ?? '')
+      return wiDir === 'desc' ? -cmp : cmp
+    })
+
+    // §5.2 T-3: people with any leave assignments (for leave sub-rows), sorted by rank then name
+    const leavePeople = [...new Set(
+      assignments.filter(a => a.kind === 'leave').map(a => a.person_id),
+    )]
+      .map(pid => peopleMap.get(pid))
+      .filter((p): p is Person => !!p)
+      .sort((a, b) => {
+        const ro = (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99)
+        return ro !== 0 ? ro : a.name.localeCompare(b.name, 'ko')
+      })
+
+    return [
+      ...fw.flatMap(wi => {
+        const base = [{ kind: 'workitem' as const, workItem: wi, key: wi.id }]
+        if (!expandedWorkItems.has(wi.id)) return base
+        // §5.2 T-6: unique people with work assignments, sorted by rank then name
+        const personIds = [...new Set(
+          assignments
+            .filter(a => a.work_item_id === wi.id && a.kind === 'work')
+            .map(a => a.person_id),
+        )]
+        const subRows = personIds
+          .map(pid => peopleMap.get(pid))
+          .filter((p): p is Person => !!p)
+          .sort((a, b) => {
+            const ro = (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99)
+            return ro !== 0 ? ro : a.name.localeCompare(b.name, 'ko')
+          })
+          .map(p => ({
+            kind:     'workitem-sub' as const,
+            workItem: wi,
+            person:   p,
+            key:      `${wi.id}:${p.id}`,
+          }))
+        return [...base, ...subRows]
+      }),
+      // §5.2 T-3: leave-all row + optional per-person sub-rows
+      { kind: 'leave-all' as const, key: 'leave-all' },
+      ...(expandedLeave ? leavePeople.map(p => ({
+        kind:   'leave-person-sub' as const,
+        person: p,
+        key:    `leave:${p.id}`,
+      })) : []),
+    ]
+  }, [
+    viewMode, people, workItems, assignments, peopleMap,
+    personSort, personDir, showResigned, rankFilter,
+    wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter,
+    expandedWorkItems, expandedLeave,
+  ])
+
+  // Scroll sync — vertical only (header X is native via single container)
+  function handleGridScroll() {
+    if (isSyncingRef.current) return
+    isSyncingRef.current = true
+    const el = gridBodyRef.current
+    if (labelsBodyRef.current) labelsBodyRef.current.scrollTop = el?.scrollTop ?? 0
+    isSyncingRef.current = false
+  }
+  function handleLabelsScroll() {
+    if (isSyncingRef.current) return
+    isSyncingRef.current = true
+    if (gridBodyRef.current) gridBodyRef.current.scrollTop = labelsBodyRef.current?.scrollTop ?? 0
+    isSyncingRef.current = false
+  }
+
+  // clientX → day number (accounts for grid scroll)
+  const clientXToDay = useCallback((clientX: number): number => {
+    const rect = gridBodyRef.current?.getBoundingClientRect()
+    if (!rect) return viewStart
+    const scrollLeft = gridBodyRef.current?.scrollLeft ?? 0
+    return viewStart + Math.floor((clientX - rect.left + scrollLeft) / dayWidth)
+  }, [viewStart, dayWidth])
+
+  // Scroll to today
+  function scrollToToday() {
+    const el = gridBodyRef.current
+    if (!el) return
+    const x = (todayNum - viewStart) * dayWidth - el.clientWidth / 2
+    el.scrollTo({ left: Math.max(0, x), behavior: 'smooth' })
+  }
+
+  // Scroll to today on mount
+  useEffect(() => { scrollToToday() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Modal helpers
+  function openCreate(row: RowData, startNum: number, endNum: number) {
+    const prefill: ModalState['prefill'] = { startNum, endNum }
+    if (row.kind === 'person') {
+      prefill.personId = row.person.id
+      // §5.3 #5: find the most recent project work-assignment end for this person
+      const personWorkEnds = assignments
+        .filter(a => a.person_id === row.person.id && a.kind === 'work')
+        .map(a => dateToNum(a.end_date))
+      if (personWorkEnds.length > 0) {
+        prefill.lastProjectEndNum = Math.max(...personWorkEnds)
+      }
+    }
+    if (row.kind === 'workitem')          { prefill.workItemId = row.workItem.id; prefill.kind = 'work' }
+    if (row.kind === 'workitem-sub')      { prefill.workItemId = row.workItem.id; prefill.personId = row.person.id; prefill.kind = 'work' }
+    if (row.kind === 'leave-all')           prefill.kind       = 'leave'
+    if (row.kind === 'leave-person-sub')  { prefill.personId = row.person.id; prefill.kind = 'leave' }
+    setModal({ open: true, mode: 'create', prefill })
+  }
+  function openEdit(a: Assignment) {
+    setModal({ open: true, mode: 'edit', prefill: {}, editTarget: a })
+  }
+  function closeModal() {
+    setModal(m => ({ ...m, open: false }))
+  }
+
+  function toggleExpand(wiId: string) {
+    setExpandedWorkItems(prev => {
+      const next = new Set(prev)
+      if (next.has(wiId)) next.delete(wiId)
+      else next.add(wiId)
+      return next
+    })
+  }
+
+  function handleDropPerson(personId: string, row: RowData) {
+    const wi = row.kind === 'workitem' || row.kind === 'workitem-sub' ? row.workItem : null
+    if (!wi) return
+    setModal({
+      open:   true,
+      mode:   'create',
+      prefill: {
+        personId,
+        workItemId: wi.id,
+        kind:       'work',
+        startNum:   dateToNum(wi.start),
+        endNum:     dateToNum(wi.end_date),
+      },
+    })
+  }
+
+  // Mutation callbacks
+  function handleUpdateAssignment(id: string, patch: { start: string; end_date: string }) {
+    const moved = assignments.find(a => a.id === id)
+    if (!moved?.person_id) {
+      updateAssignment.mutate({ id, ...patch })
+      return
+    }
+
+    const newStart = dateToNum(patch.start)
+    const newEnd   = dateToNum(patch.end_date)
+    const oldStart = dateToNum(moved.start)
+    const isHol    = (n: number) => holidaySet.has(n)
+    const siblings = assignments.filter(a => a.person_id === moved.person_id && a.id !== id)
+
+    // §5.3 E-4: cascade-push sibling blocks in direction of movement
+    const pushPatches: { id: string; start: string; end_date: string }[] = []
+
+    if (newStart >= oldStart) {
+      // Moved right (or resize-right): push overlapping siblings rightward
+      let rightEdge = newEnd
+      for (const a of [...siblings].sort((a, b) => dateToNum(a.start) - dateToNum(b.start))) {
+        const aS = dateToNum(a.start), aE = dateToNum(a.end_date)
+        if (aE < newStart || aS > rightEdge) continue   // no overlap with cascade zone
+        const nS = rightEdge + 1
+        const nE = a.kind === 'leave'
+          ? snapLeaveEnd(nS, Math.max(1, workdayCount(aS, aE, holidaySet)), isHol)
+          : nS + (aE - aS)
+        pushPatches.push({ id: a.id, start: numToStr(nS), end_date: numToStr(nE) })
+        rightEdge = nE
+      }
+    } else {
+      // Moved left (or resize-left): push overlapping siblings leftward
+      let leftEdge = newStart
+      for (const a of [...siblings].sort((a, b) => dateToNum(b.end_date) - dateToNum(a.end_date))) {
+        const aS = dateToNum(a.start), aE = dateToNum(a.end_date)
+        if (aS > newEnd || aE < leftEdge) continue   // no overlap with cascade zone
+        const nE = leftEdge - 1
+        const nS = a.kind === 'leave'
+          ? snapLeaveStart(nE, Math.max(1, workdayCount(aS, aE, holidaySet)), isHol)
+          : nE - (aE - aS)
+        pushPatches.push({ id: a.id, start: numToStr(nS), end_date: numToStr(nE) })
+        leftEdge = nS
+      }
+    }
+
+    // Fire moved block first, then cascade patches
+    updateAssignment.mutate({ id, ...patch })
+    for (const p of pushPatches) updateAssignment.mutate(p)
+
+    // Build undo/redo pairs covering the moved block and all cascaded siblings
+    const allPairs = [
+      { id, oldStart: moved.start, oldEnd: moved.end_date, newStart: patch.start, newEnd: patch.end_date },
+      ...pushPatches.map(pp => {
+        const orig = assignments.find(a => a.id === pp.id)
+        return { id: pp.id, oldStart: orig?.start ?? pp.start, oldEnd: orig?.end_date ?? pp.end_date, newStart: pp.start, newEnd: pp.end_date }
+      }),
+    ]
+    push(makeAssignmentDrag('배정 이동', allPairs))
+  }
+  function handleUpdateWorkItem(
+    id: string,
+    patch: { start?: string; end_date?: string; main_start?: string | null },
+  ) {
+    const wi = workItemMap.get(id)
+    updateWorkItem.mutate({ id, ...patch })
+    if (wi) push(makeWorkItemUpdate(wi, patch))
+  }
+
+  // ─── Per-row grid content renderer ────────────────────────────────────────
+
+  function renderRowContent(row: RowData) {
+    const canCreate =
+      row.kind === 'leave-all'         ? globalEdit :
+      row.kind === 'leave-person-sub'  ? globalEdit :
+      row.kind === 'person'            ? (globalEdit || canEdit('person', row.person.id)) :
+      row.kind === 'workitem'          ? canEditWI(row.workItem) :
+      row.kind === 'workitem-sub'      ? canEditWI(row.workItem) :
+      false
+
+    // Assignments for this row
+    // §5.2 T-3: workitem rows show only the span band (WorkItemBand); per-person bars live in workitem-sub sub-rows only.
+    let rowAssignments: Assignment[]
+    if (row.kind === 'person') {
+      rowAssignments = assignments.filter(a => a.person_id === row.person.id)
+    } else if (row.kind === 'workitem') {
+      rowAssignments = []
+    } else if (row.kind === 'workitem-sub') {
+      rowAssignments = assignments.filter(a =>
+        a.work_item_id === row.workItem.id &&
+        a.person_id    === row.person.id   &&
+        a.kind         === 'work',
+      )
+    } else if (row.kind === 'leave-person-sub') {
+      rowAssignments = assignments.filter(a => a.kind === 'leave' && a.person_id === row.person.id)
+    } else {
+      rowAssignments = assignments.filter(a => a.kind === 'leave')
+    }
+
+    return (
+      <GridRow
+        key={row.key}
+        row={row}
+        rowAssignments={rowAssignments}
+        dayWidth={dayWidth}
+        viewStart={viewStart}
+        canCreate={canCreate}
+        globalEdit={globalEdit}
+        canEditAsgn={canEditAsgn}
+        canEditWI={canEditWI}
+        clientXToDay={clientXToDay}
+        peopleMap={peopleMap}
+        workItemMap={workItemMap}
+        colorMap={colorMap}
+        holidaySet={holidaySet}
+        onUpdate={handleUpdateAssignment}
+        onUpdateWI={handleUpdateWorkItem}
+        onOpenCreate={openCreate}
+        onOpenEdit={openEdit}
+        onDropPerson={handleDropPerson}
+        onOpenDetail={row.kind === 'workitem' ? (wi) => setDetailWorkItem(wi) : undefined}
+      />
+    )
+  }
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden select-none bg-surface-0">
+      {/* ── Controls bar ── */}
+      <div className="flex-shrink-0 flex items-center flex-wrap gap-3 px-4 py-2 border-b border-border bg-surface-50">
+        {/* View toggle */}
+        <div className="flex rounded-md overflow-hidden border border-border">
+          <button
+            onClick={() => setViewMode('person')}
+            className={[
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors',
+              viewMode === 'person'
+                ? 'bg-brand-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-surface-100',
+            ].join(' ')}
+          >
+            <Users size={12} /> Person
+          </button>
+          <button
+            onClick={() => setViewMode('workitem')}
+            className={[
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors',
+              viewMode === 'workitem'
+                ? 'bg-brand-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-surface-100',
+            ].join(' ')}
+          >
+            <Briefcase size={12} /> Work Item
+          </button>
+        </div>
+
+        {/* Zoom */}
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => setDayWidth(d => Math.max(DAY_MIN, d - (d > 12 ? 4 : 1)))}
+                  className="btn-secondary p-1.5" title="Zoom out">
+            <ZoomOut size={13} />
+          </button>
+          <input
+            type="range" min={DAY_MIN} max={DAY_MAX} value={dayWidth}
+            onChange={e => setDayWidth(Number(e.target.value))}
+            className="w-24 accent-brand-600"
+          />
+          <button onClick={() => setDayWidth(d => Math.min(DAY_MAX, d + (d >= 12 ? 4 : 1)))}
+                  className="btn-secondary p-1.5" title="Zoom in">
+            <ZoomIn size={13} />
+          </button>
+          <span className="text-xs text-muted w-10 text-right">
+            {dayWidth < ZOOM_WEEK ? 'Mo' : dayWidth < ZOOM_DAY ? 'Wk' : 'Day'}
+          </span>
+        </div>
+
+        {/* Today */}
+        <button onClick={scrollToToday} className="btn-secondary gap-1.5">
+          <Calendar size={13} /> Today
+        </button>
+
+        {/* New assignment */}
+        {globalEdit && (
+          <button
+            onClick={() => setModal({ open: true, mode: 'create', prefill: { startNum: todayNum, endNum: todayNum } })}
+            className="btn-primary gap-1.5"
+          >
+            + New
+          </button>
+        )}
+
+        {/* Filter toggle */}
+        <button
+          onClick={() => setShowFilter(f => !f)}
+          className={['btn-secondary gap-1.5', showFilter ? 'ring-2 ring-brand-400' : ''].join(' ')}
+          title="Sort &amp; Filter"
+        >
+          <SlidersHorizontal size={13} />
+          {(viewMode === 'person'
+            ? (rankFilter.length > 0 || showResigned || fyFilter.mode !== 'all')
+            : (typeFilter.length > 0 || showClosed || clientFilter || hashFilter || fyFilter.mode !== 'all')
+          ) && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
+        </button>
+
+        {/* Legend — Work(파랑/노랑/회색 계열) · Leave(녹색 계열) */}
+        <div className="ml-auto flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          {/* ── Work 군 — representative first shade of each family ── */}
+          <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wide">Work</span>
+          {([
+            { type: 'project',  label: 'Project'  },
+            { type: 'proposal', label: 'Proposal' },
+            // Pipeline legend only shown to editor/admin who can see pipeline items
+            ...(globalEdit ? [{ type: 'pipeline' as const, label: 'Pipeline' }] : []),
+          ] as const).map(l => (
+            <span key={l.label} className="flex items-center gap-1 text-[11px] text-muted">
+              <span style={{ display: 'inline-block', width: 14, height: 10, borderRadius: 2, background: (TYPE_FAMILY[l.type] ?? TYPE_FAMILY.project)[0] }} />
+              {l.label}
+            </span>
+          ))}
+          <span className="flex items-center gap-1 text-[11px] text-muted">
+            <span style={{
+              display: 'inline-block', width: 14, height: 10, borderRadius: 2,
+              background: 'repeating-linear-gradient(-45deg,#bfdbfe,#bfdbfe 2px,#dbeafe 2px,#dbeafe 5px)',
+              border: '1px solid #93c5fd',
+            }} />
+            Pre-study
+          </span>
+
+          {/* divider */}
+          <span style={{ width: 1, height: 14, background: '#d1d5db', display: 'inline-block', flexShrink: 0 }} />
+
+          {/* ── Leave 군 ── */}
+          <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wide">Leave</span>
+          {Object.entries(LEAVE_GREEN).map(([type, color]) => (
+            <span key={type} className="flex items-center gap-1 text-[11px] text-muted">
+              <span style={{ display: 'inline-block', width: 14, height: 10, borderRadius: 2, background: color }} />
+              {type}
+            </span>
+          ))}
+
+          {/* divider */}
+          <span style={{ width: 1, height: 14, background: '#d1d5db', display: 'inline-block', flexShrink: 0 }} />
+
+          {/* Background markers */}
+          <span className="flex items-center gap-1 text-[11px] text-muted">
+            <span style={{ display: 'inline-block', width: 14, height: 10, borderRadius: 2, background: WEEKEND_BG, border: '1px solid #e5e7eb' }} />
+            Weekend
+          </span>
+          <span className="flex items-center gap-1 text-[11px] text-muted">
+            <span style={{ display: 'inline-block', width: 14, height: 10, borderRadius: 2, background: HOLIDAY_BG }} />
+            Holiday
+          </span>
+
+          {!globalEdit && (
+            <span className="flex items-center gap-1 text-[11px] text-amber-600 font-medium">
+              <Info size={11} /> View only
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Person chip drag-assign strip (workitem view only) ── */}
+      {viewMode === 'workitem' && <PersonChipStrip people={people} />}
+
+      {/* ── Filter / Sort panel ── */}
+      {showFilter && (
+        <>
+          <FilterBar
+            viewMode={viewMode}
+            personSort={personSort}  personDir={personDir}
+            showResigned={showResigned}  rankFilter={rankFilter}
+            wiSort={wiSort}          wiDir={wiDir}
+            showClosed={showClosed}  typeFilter={typeFilter}
+            clientFilter={clientFilter}  hashFilter={hashFilter}
+            onPersonSort={(by) => {
+              if (personSort === by) setPersonDir(d => d === 'asc' ? 'desc' : 'asc')
+              else { setPersonSort(by); setPersonDir('asc') }
+            }}
+            onShowResigned={setShowResigned}
+            onRankFilter={(r) => setRankFilter(prev =>
+              prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r]
+            )}
+            onWiSort={(by) => {
+              if (wiSort === by) setWiDir(d => d === 'asc' ? 'desc' : 'asc')
+              else { setWiSort(by); setWiDir('asc') }
+            }}
+            onShowClosed={setShowClosed}
+            onTypeFilter={(t) => setTypeFilter(prev =>
+              prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]
+            )}
+            onClientFilter={setClientFilter}
+            onHashFilter={setHashFilter}
+          />
+          <div className="flex-shrink-0 flex items-center px-4 py-1.5 border-b border-border bg-surface-50">
+            <FYPicker value={fyFilter} onChange={setFyFilter} startMonth={startMonth} />
+          </div>
+        </>
+      )}
+
+      {/* ── Active filter chips (§9.3 — always visible even when filter panel collapsed) ── */}
+      {(rankFilter.length > 0 || typeFilter.length > 0 || clientFilter || hashFilter) && (
+        <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-4 py-1.5 border-b border-amber-200 bg-amber-50/70">
+          {rankFilter.map(r => (
+            <span key={r} className="inline-flex items-center gap-1 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] px-2 py-0.5 font-medium">
+              직급 {r}
+              <button onClick={() => setRankFilter(p => p.filter(x => x !== r))} className="text-amber-500 hover:text-amber-800 leading-none">×</button>
+            </span>
+          ))}
+          {typeFilter.map(t => (
+            <span key={t} className="inline-flex items-center gap-1 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] px-2 py-0.5 font-medium">
+              유형 {t}
+              <button onClick={() => setTypeFilter(p => p.filter(x => x !== t))} className="text-amber-500 hover:text-amber-800 leading-none">×</button>
+            </span>
+          ))}
+          {clientFilter && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] px-2 py-0.5 font-medium">
+              Client: {clientFilter}
+              <button onClick={() => setClientFilter('')} className="text-amber-500 hover:text-amber-800 leading-none">×</button>
+            </span>
+          )}
+          {hashFilter && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] px-2 py-0.5 font-medium">
+              #{hashFilter}
+              <button onClick={() => setHashFilter('')} className="text-amber-500 hover:text-amber-800 leading-none">×</button>
+            </span>
+          )}
+          <button
+            onClick={() => { setRankFilter([]); setTypeFilter([]); setClientFilter(''); setHashFilter('') }}
+            className="text-[11px] text-muted hover:text-gray-700 ml-1 underline"
+          >
+            모두 지우기
+          </button>
+        </div>
+      )}
+
+      {/* ── Timeline body ── */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Label column */}
+        <div style={{ width: labelW }} className="flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
+          {/* Corner */}
+          <div style={{ height: headerH }} className="flex-shrink-0 border-b border-border bg-surface-100" />
+          {/* Labels */}
+          <div
+            ref={labelsBodyRef}
+            className="flex-1 overflow-y-auto overflow-x-hidden"
+            onScroll={handleLabelsScroll}
+          >
+            {rows.map(row => (
+              <RowLabel
+                key={row.key}
+                row={row}
+                color={row.kind === 'workitem' ? (colorMap.get(row.workItem.id) ?? (TYPE_FAMILY[row.workItem.type]?.[0] ?? '#1e40af')) : undefined}
+                isExpanded={
+                  (row.kind === 'workitem' && expandedWorkItems.has(row.workItem.id)) ||
+                  (row.kind === 'leave-all' && expandedLeave)
+                }
+                onToggleExpand={
+                  row.kind === 'workitem'  ? () => toggleExpand(row.workItem.id) :
+                  row.kind === 'leave-all' ? () => setExpandedLeave(v => !v) :
+                  undefined
+                }
+                onOpenDetail={row.kind === 'workitem' ? () => setDetailWorkItem(row.workItem) : undefined}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Grid panel — single scroll container (T-8: header + body share one scrollLeft) */}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <div
+            ref={gridBodyRef}
+            className="flex-1 overflow-auto"
+            onScroll={handleGridScroll}
+          >
+            {/* Date header — sticky at top, shares scrollLeft with canvas (T-8) */}
+            <div
+              style={{ position: 'sticky', top: 0, height: headerH, width: totalWidth, zIndex: 30 }}
+              className="border-b border-border bg-surface-50"
+            >
+              <DateHeader
+                viewStart={viewStart} viewEnd={viewEnd}
+                dayWidth={dayWidth} totalWidth={totalWidth}
+              />
+            </div>
+
+            {/* §9.3: empty state when all rows filtered out */}
+            {rows.length === 0 && (
+              <div className="flex items-center justify-center h-48 text-sm text-muted">
+                {viewMode === 'person' ? '조건에 맞는 구성원이 없습니다.' : '조건에 맞는 작업항목이 없습니다.'}
+              </div>
+            )}
+            <div
+              style={{
+                width: totalWidth,
+                minHeight: rows.length * ROW_H,
+                position: 'relative',
+                isolation: 'isolate',  // contain bar z-indices below sticky header (z=30)
+              }}
+            >
+              {/* Background (weekends / holidays / today) */}
+              <BgLayer
+                viewStart={viewStart} viewEnd={viewEnd}
+                dayWidth={dayWidth} holidaySet={holidaySet}
+                todayNum={todayNum}
+              />
+
+              {/* Row dividers + content */}
+              {rows.map((row, i) => (
+                <div
+                  key={row.key}
+                  style={{
+                    position: 'absolute', top: i * ROW_H, left: 0,
+                    width: totalWidth, height: ROW_H,
+                    borderBottom: '1px solid rgba(0,0,0,0.05)',
+                  }}
+                >
+                  {renderRowContent(row)}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Assignment modal ── */}
+      <AssignmentModal
+        state={modal}
+        people={people}
+        workItems={workItems}
+        canEditPipeline={canEditPipeline}
+        onClose={closeModal}
+      />
+
+      {/* ── Work item detail modal (§5.7) ── */}
+      {detailWorkItem && (() => {
+        const latest = workItems.find(w => w.id === detailWorkItem.id) ?? detailWorkItem
+        return (
+          <WorkItemDetailModal
+            workItem={latest}
+            assignments={assignments}
+            peopleMap={peopleMap}
+            colorMap={colorMap}
+            canEdit={canEditWI(latest)}
+            canToggleStatus={canToggleWIStatus(latest)}
+            onClose={() => setDetailWorkItem(null)}
+            onEdit={() => { setDetailWorkItem(null); setEditWorkItem(latest) }}
+          />
+        )
+      })()}
+
+      {/* ── Work item edit modal (opened from detail) ── */}
+      {editWorkItem && (
+        <WorkItemModal
+          workItem={editWorkItem}
+          readOnly={!canEditWI(editWorkItem)}
+          lockedMessage={
+            isWIClosed(editWorkItem) && canToggleWIStatus(editWorkItem)
+              ? 'Closed 상태입니다. 상세 화면에서 Open으로 전환 후 편집하세요.'
+              : undefined
+          }
+          onClose={() => setEditWorkItem(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: GridRow (drag-create + bar rendering per row)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface GridRowProps {
+  row:            RowData
+  rowAssignments: Assignment[]
+  dayWidth:       number
+  viewStart:      number
+  canCreate:      boolean
+  globalEdit:     boolean
+  canEditAsgn:    (a: Assignment) => boolean
+  canEditWI:      (wi: WorkItem)  => boolean
+  clientXToDay:   (clientX: number) => number
+  peopleMap:      Map<string, Person>
+  workItemMap:    Map<string, WorkItem>
+  colorMap:       Map<string, string>
+  holidaySet:     Set<number>
+  onUpdate:       (id: string, patch: { start: string; end_date: string }) => void
+  onUpdateWI:     (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
+  onOpenCreate:   (row: RowData, startNum: number, endNum: number) => void
+  onOpenEdit:     (a: Assignment) => void
+  onDropPerson:   (personId: string, row: RowData) => void
+  onOpenDetail?:  (wi: WorkItem) => void
+}
+
+function GridRow({
+  row, rowAssignments, dayWidth, viewStart,
+  canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
+  peopleMap, workItemMap, colorMap, holidaySet,
+  onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
+}: GridRowProps) {
+  const rowRef    = useRef<HTMLDivElement>(null)
+  const createRef = useRef<{ anchor: number } | null>(null)
+  const [ghost,   setGhost] = useState<{ start: number; end: number } | null>(null)
+
+  // §9.3: detect overlapping work assignments for same person (person view only)
+  const conflictIds = useMemo(() => {
+    if (row.kind !== 'person') return new Set<string>()
+    const work = rowAssignments.filter(a => a.kind === 'work')
+    const ids  = new Set<string>()
+    for (let i = 0; i < work.length; i++) {
+      const s1 = dateToNum(work[i].start), e1 = dateToNum(work[i].end_date)
+      for (let j = i + 1; j < work.length; j++) {
+        const s2 = dateToNum(work[j].start), e2 = dateToNum(work[j].end_date)
+        if (s1 <= e2 && s2 <= e1) { ids.add(work[i].id); ids.add(work[j].id) }
+      }
+    }
+    return ids
+  }, [row.kind, rowAssignments])
+
+  function startX(e: ReactPointerEvent | ReactMouseEvent) {
+    return clientXToDay((e as ReactPointerEvent).clientX ?? (e as ReactMouseEvent).clientX)
+  }
+
+  function handlePointerDown(e: ReactPointerEvent) {
+    if (!canCreate) return
+    if ((e.target as Element).closest('[data-assignment-bar],[data-band]')) return
+    e.preventDefault()
+    const day = startX(e)
+    createRef.current = { anchor: day }
+    setGhost({ start: day, end: day })
+    rowRef.current?.setPointerCapture(e.pointerId)
+  }
+
+  function handlePointerMove(e: ReactPointerEvent) {
+    if (!createRef.current) return
+    const day = startX(e)
+    setGhost({
+      start: Math.min(createRef.current.anchor, day),
+      end:   Math.max(createRef.current.anchor, day),
+    })
+  }
+
+  function handlePointerUp(e: ReactPointerEvent) {
+    if (!createRef.current) return
+    const day = startX(e)
+    const s   = Math.min(createRef.current.anchor, day)
+    const en  = Math.max(createRef.current.anchor, day)
+    createRef.current = null
+    setGhost(null)
+    onOpenCreate(row, s, en)
+  }
+
+  function handleDblClick(e: ReactMouseEvent) {
+    if (!canCreate) return
+    if ((e.target as Element).closest('[data-assignment-bar],[data-band]')) return
+    const day = clientXToDay(e.clientX)
+    onOpenCreate(row, day, day)
+  }
+
+  // Bar label — full name; CSS handles ellipsis for narrow bars (§5.2 §1)
+  function barLabel(a: Assignment): string {
+    if (row.kind === 'person') {
+      if (a.kind === 'leave') return a.leave_type ?? 'Leave'
+      const wi = workItemMap.get(a.work_item_id ?? '')
+      return wi?.name ?? '—'
+    }
+    if (row.kind === 'workitem-sub') {
+      const p = peopleMap.get(a.person_id)
+      return p?.name ?? '—'
+    }
+    // leave-person-sub: row already identifies the person; show leave type on the bar
+    if (row.kind === 'leave-person-sub') return a.leave_type ?? 'Leave'
+    // workitem or leave-all: show who the bar belongs to
+    const p = peopleMap.get(a.person_id)
+    return p?.name ?? '—'
+  }
+
+  // §5.6: compute pre-study boundary (main_start day) for a work assignment
+  function getPreStudyStart(a: Assignment): number | null {
+    if (a.kind !== 'work') return null
+    const wi = workItemMap.get(a.work_item_id ?? '')
+    if (!wi || wi.type !== 'project' || !wi.main_start) return null
+    return dateToNum(wi.main_start)
+  }
+
+  // Hover tooltip content (§5.2 §2 + §9.3 conflict warning + §5.6 pre-study)
+  function barTooltip(a: Assignment): TooltipInfo {
+    const wi        = workItemMap.get(a.work_item_id ?? '')
+    const p         = peopleMap.get(a.person_id)
+    const dateRange = `${a.start}  →  ${a.end_date}`
+    const isConf    = !!wi?.confidential && !globalEdit
+    const wiName    = isConf ? '(비공개)' : (wi?.name ?? '—')
+    const client    = isConf ? null : wi?.client
+    const conflictLine  = conflictIds.has(a.id) ? '⚠ 중복 배정 주의' : ''
+
+    // §5.6: pre-study overlap
+    const preStudyBound = getPreStudyStart(a)
+    const aStart        = dateToNum(a.start)
+    const preStudyLine  = (preStudyBound != null && aStart < preStudyBound) ? '◈ Pre-study 구간 포함' : ''
+
+    if (a.kind === 'leave') {
+      return {
+        title: a.leave_type ?? 'Leave',
+        lines: [p ? `대상: ${p.name}` : '', dateRange].filter(Boolean),
+      }
+    }
+    if (row.kind === 'person') {
+      return {
+        title: wiName,
+        lines: [
+          client ? `고객사: ${client}` : '',
+          dateRange,
+          preStudyLine,
+          conflictLine,
+        ].filter(Boolean),
+      }
+    }
+    // workitem, workitem-sub
+    return {
+      title: p?.name ?? '—',
+      lines: [
+        wiName + (client ? ` · ${client}` : ''),
+        dateRange,
+        preStudyLine,
+        conflictLine,
+      ].filter(Boolean),
+    }
+  }
+
+  // Drag-and-drop handlers (chip → workitem row)
+  function handleDragOver(e: ReactDragEvent) {
+    if (row.kind !== 'workitem' && row.kind !== 'workitem-sub') return
+    if (!canCreate) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  function handleDrop(e: ReactDragEvent) {
+    if (row.kind !== 'workitem' && row.kind !== 'workitem-sub') return
+    if (!canCreate) return
+    e.preventDefault()
+    const personId = e.dataTransfer.getData('text/plain')
+    if (personId) onDropPerson(personId, row)
+  }
+
+  return (
+    <div
+      ref={rowRef}
+      style={{ position: 'absolute', inset: 0, cursor: canCreate ? 'crosshair' : 'default' }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onDoubleClick={handleDblClick}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {/* Work item band (only in workitem view) */}
+      {row.kind === 'workitem' && (
+        <WorkItemBand
+          wi={row.workItem}
+          color={colorMap.get(row.workItem.id) ?? (TYPE_FAMILY[row.workItem.type]?.[0] ?? '#1e40af')}
+          dayWidth={dayWidth}
+          viewStart={viewStart}
+          canEdit={canEditWI(row.workItem)}
+          onUpdate={onUpdateWI}
+          onOpenDetail={onOpenDetail ? () => onOpenDetail(row.workItem) : undefined}
+        />
+      )}
+
+      {/* Ghost bar while drag-creating */}
+      {ghost && (
+        <GhostBar
+          startNum={ghost.start} endNum={ghost.end}
+          dayWidth={dayWidth} viewStart={viewStart}
+        />
+      )}
+
+      {/* Assignment bars */}
+      {rowAssignments.map(a => {
+        const wi    = workItemMap.get(a.work_item_id ?? '')
+        const color = barColorOf(wi, a.kind, a.leave_type, colorMap)
+        return (
+          <AssignmentBar
+            key={a.id}
+            assignment={a}
+            label={barLabel(a)}
+            color={color}
+            dayWidth={dayWidth}
+            viewStart={viewStart}
+            isLeave={a.kind === 'leave'}
+            holidaySet={holidaySet}
+            canEdit={canEditAsgn(a)}
+            hasConflict={conflictIds.has(a.id)}
+            preStudyStart={getPreStudyStart(a)}
+            tooltipInfo={barTooltip(a)}
+            onUpdate={onUpdate}
+            onClick={onOpenEdit}
+          />
+        )
+      })}
+
+      {/* Weekend / holiday work markers — absolute calendar position.
+          Rendered as siblings of AssignmentBar (NOT children), so they
+          stay fixed to the day column and do NOT move when the bar is dragged.
+          Each marker is a rotated square (diamond) centred on its day. */}
+      {rowAssignments.flatMap(a =>
+        (a.weekend_dates ?? []).map(dateStr => {
+          const dayNum = dateToNum(dateStr)
+          const cx     = (dayNum - viewStart) * dayWidth + dayWidth / 2
+          const SIZE   = Math.min(8, Math.max(5, dayWidth * 0.4))
+          return (
+            <div
+              key={`wm-${a.id}-${dateStr}`}
+              title={`주말/휴일 실근무: ${dateStr}`}
+              style={{
+                position:     'absolute',
+                left:         cx - SIZE / 2,
+                top:          ROW_H / 2 - SIZE / 2,
+                width:        SIZE,
+                height:       SIZE,
+                background:   '#f59e0b',
+                transform:    'rotate(45deg)',
+                borderRadius: 1,
+                pointerEvents:'none',
+                zIndex:       12,    // above bars (z=10)
+                boxShadow:    '0 0 0 1.5px #fff',
+              }}
+            />
+          )
+        })
+      )}
+    </div>
+  )
+}
