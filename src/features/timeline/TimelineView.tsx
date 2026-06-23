@@ -980,8 +980,9 @@ export default function TimelineView() {
   // Person view
   const [personSort,   setPersonSort]   = useState<'name' | 'rank' | 'role'>('rank')
   const [personDir,    setPersonDir]    = useState<'asc' | 'desc'>('asc')
-  const [showResigned, setShowResigned] = useState(false)
-  const [rankFilter,   setRankFilter]   = useState<string[]>([])
+  const [showResigned,      setShowResigned]      = useState(false)
+  const [rankFilter,        setRankFilter]        = useState<string[]>([])
+  const [personNameSearch,  setPersonNameSearch]  = useState('')
   // Work-item view
   const [wiSort,       setWiSort]       = useState<'start' | 'name' | 'status' | 'type'>('start')
   const [wiDir,        setWiDir]        = useState<'asc' | 'desc'>('asc')
@@ -1074,9 +1075,11 @@ export default function TimelineView() {
   // Build row list — filtered and sorted (§5.2 F-1.8)
   const rows: RowData[] = useMemo(() => {
     if (viewMode === 'person') {
+      const nameQ = personNameSearch.trim().toLowerCase()
       let fp = people
         .filter(p => showResigned || p.status !== 'resigned')
         .filter(p => rankFilter.length === 0 || rankFilter.includes(p.rank))
+        .filter(p => !nameQ || p.name.toLowerCase().includes(nameQ))
 
       fp = [...fp].sort((a, b) => {
         let cmp = 0
@@ -1152,7 +1155,7 @@ export default function TimelineView() {
     ]
   }, [
     viewMode, people, workItems, assignments, peopleMap,
-    personSort, personDir, showResigned, rankFilter,
+    personSort, personDir, showResigned, rankFilter, personNameSearch,
     wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter,
     expandedWorkItems, expandedLeave,
   ])
@@ -1460,6 +1463,16 @@ export default function TimelineView() {
             : (typeFilter.length > 0 || showClosed || clientFilter || hashFilter || fyFilter.mode !== 'all')
           ) && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
         </button>
+
+        {/* T-13: Person view name search */}
+        {viewMode === 'person' && (
+          <input
+            className="input py-0.5 px-2 text-[11px] w-32"
+            placeholder="이름 검색…"
+            value={personNameSearch}
+            onChange={e => setPersonNameSearch(e.target.value)}
+          />
+        )}
 
         {/* Legend — Work(파랑/노랑/회색 계열) · Leave(녹색 계열) */}
         <div className="ml-auto flex flex-wrap items-center gap-x-2.5 gap-y-1">
