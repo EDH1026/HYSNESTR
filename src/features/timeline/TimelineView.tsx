@@ -1537,13 +1537,13 @@ export default function TimelineView() {
         </div>
       </div>
 
-      {/* ── Person chip palette (T-11: both views) ── */}
-      <PersonChipStrip
+      {/* ── Person chip palette (T-11/T-12: both views, editor/admin only) ── */}
+      {globalEdit && <PersonChipStrip
         people={people}
         highlightedPersonIds={highlightedPersonIds}
         onToggleHighlight={toggleHighlight}
         onClearAll={() => setHighlightedPersonIds(new Set())}
-      />
+      />}
 
       {/* ── Filter / Sort panel ── */}
       {showFilter && (
