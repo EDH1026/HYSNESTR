@@ -378,7 +378,6 @@ interface AssignmentBarProps {
   hasConflict?: boolean     // §9.3: same person has overlapping work assignments
   preStudyStart?: number | null // §5.6: main_start day of the work item; bars before this get hatched pre-study style
   tooltipInfo?: TooltipInfo
-  highlighted?: boolean
   onUpdate:     (id: string, patch: { start: string; end_date: string }) => void
   onClick:      (a: Assignment) => void
 }
@@ -387,7 +386,7 @@ function AssignmentBar({
   assignment, label, color, dayWidth, viewStart,
   topOffset = BAR_PAD,
   height    = ROW_H - 2 * BAR_PAD,
-  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo, highlighted, onUpdate, onClick,
+  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo, onUpdate, onClick,
 }: AssignmentBarProps) {
   const origStart = useMemo(() => dateToNum(assignment.start),    [assignment.start])
   const origEnd   = useMemo(() => dateToNum(assignment.end_date), [assignment.end_date])
@@ -562,15 +561,6 @@ function AssignmentBar({
                   background: '#f97316', border: '1.5px solid white', zIndex: 20, pointerEvents: 'none',
                 }} />
               )}
-              {/* T-12 fluorescent highlight overlay */}
-              {highlighted && (
-                <div style={{
-                  position: 'absolute', inset: 0, borderRadius: 4,
-                  background: 'rgba(255, 234, 0, 0.4)',
-                  boxShadow: 'inset 0 0 0 2px rgba(202, 138, 4, 0.8)',
-                  pointerEvents: 'none', zIndex: 18,
-                }} />
-              )}
             </>
           )
         })()}
@@ -723,7 +713,14 @@ function GhostBar({ startNum, endNum, dayWidth, viewStart }: {
 // Sub-component: PersonChipStrip (§5.2 — drag-to-assign)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PersonChipStrip({ people }: { people: Person[] }) {
+interface PersonChipStripProps {
+  people:              Person[]
+  highlightedPersonIds: Set<string>
+  onToggleHighlight:   (personId: string) => void
+  onClearAll:          () => void
+}
+
+function PersonChipStrip({ people, highlightedPersonIds, onToggleHighlight, onClearAll }: PersonChipStripProps) {
   // §5.2 T-7: group active people by rank order, name-sorted within each group
   const groups = RANKS
     .map(rank => ({
@@ -737,7 +734,7 @@ function PersonChipStrip({ people }: { people: Person[] }) {
   return (
     <div className="flex-shrink-0 flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-1.5 border-b border-border bg-blue-50/50">
       <span className="text-[11px] text-blue-700 font-semibold flex-shrink-0 whitespace-nowrap">
-        인력 드래그 배정 →
+        인력 칩 →
       </span>
       {groups.map((g, gi) => (
         <Fragment key={g.rank}>
@@ -747,23 +744,41 @@ function PersonChipStrip({ people }: { people: Person[] }) {
           )}
           {/* Rank label */}
           <span className="text-[10px] font-bold text-blue-400 whitespace-nowrap flex-shrink-0">{g.rank}</span>
-          {/* Person chips */}
-          {g.people.map(p => (
-            <div
-              key={p.id}
-              draggable
-              onDragStart={e => {
-                e.dataTransfer.setData('text/plain', p.id)
-                e.dataTransfer.effectAllowed = 'copy'
-              }}
-              className="px-2 py-0.5 rounded-full bg-white border border-blue-200 text-[11px] text-blue-800 font-medium cursor-grab hover:bg-blue-50 hover:border-blue-400 hover:shadow-sm transition-all select-none"
-              title={`${p.name} (${p.rank}) — 작업 행으로 드래그`}
-            >
-              {p.name}
-            </div>
-          ))}
+          {/* Person chips — T-12: click toggles highlight, drag creates assignment */}
+          {g.people.map(p => {
+            const lit = highlightedPersonIds.has(p.id)
+            return (
+              <div
+                key={p.id}
+                draggable
+                onDragStart={e => {
+                  e.dataTransfer.setData('text/plain', p.id)
+                  e.dataTransfer.effectAllowed = 'copy'
+                }}
+                onClick={() => onToggleHighlight(p.id)}
+                className={[
+                  'px-2 py-0.5 rounded-full border text-[11px] font-medium cursor-grab transition-all select-none',
+                  lit
+                    ? 'bg-yellow-300 border-yellow-400 text-yellow-900 shadow-sm ring-1 ring-yellow-500'
+                    : 'bg-white border-blue-200 text-blue-800 hover:bg-blue-50 hover:border-blue-400 hover:shadow-sm',
+                ].join(' ')}
+                title={`${p.name} (${p.rank}) — 클릭: 선택/해제 · 드래그: 배정 생성`}
+              >
+                {p.name}
+              </div>
+            )
+          })}
         </Fragment>
       ))}
+      {/* T-12: clear-all button when any person is highlighted */}
+      {highlightedPersonIds.size > 0 && (
+        <button
+          onClick={onClearAll}
+          className="ml-1 text-[10px] text-blue-500 hover:text-blue-700 underline whitespace-nowrap flex-shrink-0"
+        >
+          전체 해제
+        </button>
+      )}
     </div>
   )
 }
@@ -1361,8 +1376,6 @@ export default function TimelineView() {
         onOpenCreate={openCreate}
         onOpenEdit={openEdit}
         onDropPerson={handleDropPerson}
-        highlightedPersonIds={highlightedPersonIds}
-        onToggleHighlight={toggleHighlight}
         onOpenDetail={row.kind === 'workitem' ? (wi) => setDetailWorkItem(wi) : undefined}
       />
     )
@@ -1505,8 +1518,13 @@ export default function TimelineView() {
         </div>
       </div>
 
-      {/* ── Person chip drag-assign strip (workitem view only) ── */}
-      {viewMode === 'workitem' && <PersonChipStrip people={people} />}
+      {/* ── Person chip palette (T-11: both views) ── */}
+      <PersonChipStrip
+        people={people}
+        highlightedPersonIds={highlightedPersonIds}
+        onToggleHighlight={toggleHighlight}
+        onClearAll={() => setHighlightedPersonIds(new Set())}
+      />
 
       {/* ── Filter / Sort panel ── */}
       {showFilter && (
@@ -1736,18 +1754,15 @@ interface GridRowProps {
   onUpdateWI:     (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
   onOpenCreate:   (row: RowData, startNum: number, endNum: number) => void
   onOpenEdit:     (a: Assignment) => void
-  onDropPerson:         (personId: string, row: RowData) => void
-  highlightedPersonIds: Set<string>
-  onToggleHighlight:    (personId: string) => void
-  onOpenDetail?:        (wi: WorkItem) => void
+  onDropPerson:  (personId: string, row: RowData) => void
+  onOpenDetail?: (wi: WorkItem) => void
 }
 
 function GridRow({
   row, rowAssignments, dayWidth, viewStart,
   canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
   peopleMap, workItemMap, colorMap, holidaySet,
-  onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson,
-  highlightedPersonIds, onToggleHighlight, onOpenDetail,
+  onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
 }: GridRowProps) {
   const rowRef    = useRef<HTMLDivElement>(null)
   const createRef = useRef<{ anchor: number } | null>(null)
@@ -1944,12 +1959,8 @@ function GridRow({
             hasConflict={conflictIds.has(a.id)}
             preStudyStart={getPreStudyStart(a)}
             tooltipInfo={barTooltip(a)}
-            highlighted={highlightedPersonIds.has(a.person_id)}
             onUpdate={onUpdate}
-            onClick={a => {
-              if (row.kind === 'person') onToggleHighlight(a.person_id)
-              onOpenEdit(a)
-            }}
+            onClick={onOpenEdit}
           />
         )
       })}
