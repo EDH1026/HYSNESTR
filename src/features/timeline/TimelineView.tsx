@@ -798,19 +798,21 @@ interface FilterBarProps {
   // person
   personSort:    PersonSortBy; personDir: 'asc' | 'desc'
   showResigned:  boolean;      rankFilter: string[]
+  personNameSearch: string
   // workitem
   wiSort:        WiSortBy;     wiDir: 'asc' | 'desc'
   showClosed:    boolean;      typeFilter: string[]
   clientFilter:  string;       hashFilter: string
   // callbacks
-  onPersonSort:  (by: PersonSortBy) => void
-  onShowResigned:(v: boolean) => void
-  onRankFilter:  (rank: string) => void
-  onWiSort:      (by: WiSortBy) => void
-  onShowClosed:  (v: boolean) => void
-  onTypeFilter:  (type: string) => void
-  onClientFilter:(v: string) => void
-  onHashFilter:  (v: string) => void
+  onPersonSort:      (by: PersonSortBy) => void
+  onShowResigned:    (v: boolean) => void
+  onRankFilter:      (rank: string) => void
+  onPersonNameSearch:(v: string) => void
+  onWiSort:          (by: WiSortBy) => void
+  onShowClosed:      (v: boolean) => void
+  onTypeFilter:      (type: string) => void
+  onClientFilter:    (v: string) => void
+  onHashFilter:      (v: string) => void
 }
 
 function SortBtn({ label, active, dir, onClick }: { label: string; active: boolean; dir: 'asc'|'desc'; onClick: () => void }) {
@@ -848,20 +850,28 @@ function ChipBtn({ label, active, onClick }: { label: string; active: boolean; o
 
 function FilterBar({
   viewMode,
-  personSort, personDir, showResigned, rankFilter,
+  personSort, personDir, showResigned, rankFilter, personNameSearch,
   wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter,
-  onPersonSort, onShowResigned, onRankFilter,
+  onPersonSort, onShowResigned, onRankFilter, onPersonNameSearch,
   onWiSort, onShowClosed, onTypeFilter, onClientFilter, onHashFilter,
 }: FilterBarProps) {
   // §9.3: debounce text-filter inputs (200 ms) so each keystroke doesn't rerender the whole grid
+  const [localName,   setLocalName]   = useState(personNameSearch)
   const [localClient, setLocalClient] = useState(clientFilter)
   const [localHash,   setLocalHash]   = useState(hashFilter)
+  const nameTimer   = useRef<ReturnType<typeof setTimeout>>()
   const clientTimer = useRef<ReturnType<typeof setTimeout>>()
   const hashTimer   = useRef<ReturnType<typeof setTimeout>>()
 
+  useEffect(() => setLocalName(personNameSearch),   [personNameSearch])
   useEffect(() => setLocalClient(clientFilter), [clientFilter])
   useEffect(() => setLocalHash(hashFilter),   [hashFilter])
 
+  function handleNameChange(val: string) {
+    setLocalName(val)
+    clearTimeout(nameTimer.current)
+    nameTimer.current = setTimeout(() => onPersonNameSearch(val), 200)
+  }
   function handleClientChange(val: string) {
     setLocalClient(val)
     clearTimeout(clientTimer.current)
@@ -883,6 +893,12 @@ function FilterBar({
             <SortBtn label="직급"  active={personSort === 'rank'} dir={personDir} onClick={() => onPersonSort('rank')} />
             <SortBtn label="역할"  active={personSort === 'role'} dir={personDir} onClick={() => onPersonSort('role')} />
           </div>
+          <input
+            className="input py-0.5 px-2 text-[11px] w-28"
+            placeholder="이름 검색…"
+            value={localName}
+            onChange={e => handleNameChange(e.target.value)}
+          />
           <div className="flex items-center gap-1">
             <span className="text-muted mr-1">직급</span>
             {RANKS.map(r => (
@@ -1464,16 +1480,6 @@ export default function TimelineView() {
           ) && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
         </button>
 
-        {/* T-13: Person view name search */}
-        {viewMode === 'person' && (
-          <input
-            className="input py-0.5 px-2 text-[11px] w-32"
-            placeholder="이름 검색…"
-            value={personNameSearch}
-            onChange={e => setPersonNameSearch(e.target.value)}
-          />
-        )}
-
         {/* Legend — Work(파랑/노랑/회색 계열) · Leave(녹색 계열) */}
         <div className="ml-auto flex flex-wrap items-center gap-x-2.5 gap-y-1">
           {/* ── Work 군 — representative first shade of each family ── */}
@@ -1546,6 +1552,7 @@ export default function TimelineView() {
             viewMode={viewMode}
             personSort={personSort}  personDir={personDir}
             showResigned={showResigned}  rankFilter={rankFilter}
+            personNameSearch={personNameSearch}
             wiSort={wiSort}          wiDir={wiDir}
             showClosed={showClosed}  typeFilter={typeFilter}
             clientFilter={clientFilter}  hashFilter={hashFilter}
@@ -1557,6 +1564,7 @@ export default function TimelineView() {
             onRankFilter={(r) => setRankFilter(prev =>
               prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r]
             )}
+            onPersonNameSearch={setPersonNameSearch}
             onWiSort={(by) => {
               if (wiSort === by) setWiDir(d => d === 'asc' ? 'desc' : 'asc')
               else { setWiSort(by); setWiDir('asc') }
