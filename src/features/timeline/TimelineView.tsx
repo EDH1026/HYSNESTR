@@ -600,18 +600,25 @@ function AssignmentBar({
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface RowLabelProps {
-  row:            RowData
-  color?:         string
-  isExpanded?:    boolean
-  onOpenDetail?:  () => void
-  onToggleExpand?: () => void
+  row:              RowData
+  color?:           string
+  isExpanded?:      boolean
+  highlighted?:     boolean
+  onOpenDetail?:    () => void
+  onToggleExpand?:  () => void
+  onDoubleClick?:   () => void
 }
 
-function RowLabel({ row, color = '#1e40af', isExpanded, onToggleExpand, onOpenDetail }: RowLabelProps) {
+function RowLabel({ row, color = '#1e40af', isExpanded, highlighted, onToggleExpand, onOpenDetail, onDoubleClick }: RowLabelProps) {
   if (row.kind === 'person') {
     const p = row.person
     return (
-      <div style={{ height: ROW_H }} className="flex items-center gap-2 px-3 border-b border-border/50">
+      <div
+        style={{ height: ROW_H, borderLeft: highlighted ? '3px solid #eab308' : '3px solid transparent' }}
+        className="flex items-center gap-2 pl-2 pr-3 border-b border-border/50 select-none"
+        onDoubleClick={onDoubleClick}
+        title={onDoubleClick ? `더블클릭: ${p.name} 하이라이트 토글` : undefined}
+      >
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-gray-900 truncate">{p.name}</div>
           <div className="text-[11px] text-muted">{p.rank}</div>
@@ -1639,12 +1646,22 @@ export default function TimelineView() {
                   (row.kind === 'workitem' && expandedWorkItems.has(row.workItem.id)) ||
                   (row.kind === 'leave-all' && expandedLeave)
                 }
+                highlighted={
+                  globalEdit && viewMode === 'person' && row.kind === 'person'
+                    ? highlightedPersonIds.has(row.person.id)
+                    : undefined
+                }
                 onToggleExpand={
                   row.kind === 'workitem'  ? () => toggleExpand(row.workItem.id) :
                   row.kind === 'leave-all' ? () => setExpandedLeave(v => !v) :
                   undefined
                 }
                 onOpenDetail={row.kind === 'workitem' ? () => setDetailWorkItem(row.workItem) : undefined}
+                onDoubleClick={
+                  globalEdit && viewMode === 'person' && row.kind === 'person'
+                    ? () => toggleHighlight(row.person.id)
+                    : undefined
+                }
               />
             ))}
           </div>
