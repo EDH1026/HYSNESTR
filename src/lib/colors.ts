@@ -1,11 +1,11 @@
 import type { WorkItem } from '@/types'
 
 // §4 / §9.1 / PRD v2.3 B.1 — type-based color families
-// project=blue, proposal=amber/yellow, pipeline=gray
+// project=blue, proposal=amber/yellow, pipeline=red (PRD v2.9)
 export const TYPE_FAMILY: Record<string, readonly string[]> = {
   project:  ['#1e40af', '#2563eb', '#1d4ed8', '#3b82f6', '#1e3a8a', '#60a5fa'],
   proposal: ['#d97706', '#f59e0b', '#b45309', '#fbbf24', '#92400e', '#f97316'],
-  pipeline: ['#6b7280', '#4b5563', '#374151', '#9ca3af', '#64748b', '#1f2937'],
+  pipeline: ['#dc2626', '#ef4444', '#b91c1c', '#f87171', '#991b1b', '#fca5a5'],
 }
 
 // PRD v2.3 B.1 LEAVE_GREEN — leave-type specific green/teal shades

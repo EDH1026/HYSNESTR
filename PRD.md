@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v2.8 |
+| 문서 버전 | v2.9 |
 | 프로그램명 | **전략팀 대시보드** |
 | 화면 표기 | 헤더·타이틀·푸터·코드 어디에도 **EY / EYP / EY-Parthenon 등 브랜드 표기·로고를 노출하지 않는다**(§9.0). 프로그램명은 "전략팀 대시보드"로만 표기. 로고는 `assets/logo.png`(정사각형 아이콘) 사용(§9.0). |
 | 아키텍처 | React + Supabase(Auth · Postgres · RLS) |
@@ -10,7 +10,7 @@
 | 계정↔인력 매칭 | `profiles.person_id` = `people.id` (관리자 수동 설정, LPN 미사용) |
 | 회계연도 | 7월 시작 / 6월 마감. FY26 = 2025-07-01 ~ 2026-06-30 |
 | 모바일 정책 | 화면 너비 768px 미만은 **모바일**로 판단. 계정 역할과 무관하게 **전면 읽기 전용**. (§6.6, §9.2) |
-| 색상 체계 | project=파랑 / proposal=노랑 / pipeline=회색 / Leave=녹색 (유형 파생, 수동지정 없음) |
+| 색상 체계 | project=파랑 / proposal=노랑 / pipeline=**빨강** / Leave=녹색 (유형 파생, 수동지정 없음) |
 | 직급 순서 | Partner > SM > M > Senior > Staff > Intern |
 
 ---
@@ -48,7 +48,7 @@
 ---
 
 ## 4. 색상 체계
-- project=파랑, proposal=노랑, pipeline=회색, Leave=녹색. 각 계열 내 자동 음영. 수동 지정 없음. 유형 변경 시 색 자동 전환.
+- project=파랑, proposal=노랑, pipeline=**빨강**, Leave=녹색. 각 계열 내 자동 음영. 수동 지정 없음. 유형 변경 시 색 자동 전환.
 
 ---
 
@@ -61,7 +61,7 @@
 | ID | 요구사항 |
 |---|---|
 | T-1 | 인력별/작업별 뷰. 월→주→일 자동 전환. 모든 날짜 MM/DD. 반응형. 막대 라벨 폭 확장 + 호버 툴팁(작업명·고객사·기간, 인력별 뷰는 인력명). |
-| T-2 | 색상: project 파랑 / proposal 노랑 / pipeline 회색 / Leave 녹색. 범례 구분. |
+| T-2 | 색상: project 파랑 / proposal 노랑 / pipeline **빨강** / Leave 녹색. 범례 구분. |
 | T-3 | 작업 행은 그 작업 자체의 일정(span)만 표시(인원 막대 미중첩). 인원별 일정은 드롭다운으로. |
 | T-4 | 작업 행·'휴가(전체)' 행 드롭다운 펼침/접힘. 작업 내 인원 직급순·이름순. |
 | T-5 | 작업항목 더블클릭 → 상세 페이지(§5.7). |
@@ -69,6 +69,8 @@
 | T-7 | 인력 칩 드래그 배정(직급 그룹·이름순). 주말·공휴일 음영, 오늘 세로선/버튼, 주말 실근무 마커 날짜 고정, 정렬·필터·FY/기간 필터, 중복 배정 경고, sticky 헤더/라벨. |
 | **T-8** | **헤더·본문 스크롤 동기화(버그 수정)**: 날짜 캘린더 헤더(상단)와 작업/인력 타임라인 본문(하단)이 **항상 동일한 가로 오프셋으로 함께 스크롤**되어야 한다. 특히 FY 필터로 조회 범위가 바뀌거나 좌우로 스크롤할 때 상·하단이 따로 움직여 날짜와 막대가 어긋나는 문제를 해결한다(공통 스크롤 컨테이너 또는 스크롤 위치 동기화). |
 | **T-9** | **FY 다중 걸침 처리**: 한 작업/배정의 기간이 둘 이상의 FY에 걸쳐 있어도, FY 필터·좌우 스크롤 시 헤더 날짜와 막대 위치가 어긋나지 않게 한다(좌표 계산 기준을 단일 viewport 원점으로 통일). |
+| **T-11** | **Timeline-Person 배정칩 표시**: 인력별(Person) 뷰에서도 작업별(Work Item) 뷰와 동일하게, 각 인력 행에 해당 인력이 배정된 **작업 배정칩(assignment chip)** 을 타임라인 막대로 표시한다. 칩에는 작업명·기간이 표시되며 색상은 §4의 유형 파생 색상을 따른다. |
+| **T-12** | **배정칩 형광 하이라이트(클라이언트 전용, 비저장)**: Timeline-Person 뷰에서 배정칩을 클릭하면 해당 칩이 **형광색(예: 밝은 노랑 `#FFFF00` 계열)으로 하이라이트** 된다. **복수의 인력을 동시에 선택할 수 있으며**, 선택된 인력의 칩은 Timeline-WorkItem 뷰에서도 동일하게 하이라이트 표시되어 드래그 배정 시 참고할 수 있다. 하이라이트 상태는 **클라이언트 인메모리(React 상태, Set\<personId\>)로만 관리**하며 DB에 저장하지 않고 다른 접속자와 공유하지 않는다. 칩 재클릭 시 해당 인력만 선택 해제, 빈 영역 클릭 시 전체 해제. |
 
 ### 5.3 일정 편집
 | ID | 요구사항 |
@@ -89,9 +91,9 @@
 | W-2 | Open/Closed 상태를 전 유형에서 설정. Closed 작업은 타임라인·CV 표시되나 신규 배정 선택 제외. |
 | W-3 | 필드: 유형, 이름, 전체 시작, 본 프로젝트 시작, 종료, 상태, Main Engagement No., Client, Description, 해시태그, Confidential. 목록 화면 필터·정렬(상태 포함). |
 | **W-3a** | **목록 표에 Confidential 표시**: work items 목록(표)에서 confidential 처리된 항목은 **잠금/표식(예: 자물쇠 아이콘 또는 "Confidential" 배지)으로 기밀임을 한눈에 식별**할 수 있게 표기한다. |
-| W-4 | Closed 전환 시 편집 잠금(전 역할): admin·editor에게도 읽기 전용. |
-| W-5 | 편집하려면 Open으로 되돌려야 함. Open/Closed 전환은 editor/admin만. |
-| W-6 | Closed 잠금은 서버(정책/트리거)에서도 강제(status를 open으로 되돌리는 전환만 허용). |
+| W-4 | Closed 전환 시 편집 잠금(전 역할): admin·editor에게도 이름·기간·필드 등 **일반 편집은 읽기 전용**. 단, **Open/Closed 상태 전환 버튼은 Closed 상태에서도 editor/admin에게 활성 유지**되어야 한다(Closed→Open 복귀 가능). |
+| W-5 | Closed 작업을 편집하려면 먼저 Open으로 되돌린 뒤 편집한다. Open↔Closed 상태 전환은 editor/admin만 가능. viewer는 상태 전환 버튼 비활성. |
+| W-6 | Closed 잠금은 서버(정책/트리거)에서도 강제: **status 컬럼 변경(open↔closed)은 허용**하되, Closed 상태에서 status 외 다른 컬럼 변경 및 Closed 작업 연결 assignments 쓰기는 거부한다. |
 
 ### 5.6 휴가 유형 관리
 - leave_types.active 토글. 비활성 유형은 신규 휴가 배정 선택 제외(기존 이력 유지).
@@ -146,7 +148,7 @@
 | viewer | editor와 동일 화면 **전면 읽기 전용**. ① 모든 편집 비활성(서버 RLS 차단), ② CV·Leave는 본인(person_id)만, ③ Pipeline 비노출, ④ Confidential 마스킹, ⑤ Admin·Migration 비노출 |
 
 ### 6.4 Closed 잠금(전 역할)
-- Closed 작업/배정은 admin·editor에게도 편집 비활성. Open 전환 후 편집(§5.5). 서버 강제.
+- Closed 작업은 admin·editor에게도 **일반 편집(필드 수정·배정 추가/삭제) 비활성**. 단 **Open으로 되돌리는 상태 전환 버튼은 editor/admin에게 항상 활성** 유지(§5.5 W-4). viewer는 상태 전환 버튼도 비활성. 서버 트리거는 status 변경은 허용하되 Closed 상태에서의 필드·배정 쓰기를 거부(§5.5 W-6).
 
 ### 6.5 RLS 요지
 - people: 인증 전 역할 SELECT 전체(쓰기 editor/admin). work_items: viewer는 type≠pipeline만(마스킹 work_items_safe). assignments: viewer는 pipeline 연결분 제외. accruals: viewer는 본인만. 전 테이블 쓰기 editor/admin + Closed 잠금. (부록 B)
@@ -216,7 +218,8 @@
 |---|---|
 | v2.0~v2.6 | 대시보드/Utilization, 생애주기, 권한 모델, FY(7월), 색상 고정, Pre-study 분리, Engagement 검색, Confidential, 휴가 +/-·자동배정, Undo/Redo, 작업 상세, 전 유형 Open/Closed·편집잠금, viewer 재설계, person_id 매칭, 스크롤 동기화, 브랜딩 제거 |
 | **v2.7 (이전 개정)** | **타임라인 렌더 윈도우 제한**(지정 시 기간 ±1개월, 미지정 시 당일 ±7개월만 표시, T-10), **로고를 assets/logo.png(정사각 아이콘)로 사용**(§9.0), **대시보드 프로젝트 Kick-off·종료 목록 추가**(지난주·이번주·다음주), **보안 점검·강화 섹션 추가(§12)** |
-| **v2.8 (본 개정)** | **모바일(768px 미만) 전면 읽기 전용 정책 추가**(§6.6, §9.2): 역할 무관 편집 비활성, 상단 안내 배너, useMobile() 훅 기반 실시간 감지. E-5 추가(§5.3). |
+| **v2.8 (이전 개정)** | **모바일(768px 미만) 전면 읽기 전용 정책 추가**(§6.6, §9.2): 역할 무관 편집 비활성, 상단 안내 배너, useMobile() 훅 기반 실시간 감지. E-5 추가(§5.3). |
+| **v2.9 (본 개정)** | ① **Closed 잠금 버그 수정**: Closed 상태에서도 editor/admin의 Open 전환 버튼 활성 유지(W-4·W-5·W-6·§6.4·B.3 수정). ② **Pipeline 색상 변경**: 회색→빨강(§4·T-2·B.1). ③ **Timeline-Person 배정칩 표시 및 형광 하이라이트**: T-11(인력 뷰 배정칩 표시), T-12(클릭 시 형광 하이라이트·**복수 인력 동시 선택** 가능·양 뷰 연동·클라이언트 인메모리 비저장·비공유). |
 
 ---
 
@@ -224,9 +227,10 @@
 
 ### B.1 색상 파생
 ```
-TYPE_FAMILY = { project: BLUE[], proposal: YELLOW[], pipeline: GRAY[] }
+TYPE_FAMILY = { project: BLUE[], proposal: YELLOW[], pipeline: RED[] }  // pipeline 회색→빨강(v2.9)
 LEAVE_GREEN = { 지정휴가:#10b981, 프로젝트휴가:#059669, 주말/휴일대체:#14b8a6,
                 포상휴가:#84cc16, 특별휴가:#22c55e, 지연보상:#0d9488, 리프레시:#34d399, 휴직:#84a98c }
+CHIP_HIGHLIGHT = #FFFF00 (형광 노랑, 클라이언트 인메모리 전용, 비저장·비공유, T-12)
 ```
 
 ### B.2 헬퍼 (person_id 매칭)
@@ -241,7 +245,7 @@ create or replace function my_person_id() returns uuid language sql stable as $$
 - people SELECT: 인증 전 역할 / 쓰기 editor·admin.
 - work_items SELECT: editor·admin 전체, viewer는 type<>'pipeline'. 읽기는 work_items_safe(기밀 마스킹) 경유.
 - assignments SELECT: viewer는 pipeline 연결분 제외. accruals SELECT: viewer는 person_id=my_person_id().
-- 전 테이블 쓰기 editor·admin. Closed: work_items UPDATE 시 status 외 변경 거부 + Closed 작업 연결 assignments 쓰기 거부 트리거.
+- 전 테이블 쓰기 editor·admin. Closed 트리거: work_items UPDATE 시 **status(open↔closed) 변경은 허용**, status 외 컬럼 변경은 거부 + Closed 작업 연결 assignments 쓰기 거부(§5.5 W-6).
 
 ### B.4 타임라인 스크롤 동기화(개념)
 ```

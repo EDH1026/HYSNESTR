@@ -11,8 +11,8 @@ import type { WorkItem, WorkItemType } from '@/types'
 const TYPES: WorkItemType[] = ['project', 'proposal', 'pipeline']
 const TYPE_STYLES: Record<WorkItemType, string> = {
   project:  'bg-brand-100 text-brand-700',
-  proposal: 'bg-emerald-100 text-emerald-700',
-  pipeline: 'bg-orange-100 text-orange-700',
+  proposal: 'bg-amber-100 text-amber-700',
+  pipeline: 'bg-red-100 text-red-700',
 }
 type SortField = 'start' | 'name' | 'status' | 'type'
 
@@ -260,9 +260,10 @@ export default function WorkItemsPage() {
           <WorkItemModal
             workItem={modal ?? undefined}
             readOnly={readOnly}
+            canToggleStatus={editable}
             lockedMessage={
               editable && isClosed
-                ? 'Closed 상태입니다. 목록에서 Open으로 전환 후 편집하세요.'
+                ? 'Closed 상태입니다. 아래 버튼으로 Open으로 전환 후 편집하세요.'
                 : undefined
             }
             onClose={() => setModal(false)}

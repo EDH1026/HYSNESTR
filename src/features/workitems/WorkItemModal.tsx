@@ -16,17 +16,18 @@ const WI_TYPES: { value: WorkItemType; label: string }[] = [
 const TYPE_ACTIVE_BG: Record<WorkItemType, string> = {
   project:  'bg-blue-700',
   proposal: 'bg-amber-600',
-  pipeline: 'bg-gray-600',
+  pipeline: 'bg-red-700',
 }
 
 interface Props {
-  workItem?:      WorkItem   // undefined → create mode
-  readOnly:       boolean
-  lockedMessage?: string     // shown when read-only due to Closed status (not role)
-  onClose:        () => void
+  workItem?:        WorkItem   // undefined → create mode
+  readOnly:         boolean
+  canToggleStatus?: boolean    // show "Open으로 전환" button even when readOnly (W-4 fix)
+  lockedMessage?:   string     // shown when read-only due to Closed status (not role)
+  onClose:          () => void
 }
 
-export default function WorkItemModal({ workItem, readOnly, lockedMessage, onClose }: Props) {
+export default function WorkItemModal({ workItem, readOnly, canToggleStatus, lockedMessage, onClose }: Props) {
   const isEdit = !!workItem
   const create = useCreateWorkItem()
   const update = useUpdateWorkItem()
@@ -387,7 +388,27 @@ export default function WorkItemModal({ workItem, readOnly, lockedMessage, onClo
             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
           </div>
         ) : (
-          <button type="button" onClick={onClose} className="btn-secondary w-full">Close</button>
+          <div className="flex gap-2 pt-1">
+            {isEdit && canToggleStatus && form.status === 'closed' && (
+              <button
+                type="button"
+                disabled={update.isPending}
+                className="btn-primary flex-1 gap-1.5"
+                onClick={async () => {
+                  try {
+                    await update.mutateAsync({ id: workItem!.id, status: 'open' } as any)
+                    push(makeWorkItemUpdate(workItem!, { status: 'open' }))
+                    onClose()
+                  } catch (e) {
+                    setErr(e instanceof Error ? e.message : 'Failed')
+                  }
+                }}
+              >
+                {update.isPending ? <Loader2 size={14} className="animate-spin" /> : 'Open으로 전환'}
+              </button>
+            )}
+            <button type="button" onClick={onClose} className="btn-secondary w-full">Close</button>
+          </div>
         )}
       </form>
     </Modal>

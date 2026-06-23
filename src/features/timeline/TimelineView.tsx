@@ -378,6 +378,7 @@ interface AssignmentBarProps {
   hasConflict?: boolean     // §9.3: same person has overlapping work assignments
   preStudyStart?: number | null // §5.6: main_start day of the work item; bars before this get hatched pre-study style
   tooltipInfo?: TooltipInfo
+  highlighted?: boolean
   onUpdate:     (id: string, patch: { start: string; end_date: string }) => void
   onClick:      (a: Assignment) => void
 }
@@ -386,7 +387,7 @@ function AssignmentBar({
   assignment, label, color, dayWidth, viewStart,
   topOffset = BAR_PAD,
   height    = ROW_H - 2 * BAR_PAD,
-  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo, onUpdate, onClick,
+  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo, highlighted, onUpdate, onClick,
 }: AssignmentBarProps) {
   const origStart = useMemo(() => dateToNum(assignment.start),    [assignment.start])
   const origEnd   = useMemo(() => dateToNum(assignment.end_date), [assignment.end_date])
@@ -559,6 +560,15 @@ function AssignmentBar({
                   position: 'absolute', top: 3, right: 3,
                   width: 7, height: 7, borderRadius: '50%',
                   background: '#f97316', border: '1.5px solid white', zIndex: 20, pointerEvents: 'none',
+                }} />
+              )}
+              {/* T-12 fluorescent highlight overlay */}
+              {highlighted && (
+                <div style={{
+                  position: 'absolute', inset: 0, borderRadius: 4,
+                  background: 'rgba(255, 234, 0, 0.4)',
+                  boxShadow: 'inset 0 0 0 2px rgba(202, 138, 4, 0.8)',
+                  pointerEvents: 'none', zIndex: 18,
                 }} />
               )}
             </>
@@ -944,8 +954,9 @@ export default function TimelineView() {
   const [dayWidth,          setDayWidth]          = useState(DAY_DEFAULT)
   const [labelW,            setLabelW]            = useState(() => window.innerWidth < 768 ? 120 : LABEL_W)
   const [modal,             setModal]             = useState<ModalState>({ open: false, mode: 'create', prefill: {} })
-  const [expandedWorkItems, setExpandedWorkItems] = useState<Set<string>>(new Set())
-  const [expandedLeave,     setExpandedLeave]     = useState(false)
+  const [expandedWorkItems,    setExpandedWorkItems]    = useState<Set<string>>(new Set())
+  const [expandedLeave,        setExpandedLeave]        = useState(false)
+  const [highlightedPersonIds, setHighlightedPersonIds] = useState<Set<string>>(new Set())
   const [detailWorkItem,    setDetailWorkItem]     = useState<WorkItem | null>(null)
   const [editWorkItem,      setEditWorkItem]       = useState<WorkItem | null>(null)
 
@@ -1216,6 +1227,21 @@ export default function TimelineView() {
     })
   }
 
+  // T-12: person highlight toggle (client-only, no DB, no sharing)
+  function toggleHighlight(personId: string) {
+    setHighlightedPersonIds(prev => {
+      const next = new Set(prev)
+      if (next.has(personId)) next.delete(personId); else next.add(personId)
+      return next
+    })
+  }
+  // T-12: click on empty grid area clears all highlights
+  function handleGridBodyClick(e: ReactMouseEvent) {
+    if (!(e.target as Element).closest('[data-assignment-bar]')) {
+      setHighlightedPersonIds(new Set())
+    }
+  }
+
   // Mutation callbacks
   function handleUpdateAssignment(id: string, patch: { start: string; end_date: string }) {
     const moved = assignments.find(a => a.id === id)
@@ -1335,6 +1361,8 @@ export default function TimelineView() {
         onOpenCreate={openCreate}
         onOpenEdit={openEdit}
         onDropPerson={handleDropPerson}
+        highlightedPersonIds={highlightedPersonIds}
+        onToggleHighlight={toggleHighlight}
         onOpenDetail={row.kind === 'workitem' ? (wi) => setDetailWorkItem(wi) : undefined}
       />
     )
@@ -1589,6 +1617,7 @@ export default function TimelineView() {
             ref={gridBodyRef}
             className="flex-1 overflow-auto"
             onScroll={handleGridScroll}
+            onClick={handleGridBodyClick}
           >
             {/* Date header — sticky at top, shares scrollLeft with canvas (T-8) */}
             <div
@@ -1707,15 +1736,18 @@ interface GridRowProps {
   onUpdateWI:     (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
   onOpenCreate:   (row: RowData, startNum: number, endNum: number) => void
   onOpenEdit:     (a: Assignment) => void
-  onDropPerson:   (personId: string, row: RowData) => void
-  onOpenDetail?:  (wi: WorkItem) => void
+  onDropPerson:         (personId: string, row: RowData) => void
+  highlightedPersonIds: Set<string>
+  onToggleHighlight:    (personId: string) => void
+  onOpenDetail?:        (wi: WorkItem) => void
 }
 
 function GridRow({
   row, rowAssignments, dayWidth, viewStart,
   canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
   peopleMap, workItemMap, colorMap, holidaySet,
-  onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
+  onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson,
+  highlightedPersonIds, onToggleHighlight, onOpenDetail,
 }: GridRowProps) {
   const rowRef    = useRef<HTMLDivElement>(null)
   const createRef = useRef<{ anchor: number } | null>(null)
@@ -1912,8 +1944,12 @@ function GridRow({
             hasConflict={conflictIds.has(a.id)}
             preStudyStart={getPreStudyStart(a)}
             tooltipInfo={barTooltip(a)}
+            highlighted={highlightedPersonIds.has(a.person_id)}
             onUpdate={onUpdate}
-            onClick={onOpenEdit}
+            onClick={a => {
+              if (row.kind === 'person') onToggleHighlight(a.person_id)
+              onOpenEdit(a)
+            }}
           />
         )
       })}
