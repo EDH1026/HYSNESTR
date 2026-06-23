@@ -12,7 +12,7 @@ import { useAllHolidays }    from '@/features/admin/hooks'
 import { useSettings }       from '@/features/admin/hooks'
 import { useAuth }           from '@/context/AuthContext'
 import {
-  today, dateToNum,
+  today, dateToNum, numToStr,
   monthStart, weekStart, nextWorkday, fyOf, fyRange, isWeekend,
 } from '@/lib/date'
 import { computeUtil } from '@/features/dashboard/utilization'
@@ -224,6 +224,16 @@ export default function DashboardPage() {
     return result.sort((a, b) => a.returnDay - b.returnDay)
   }, [isLoading, periods, people, assignments, isHoliday])
 
+  // ── 입사 예정자 ───────────────────────────────────────────
+  // People whose hire_date > today, sorted ascending
+  const upcomingHires = useMemo(() => {
+    if (isLoading) return [] as Person[]
+    const todayStr = numToStr(todayNum)
+    return people
+      .filter(p => p.hire_date && p.hire_date > todayStr)
+      .sort((a, b) => (a.hire_date ?? '').localeCompare(b.hire_date ?? ''))
+  }, [isLoading, people, todayNum])
+
   // ── 업무지정 필요대상 ──────────────────────────────────────
   // §5.1: Active people who have at least one unassigned business day in [today, today+6]
   const needsAssignment = useMemo(() => {
@@ -400,8 +410,8 @@ export default function DashboardPage() {
 
         </div>
 
-        {/* ── 금주 복귀 예정자 + 업무지정 필요대상 ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* ── 금주 복귀 예정자 + 입사 예정자 + 업무지정 필요대상 ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
           {/* 금주 복귀 예정자 */}
           <section className="card p-5">
@@ -425,6 +435,31 @@ export default function DashboardPage() {
                     </div>
                     <div className="flex-shrink-0 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-0.5">
                       복귀 {label(returnDay)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* 입사 예정자 */}
+          <section className="card p-5">
+            <h2 className="text-xs font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-brand-400 flex-shrink-0" />
+              입사 예정자
+            </h2>
+            {upcomingHires.length === 0 ? (
+              <p className="text-sm text-muted py-4 text-center">입사 예정자 없음</p>
+            ) : (
+              <div className="space-y-1">
+                {upcomingHires.map(p => (
+                  <div key={p.id} className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="pill bg-surface-100 text-gray-700 text-[11px]">{p.rank}</span>
+                      <span className="text-sm font-medium text-gray-900 truncate">{p.name}</span>
+                    </div>
+                    <div className="flex-shrink-0 text-xs font-medium text-brand-700 bg-brand-50 border border-brand-200 rounded px-2 py-0.5">
+                      입사 {label(dateToNum(p.hire_date!))}
                     </div>
                   </div>
                 ))}

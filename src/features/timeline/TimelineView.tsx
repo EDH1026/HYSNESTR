@@ -1325,7 +1325,7 @@ export default function TimelineView() {
     // §5.2 T-3: workitem rows show only the span band (WorkItemBand); per-person bars live in workitem-sub sub-rows only.
     let rowAssignments: Assignment[]
     if (row.kind === 'person') {
-      rowAssignments = assignments.filter(a => a.person_id === row.person.id)
+      rowAssignments = assignments.filter(a => a.person_id === row.person.id && a.kind === 'work')
     } else if (row.kind === 'workitem') {
       rowAssignments = []
     } else if (row.kind === 'workitem-sub') {
@@ -1702,7 +1702,7 @@ export default function TimelineView() {
           readOnly={!canEditWI(editWorkItem)}
           lockedMessage={
             isWIClosed(editWorkItem) && canToggleWIStatus(editWorkItem)
-              ? 'Closed 상태입니다. 상세 화면에서 Open으로 전환 후 편집하세요.'
+              ? 'Closed 상태입니다. 상세 화면의 상태 배지를 눌러 Open으로 전환하세요.'
               : undefined
           }
           onClose={() => setEditWorkItem(null)}

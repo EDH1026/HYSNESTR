@@ -263,7 +263,7 @@ export default function WorkItemsPage() {
             canToggleStatus={editable}
             lockedMessage={
               editable && isClosed
-                ? 'Closed 상태입니다. 아래 버튼으로 Open으로 전환 후 편집하세요.'
+                ? 'Closed 상태입니다. 위 Open/Closed 토글로 전환하세요.'
                 : undefined
             }
             onClose={() => setModal(false)}

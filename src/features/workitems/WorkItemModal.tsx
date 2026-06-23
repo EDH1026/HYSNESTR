@@ -22,7 +22,7 @@ const TYPE_ACTIVE_BG: Record<WorkItemType, string> = {
 interface Props {
   workItem?:        WorkItem   // undefined → create mode
   readOnly:         boolean
-  canToggleStatus?: boolean    // show "Open으로 전환" button even when readOnly (W-4 fix)
+  canToggleStatus?: boolean    // allow toggling Open/Closed even when readOnly (W-4)
   lockedMessage?:   string     // shown when read-only due to Closed status (not role)
   onClose:          () => void
 }
@@ -241,8 +241,20 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
               <button
                 key={s}
                 type="button"
-                disabled={readOnly}
-                onClick={() => setForm(f => ({ ...f, status: s }))}
+                disabled={readOnly && !canToggleStatus}
+                onClick={async () => {
+                  if (readOnly && canToggleStatus && isEdit) {
+                    try {
+                      await update.mutateAsync({ id: workItem!.id, status: s } as any)
+                      push(makeWorkItemUpdate(workItem!, { status: s }))
+                      onClose()
+                    } catch (e) {
+                      setErr(e instanceof Error ? e.message : 'Failed')
+                    }
+                  } else {
+                    setForm(f => ({ ...f, status: s }))
+                  }
+                }}
                 className={[
                   'flex-1 py-2 text-xs font-medium transition-colors',
                   form.status === s
@@ -250,7 +262,7 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
                       ? 'bg-emerald-500 text-white'
                       : 'bg-gray-500 text-white'
                     : 'bg-white text-gray-700 hover:bg-surface-50',
-                  readOnly ? 'cursor-default' : '',
+                  (readOnly && !canToggleStatus) ? 'cursor-default' : '',
                 ].join(' ')}
               >
                 {s === 'open' ? 'Open' : 'Closed'}
@@ -389,24 +401,6 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
           </div>
         ) : (
           <div className="flex gap-2 pt-1">
-            {isEdit && canToggleStatus && form.status === 'closed' && (
-              <button
-                type="button"
-                disabled={update.isPending}
-                className="btn-primary flex-1 gap-1.5"
-                onClick={async () => {
-                  try {
-                    await update.mutateAsync({ id: workItem!.id, status: 'open' } as any)
-                    push(makeWorkItemUpdate(workItem!, { status: 'open' }))
-                    onClose()
-                  } catch (e) {
-                    setErr(e instanceof Error ? e.message : 'Failed')
-                  }
-                }}
-              >
-                {update.isPending ? <Loader2 size={14} className="animate-spin" /> : 'Open으로 전환'}
-              </button>
-            )}
             <button type="button" onClick={onClose} className="btn-secondary w-full">Close</button>
           </div>
         )}
