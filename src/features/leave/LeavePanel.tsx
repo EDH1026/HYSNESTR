@@ -21,7 +21,7 @@ import { useCreateAssignment } from '@/features/timeline/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
 import { useHistory } from '@/lib/history'
 import { makeAccrualCreate, makeAccrualDelete } from '@/lib/historyOps'
-import { dateToNum, numToStr, today, isWeekend } from '@/lib/date'
+import { dateToNum, numToStr, today, isWeekend, nextWorkday } from '@/lib/date'
 import type { Person, AccrualType, LeaveType } from '@/types'
 
 const MANUAL_TYPES: AccrualType[] = ['포상휴가', '특별휴가', '프로젝트휴가', '주말/휴일대체']
@@ -186,10 +186,13 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
         for (let d = s; d <= e; d++) occupied.add(d)
       }
 
-      // §7.4: find totalDays available business days after the reference date
+      // §7.4 LV-1 (PRD v2.11): search starts from the first workday after the
+      // person's latest existing assignment end — not from the reference date.
+      const maxEnd = assignments.reduce((m, a) => Math.max(m, dateToNum(a.end_date)), 0)
+      const searchFrom = nextWorkday(Math.max(maxEnd, asOf), isHoliday)
       const availDays: number[] = []
-      let search = asOf + 1
-      while (availDays.length < totalDays && search < asOf + 730) {
+      let search = searchFrom
+      while (availDays.length < totalDays && search < searchFrom + 730) {
         if (!isWeekend(search) && !isHoliday(search) && !occupied.has(search))
           availDays.push(search)
         search++
