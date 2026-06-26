@@ -7,7 +7,7 @@
 
 import { useState, useRef } from 'react'
 import * as XLSX from 'xlsx'
-import { Upload, Download, AlertTriangle, CheckCircle2, Loader2, FileSpreadsheet } from 'lucide-react'
+import { Upload, Download, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react'
 import Modal from '@/components/Modal'
 import { supabase } from '@/lib/supabase'
 
@@ -176,10 +176,12 @@ async function commitBulkUpload(
     confidential:      String(r.confidential === 'true'),
   }))
 
-  const { data, error } = await supabase.rpc('bulk_upload_work_items', {
+  // bulk_upload_work_items is not in the generated DB types — cast to any to call it
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data, error } = await (supabase as any).rpc('bulk_upload_work_items', {
     p_mode: mode,
     p_rows: payload,
-  })
+  }) as { data: unknown; error: { message: string } | null }
   if (error) throw new Error(error.message)
   return data as { inserted: number; deleted_wi: number; deleted_as: number }
 }
