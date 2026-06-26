@@ -2,7 +2,7 @@
 // Enum-like string union types
 // ---------------------------------------------------------------------------
 
-export type GlobalRole = 'admin' | 'editor' | 'viewer'
+export type GlobalRole = 'admin' | 'editor' | 'viewer' | 'assistant'
 
 export type Rank = 'Partner' | 'SM' | 'M' | 'Senior' | 'Staff' | 'Intern'
 

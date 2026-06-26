@@ -104,9 +104,11 @@ export function computeLedger(
     accruals:    Accrual[]
     isHoliday:   (n: number) => boolean
     today:       number          // reference date (day number)
+    personRank?: string          // §7-7: 'Partner' skips all auto-accruals
   },
 ): Ledger {
-  const { workItems, assignments, accruals, isHoliday, today } = opts
+  const { workItems, assignments, accruals, isHoliday, today, personRank } = opts
+  const isPartner = personRank === 'Partner'
 
   // ── Filter to this person ──────────────────────────────────
   const myAssignments = assignments.filter(a => a.person_id === personId)
@@ -116,10 +118,11 @@ export function computeLedger(
   const wiMap = new Map(workItems.map(w => [w.id, w]))
 
   // ── Step 1: Auto-accruals from work assignments ────────────
+  // §7-7: Partner rank is excluded from all auto-accruals.
 
   const autoAccruals: LedgerAccrualEntry[] = []
 
-  for (const a of myAssignments) {
+  if (!isPartner) for (const a of myAssignments) {
     if (a.kind !== 'work' || !a.work_item_id) continue
     const wi = wiMap.get(a.work_item_id)
     if (!wi || wi.type === 'pipeline') continue   // pipeline: no accruals
@@ -190,7 +193,7 @@ export function computeLedger(
       .filter(Boolean) as string[],
   )
 
-  for (const wiId of projectWis) {
+  if (!isPartner) for (const wiId of projectWis) {
     const wi = wiMap.get(wiId)!
     const projectEndNum = dateToNum(wi.end_date)
 

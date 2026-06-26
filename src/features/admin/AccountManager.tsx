@@ -18,12 +18,13 @@ import { useAllPeople } from '@/features/people/hooks'
 import { useAuth } from '@/context/AuthContext'
 import type { GlobalRole } from '@/types'
 
-const ROLE_OPTIONS: GlobalRole[] = ['viewer', 'editor', 'admin']
+const ROLE_OPTIONS: GlobalRole[] = ['viewer', 'assistant', 'editor', 'admin']
 
 const ROLE_PILL: Record<GlobalRole, string> = {
-  admin:  'bg-brand-100 text-brand-700',
-  editor: 'bg-green-100 text-green-700',
-  viewer: 'bg-gray-100  text-gray-600',
+  admin:     'bg-brand-100 text-brand-700',
+  editor:    'bg-green-100 text-green-700',
+  viewer:    'bg-gray-100  text-gray-600',
+  assistant: 'bg-purple-100 text-purple-700',
 }
 
 export default function AccountManager() {

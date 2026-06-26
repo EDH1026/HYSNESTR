@@ -167,12 +167,13 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
 
   const ledger = useMemo(() => {
     if (isLoading) return null
-    return computeLedger(person.id, { workItems, assignments, accruals, isHoliday, today: asOf })
+    return computeLedger(person.id, { workItems, assignments, accruals, isHoliday, today: asOf, personRank: person.rank })
   }, [person.id, workItems, assignments, accruals, isHoliday, asOf, isLoading])
 
   const createAssignment = useCreateAssignment()
 
   async function handleAssignRemaining() {
+    if (person.rank === 'Partner') return  // §7-7: no auto-assign for Partners
     if (!ledger || ledger.remaining <= 0) return
     const totalDays = Math.floor(ledger.remaining)
     if (totalDays <= 0) return
@@ -511,7 +512,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
           )}
 
           {/* ── Assign remaining action ───────────────────── */}
-          {canEditThis && ledger.remaining > 0 && (
+          {canEditThis && ledger.remaining > 0 && person.rank !== 'Partner' && (
             <div className="rounded-md border border-brand-200 bg-brand-50 p-3 flex items-center justify-between">
               <div>
                 <p className="text-xs font-semibold text-brand-800">잔여 휴가 소진 배정</p>

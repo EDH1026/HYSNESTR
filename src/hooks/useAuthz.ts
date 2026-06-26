@@ -47,6 +47,11 @@ export function useAuthz() {
     }, null)
   }
 
+  /** Returns true for the assistant role (view-only, but sees all people). */
+  function isAssistant(): boolean {
+    return profile?.global_role === 'assistant' && profile.status === 'active'
+  }
+
   /**
    * Returns true when the current user can view the given resource.
    * Pass no resourceId for global checks (e.g. canView('global')).
@@ -57,6 +62,8 @@ export function useAuthz() {
     if (scope === 'person' && resourceId) {
       if (resourceId === myPersonId) return true
     }
+    // §6.3 assistant: can view all people (same as editor, but no write access)
+    if (scope === 'person' && isAssistant()) return true
     const level = effectiveLevel(scope, resourceId)
     return level !== null && meetsNeed(level, 'view')
   }
@@ -76,5 +83,5 @@ export function useAuthz() {
     return profile?.global_role === 'admin' && profile.status === 'active'
   }
 
-  return { canView, canEdit, isAdmin, isMobile }
+  return { canView, canEdit, isAdmin, isAssistant, isMobile }
 }

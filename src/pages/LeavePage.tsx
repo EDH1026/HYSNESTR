@@ -12,6 +12,7 @@ import { useAllAccruals } from '@/features/leave/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
 import { useAllHolidays } from '@/features/admin/hooks'
 import { useAuth } from '@/context/AuthContext'
+import { useAuthz } from '@/hooks/useAuthz'
 import LeavePanel from '@/features/leave/LeavePanel'
 import FilterChip from '@/components/FilterChip'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
@@ -23,7 +24,8 @@ const RANK_ORDER: Record<Rank, number> = { Partner: 0, SM: 1, M: 2, Senior: 3, S
 
 export default function LeavePage() {
   const { profile } = useAuth()
-  const isViewer = profile?.global_role === 'viewer'
+  const { isAssistant } = useAuthz()
+  const isViewer = profile?.global_role === 'viewer' && !isAssistant()
 
   const { data: people      = [], isLoading: lP } = useAllPeople()
   const { data: assignments = [], isLoading: lA } = useAllAssignments()
@@ -77,7 +79,7 @@ export default function LeavePage() {
     if (isLoading || isViewer) return []
     return filteredPeople.map(p => {
       const ledger = computeLedger(p.id, {
-        workItems, assignments, accruals, isHoliday, today: todayNum,
+        workItems, assignments, accruals, isHoliday, today: todayNum, personRank: p.rank,
       })
       return { person: p, ledger }
     })

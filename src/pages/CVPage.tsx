@@ -4,6 +4,7 @@ import { useAllPeople } from '@/features/people/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
 import { useAllAssignments } from '@/features/timeline/hooks'
 import { useAuth } from '@/context/AuthContext'
+import { useAuthz } from '@/hooks/useAuthz'
 import CvPanel, { computeCv } from '@/features/cv/CvPanel'
 import FilterChip from '@/components/FilterChip'
 import type { Person, Rank } from '@/types'
@@ -51,7 +52,8 @@ function ViewerCvView({ people, workItems, assignments, personId }: {
 
 export default function CVPage() {
   const { profile } = useAuth()
-  const isViewer = profile?.global_role === 'viewer'
+  const { isAssistant } = useAuthz()
+  const isViewer = profile?.global_role === 'viewer' && !isAssistant()
 
   const { data: people      = [], isLoading: lP } = useAllPeople()
   const { data: workItems   = [], isLoading: lW } = useAllWorkItems()

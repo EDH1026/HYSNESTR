@@ -604,17 +604,18 @@ interface RowLabelProps {
   color?:           string
   isExpanded?:      boolean
   highlighted?:     boolean
+  rowHeight?:       number   // T-16: variable height for multi-lane person rows
   onOpenDetail?:    () => void
   onToggleExpand?:  () => void
   onDoubleClick?:   () => void
 }
 
-function RowLabel({ row, color = '#1e40af', isExpanded, highlighted, onToggleExpand, onOpenDetail, onDoubleClick }: RowLabelProps) {
+function RowLabel({ row, color = '#1e40af', isExpanded, highlighted, rowHeight, onToggleExpand, onOpenDetail, onDoubleClick }: RowLabelProps) {
   if (row.kind === 'person') {
     const p = row.person
     return (
       <div
-        style={{ height: ROW_H, borderLeft: highlighted ? '3px solid #eab308' : '3px solid transparent' }}
+        style={{ height: rowHeight ?? ROW_H, borderLeft: highlighted ? '3px solid #eab308' : '3px solid transparent' }}
         className="flex items-center gap-2 pl-2 pr-3 border-b border-border/50 select-none"
         onDoubleClick={onDoubleClick}
         title={onDoubleClick ? `더블클릭: ${p.name} 하이라이트 토글` : undefined}
@@ -965,6 +966,28 @@ function FilterBar({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// T-16: greedy lane packing for overlapping assignments (Person view)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function packLanes(
+  asgns: Assignment[],
+): { laneMap: Map<string, number>; laneCount: number } {
+  const sorted   = [...asgns].sort((a, b) => a.start.localeCompare(b.start))
+  const laneMap  = new Map<string, number>()
+  const laneEnds: string[] = []
+  for (const a of sorted) {
+    let placed = -1
+    for (let i = 0; i < laneEnds.length; i++) {
+      if (laneEnds[i] < a.start) { placed = i; break }
+    }
+    if (placed === -1) { placed = laneEnds.length; laneEnds.push('') }
+    laneMap.set(a.id, placed)
+    laneEnds[placed] = a.end_date
+  }
+  return { laneMap, laneCount: Math.max(1, laneEnds.length) }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main component: TimelineView
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1183,6 +1206,29 @@ export default function TimelineView() {
     expandedWorkItems, expandedLeave,
   ])
 
+  // T-16: lane packing per person row (only in person view)
+  const rowLaneData = useMemo(() => {
+    const m = new Map<string, { laneMap: Map<string, number>; laneCount: number }>()
+    if (viewMode !== 'person') return m
+    for (const row of rows) {
+      if (row.kind !== 'person') continue
+      m.set(row.key, packLanes(assignments.filter(a => a.person_id === row.person.id)))
+    }
+    return m
+  }, [rows, assignments, viewMode])
+
+  const rowHeights = useMemo(
+    () => rows.map(row => (rowLaneData.get(row.key)?.laneCount ?? 1) * ROW_H),
+    [rows, rowLaneData],
+  )
+
+  const rowTops = useMemo(() => {
+    const tops: number[] = []
+    let acc = 0
+    for (const h of rowHeights) { tops.push(acc); acc += h }
+    return tops
+  }, [rowHeights])
+
   // Scroll sync — vertical only (header X is native via single container)
   function handleGridScroll() {
     if (isSyncingRef.current) return
@@ -1386,6 +1432,7 @@ export default function TimelineView() {
         key={row.key}
         row={row}
         rowAssignments={rowAssignments}
+        laneMap={rowLaneData.get(row.key)?.laneMap}
         dayWidth={dayWidth}
         viewStart={viewStart}
         canCreate={canCreate}
@@ -1637,10 +1684,11 @@ export default function TimelineView() {
             className="flex-1 overflow-y-auto overflow-x-hidden"
             onScroll={handleLabelsScroll}
           >
-            {rows.map(row => (
+            {rows.map((row, i) => (
               <RowLabel
                 key={row.key}
                 row={row}
+                rowHeight={rowHeights[i]}
                 color={row.kind === 'workitem' ? (colorMap.get(row.workItem.id) ?? (TYPE_FAMILY[row.workItem.type]?.[0] ?? '#1e40af')) : undefined}
                 isExpanded={
                   (row.kind === 'workitem' && expandedWorkItems.has(row.workItem.id)) ||
@@ -1695,7 +1743,7 @@ export default function TimelineView() {
             <div
               style={{
                 width: totalWidth,
-                minHeight: rows.length * ROW_H,
+                minHeight: rowHeights.reduce((s, h) => s + h, 0),
                 position: 'relative',
                 isolation: 'isolate',  // contain bar z-indices below sticky header (z=30)
               }}
@@ -1712,8 +1760,8 @@ export default function TimelineView() {
                 <div
                   key={row.key}
                   style={{
-                    position: 'absolute', top: i * ROW_H, left: 0,
-                    width: totalWidth, height: ROW_H,
+                    position: 'absolute', top: rowTops[i], left: 0,
+                    width: totalWidth, height: rowHeights[i],
                     borderBottom: '1px solid rgba(0,0,0,0.05)',
                   }}
                 >
@@ -1777,6 +1825,7 @@ export default function TimelineView() {
 interface GridRowProps {
   row:            RowData
   rowAssignments: Assignment[]
+  laneMap?:       Map<string, number>   // T-16: lane index per assignment id
   dayWidth:       number
   viewStart:      number
   canCreate:      boolean
@@ -1797,7 +1846,7 @@ interface GridRowProps {
 }
 
 function GridRow({
-  row, rowAssignments, dayWidth, viewStart,
+  row, rowAssignments, laneMap, dayWidth, viewStart,
   canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
   peopleMap, workItemMap, colorMap, holidaySet,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
@@ -1981,6 +2030,7 @@ function GridRow({
 
       {/* Assignment bars */}
       {rowAssignments.map(a => {
+        const lane  = laneMap?.get(a.id) ?? 0
         const wi    = workItemMap.get(a.work_item_id ?? '')
         const color = barColorOf(wi, a.kind, a.leave_type, colorMap)
         return (
@@ -1991,6 +2041,7 @@ function GridRow({
             color={color}
             dayWidth={dayWidth}
             viewStart={viewStart}
+            topOffset={lane * ROW_H + BAR_PAD}
             isLeave={a.kind === 'leave'}
             holidaySet={holidaySet}
             canEdit={canEditAsgn(a)}
@@ -2007,8 +2058,9 @@ function GridRow({
           Rendered as siblings of AssignmentBar (NOT children), so they
           stay fixed to the day column and do NOT move when the bar is dragged.
           Each marker is a rotated square (diamond) centred on its day. */}
-      {rowAssignments.flatMap(a =>
-        (a.weekend_dates ?? []).map(dateStr => {
+      {rowAssignments.flatMap(a => {
+        const lane = laneMap?.get(a.id) ?? 0
+        return (a.weekend_dates ?? []).map(dateStr => {
           const dayNum = dateToNum(dateStr)
           const cx     = (dayNum - viewStart) * dayWidth + dayWidth / 2
           const SIZE   = Math.min(8, Math.max(5, dayWidth * 0.4))
@@ -2019,7 +2071,7 @@ function GridRow({
               style={{
                 position:     'absolute',
                 left:         cx - SIZE / 2,
-                top:          ROW_H / 2 - SIZE / 2,
+                top:          lane * ROW_H + ROW_H / 2 - SIZE / 2,
                 width:        SIZE,
                 height:       SIZE,
                 background:   '#f59e0b',
@@ -2032,7 +2084,7 @@ function GridRow({
             />
           )
         })
-      )}
+      })}
     </div>
   )
 }
