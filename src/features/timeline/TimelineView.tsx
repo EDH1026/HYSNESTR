@@ -29,7 +29,7 @@ import {
   dateToNum, numToStr, today, isWeekend, isSaturday,
   monthBoundaries, weekBoundaries, nextMonthStart, monthStart, addMonths,
   monthYearLabel, dayOfMonthLabel, weekdayLabel, numToDate,
-  snapLeaveEnd, snapLeaveStart, workdayCount, nextWorkday,
+  snapLeaveEnd, workdayCount, nextWorkday,
 } from '@/lib/date'
 import { useAllPeople }                          from '@/features/people/hooks'
 import { useAllWorkItems, useUpdateWorkItem }     from '@/features/workitems/hooks'
@@ -1343,11 +1343,13 @@ export default function TimelineView() {
     const isHol    = (n: number) => holidaySet.has(n)
     const siblings = assignments.filter(a => a.person_id === moved.person_id && a.id !== id)
 
-    // §5.3 E-4: cascade-push sibling blocks in direction of movement
+    // E-4/E-6: downstream-only cascade. Moving right → push following blocks.
+    // Moving left → clamp the dragged block against preceding blocks (no leftward push).
     const pushPatches: { id: string; start: string; end_date: string }[] = []
+    let effectivePatch = patch
 
     if (newStart >= oldStart) {
-      // Moved right (or resize-right): push overlapping siblings rightward
+      // Moved right (or resize-right): push overlapping siblings rightward (downstream only)
       let rightEdge = newEnd
       for (const a of [...siblings].sort((a, b) => dateToNum(a.start) - dateToNum(b.start))) {
         const aS = dateToNum(a.start), aE = dateToNum(a.end_date)
@@ -1360,27 +1362,28 @@ export default function TimelineView() {
         rightEdge = nE
       }
     } else {
-      // Moved left (or resize-left): push overlapping siblings leftward
-      let leftEdge = newStart
-      for (const a of [...siblings].sort((a, b) => dateToNum(b.end_date) - dateToNum(a.end_date))) {
-        const aS = dateToNum(a.start), aE = dateToNum(a.end_date)
-        if (aS > newEnd || aE < leftEdge) continue   // no overlap with cascade zone
-        const nE = leftEdge - 1
-        const nS = a.kind === 'leave'
-          ? snapLeaveStart(nE, Math.max(1, workdayCount(aS, aE, holidaySet)), isHol)
-          : nE - (aE - aS)
-        pushPatches.push({ id: a.id, start: numToStr(nS), end_date: numToStr(nE) })
-        leftEdge = nS
+      // E-6: Moved/resized left — clamp against preceding blocks, no leftward cascade.
+      // "Preceding" = started before our original position AND now overlaps our new range.
+      const preceding = siblings.filter(
+        a => dateToNum(a.start) < oldStart && dateToNum(a.end_date) >= newStart,
+      )
+      if (preceding.length > 0) {
+        const maxPrecEnd = preceding.reduce((m, a) => Math.max(m, dateToNum(a.end_date)), -1)
+        const clampedStart = nextWorkday(maxPrecEnd, isHol)
+        if (clampedStart > newStart) {
+          effectivePatch = { start: numToStr(clampedStart), end_date: patch.end_date }
+        }
       }
+      // pushPatches stays empty — no leftward cascade
     }
 
     // Fire moved block first, then cascade patches
-    updateAssignment.mutate({ id, ...patch })
+    updateAssignment.mutate({ id, ...effectivePatch })
     for (const p of pushPatches) updateAssignment.mutate(p)
 
     // Build undo/redo pairs covering the moved block and all cascaded siblings
     const allPairs = [
-      { id, oldStart: moved.start, oldEnd: moved.end_date, newStart: patch.start, newEnd: patch.end_date },
+      { id, oldStart: moved.start, oldEnd: moved.end_date, newStart: effectivePatch.start, newEnd: effectivePatch.end_date },
       ...pushPatches.map(pp => {
         const orig = assignments.find(a => a.id === pp.id)
         return { id: pp.id, oldStart: orig?.start ?? pp.start, oldEnd: orig?.end_date ?? pp.end_date, newStart: pp.start, newEnd: pp.end_date }
