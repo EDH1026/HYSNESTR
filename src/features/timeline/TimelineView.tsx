@@ -378,6 +378,9 @@ interface AssignmentBarProps {
   hasConflict?: boolean     // §9.3: same person has overlapping work assignments
   preStudyStart?: number | null // §5.6: main_start day of the work item; bars before this get hatched pre-study style
   tooltipInfo?: TooltipInfo
+  clampStart?:  number          // E-6: earliest allowed start day for non-Partner live drag preview
+  onDragLive?:  (id: string, liveStart: number, liveEnd: number) => void  // T-16: real-time lane recompute
+  onDragEnd?:   () => void      // T-16: clear live drag state
   onUpdate:     (id: string, patch: { start: string; end_date: string }) => void
   onClick:      (a: Assignment) => void
 }
@@ -386,7 +389,9 @@ function AssignmentBar({
   assignment, label, color, dayWidth, viewStart,
   topOffset = BAR_PAD,
   height    = ROW_H - 2 * BAR_PAD,
-  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo, onUpdate, onClick,
+  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo,
+  clampStart, onDragLive, onDragEnd,
+  onUpdate, onClick,
 }: AssignmentBarProps) {
   const origStart = useMemo(() => dateToNum(assignment.start),    [assignment.start])
   const origEnd   = useMemo(() => dateToNum(assignment.end_date), [assignment.end_date])
@@ -419,8 +424,12 @@ function AssignmentBar({
     e.preventDefault()
     const rect  = e.currentTarget.getBoundingClientRect()
     const posX  = e.clientX - rect.left
-    const kind  = posX <= HANDLE_W ? 'resize-left'
-                : posX >= rect.width - HANDLE_W ? 'resize-right'
+    const barW  = rect.width
+    // E-7: resize handles only active when bar is wide enough to show them visually (prevents
+    //      "cursor says move, bar actually resizes" on 1-2 day blocks)
+    const hW    = barW > HANDLE_W * 3 ? HANDLE_W : 0
+    const kind  = hW > 0 && posX <= hW          ? 'resize-left'
+                : hW > 0 && posX >= barW - hW   ? 'resize-right'
                 : 'move'
     const origWorkdays = isLeave ? workdayCount(liveStart, liveEnd, holidaySet) : 0
     dragRef.current = { kind, origStart: liveStart, origEnd: liveEnd, startX: e.clientX, moved: false, origWorkdays }
@@ -436,17 +445,25 @@ function AssignmentBar({
     if (kind === 'move') {
       const rawStart = os + dd
       // §5.3 #2: snap leave start to first workday on/after the dragged position
-      const newStart = isLeave ? nextWorkday(rawStart - 1, isHolidayFn) : rawStart
+      let newStart = isLeave ? nextWorkday(rawStart - 1, isHolidayFn) : rawStart
+      // E-6: real-time clamp — prevent leftward overlap with preceding blocks (non-Partner only)
+      if (clampStart !== undefined && newStart < clampStart) newStart = clampStart
+      const newEnd = isLeave && origWorkdays > 0
+        ? snapLeaveEnd(newStart, origWorkdays, isHolidayFn)
+        : oe + (newStart - os)
       setLiveStart(newStart)
-      if (isLeave && origWorkdays > 0) {
-        setLiveEnd(snapLeaveEnd(newStart, origWorkdays, isHolidayFn))
-      } else {
-        setLiveEnd(oe + dd)
-      }
+      setLiveEnd(newEnd)
+      onDragLive?.(assignment.id, newStart, newEnd)
     } else if (kind === 'resize-left') {
-      setLiveStart(Math.min(os + dd, oe))
+      let rawLeft = os + dd
+      if (clampStart !== undefined) rawLeft = Math.max(rawLeft, clampStart)
+      const newStart = Math.min(rawLeft, oe)
+      setLiveStart(newStart)
+      onDragLive?.(assignment.id, newStart, oe)
     } else {
-      setLiveEnd(Math.max(oe + dd, os))
+      const newEnd = Math.max(oe + dd, os)
+      setLiveEnd(newEnd)
+      onDragLive?.(assignment.id, os, newEnd)
     }
   }
 
@@ -459,12 +476,14 @@ function AssignmentBar({
     } else {
       onUpdate(assignment.id, { start: numToStr(liveStart), end_date: numToStr(liveEnd) })
     }
+    onDragEnd?.()
   }
 
   function onPointerCancel() {
     dragRef.current = null
     setLiveStart(origStart)
     setLiveEnd(origEnd)
+    onDragEnd?.()
   }
 
   return (
@@ -1020,6 +1039,12 @@ export default function TimelineView() {
   const [highlightedPersonIds, setHighlightedPersonIds] = useState<Set<string>>(new Set())
   const [detailWorkItem,    setDetailWorkItem]     = useState<WorkItem | null>(null)
   const [editWorkItem,      setEditWorkItem]       = useState<WorkItem | null>(null)
+  // T-16: live drag position so Partner lane counts recompute in real-time during drag
+  const [draggingLive, setDraggingLive] = useState<{ id: string; start: number; end: number } | null>(null)
+  const handleDragLive = useCallback((id: string, liveStart: number, liveEnd: number) => {
+    setDraggingLive({ id, start: liveStart, end: liveEnd })
+  }, [])
+  const handleDragEnd = useCallback(() => setDraggingLive(null), [])
 
   // ─── Sort / filter state (§5.2 F-1.8) ────────────────────────────────────
   const [showFilter,   setShowFilter]   = useState(false)
@@ -1212,10 +1237,19 @@ export default function TimelineView() {
     if (viewMode !== 'person') return m
     for (const row of rows) {
       if (row.kind !== 'person') continue
-      m.set(row.key, packLanes(assignments.filter(a => a.person_id === row.person.id)))
+      let rowAsgns = assignments.filter(a => a.person_id === row.person.id)
+      // T-16: apply live drag position for Partner rows so lanes recompute in real-time during drag
+      if (draggingLive && row.person.rank === 'Partner') {
+        rowAsgns = rowAsgns.map(a =>
+          a.id === draggingLive.id
+            ? { ...a, start: numToStr(draggingLive.start), end_date: numToStr(draggingLive.end) }
+            : a
+        )
+      }
+      m.set(row.key, packLanes(rowAsgns))
     }
     return m
-  }, [rows, assignments, viewMode])
+  }, [rows, assignments, viewMode, draggingLive])
 
   const rowHeights = useMemo(
     () => rows.map(row => (rowLaneData.get(row.key)?.laneCount ?? 1) * ROW_H),
@@ -1343,6 +1377,22 @@ export default function TimelineView() {
     const isHol    = (n: number) => holidaySet.has(n)
     const siblings = assignments.filter(a => a.person_id === moved.person_id && a.id !== id)
 
+    // T-16: Partners' work assignments may overlap freely — skip cascade push and clamp
+    const movedPerson = peopleMap.get(moved.person_id)
+    if (movedPerson?.rank === 'Partner' && moved.kind === 'work') {
+      updateAssignment.mutate({ id, ...patch })
+      push(makeAssignmentDrag('배정 이동', [{
+        id, oldStart: moved.start, oldEnd: moved.end_date, newStart: patch.start, newEnd: patch.end_date,
+      }]))
+      return
+    }
+
+    // T-16a: Partner leave → only leave siblings participate in conflict checks
+    // (Partner work siblings are transparent; leave-leave overlap is still forbidden)
+    const effectiveSiblings = (movedPerson?.rank === 'Partner' && moved.kind === 'leave')
+      ? siblings.filter(s => s.kind === 'leave')
+      : siblings
+
     // E-4/E-6: downstream-only cascade. Moving right → push following blocks.
     // Moving left → clamp the dragged block against preceding blocks (no leftward push).
     const pushPatches: { id: string; start: string; end_date: string }[] = []
@@ -1351,7 +1401,7 @@ export default function TimelineView() {
     if (newStart >= oldStart) {
       // Moved right (or resize-right): push overlapping siblings rightward (downstream only)
       let rightEdge = newEnd
-      for (const a of [...siblings].sort((a, b) => dateToNum(a.start) - dateToNum(b.start))) {
+      for (const a of [...effectiveSiblings].sort((a, b) => dateToNum(a.start) - dateToNum(b.start))) {
         const aS = dateToNum(a.start), aE = dateToNum(a.end_date)
         if (aE < newStart || aS > rightEdge) continue   // no overlap with cascade zone
         const nS = rightEdge + 1
@@ -1364,7 +1414,7 @@ export default function TimelineView() {
     } else {
       // E-6: Moved/resized left — clamp against preceding blocks, no leftward cascade.
       // "Preceding" = started before our original position AND now overlaps our new range.
-      const preceding = siblings.filter(
+      const preceding = effectiveSiblings.filter(
         a => dateToNum(a.start) < oldStart && dateToNum(a.end_date) >= newStart,
       )
       if (preceding.length > 0) {
@@ -1453,6 +1503,8 @@ export default function TimelineView() {
         onOpenEdit={openEdit}
         onDropPerson={handleDropPerson}
         onOpenDetail={row.kind === 'workitem' ? (wi) => setDetailWorkItem(wi) : undefined}
+        onDragLive={handleDragLive}
+        onDragEnd={handleDragEnd}
       />
     )
   }
@@ -1846,6 +1898,8 @@ interface GridRowProps {
   onOpenEdit:     (a: Assignment) => void
   onDropPerson:  (personId: string, row: RowData) => void
   onOpenDetail?: (wi: WorkItem) => void
+  onDragLive?:   (id: string, liveStart: number, liveEnd: number) => void
+  onDragEnd?:    () => void
 }
 
 function GridRow({
@@ -1853,6 +1907,7 @@ function GridRow({
   canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
   peopleMap, workItemMap, colorMap, holidaySet,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
+  onDragLive, onDragEnd,
 }: GridRowProps) {
   const rowRef    = useRef<HTMLDivElement>(null)
   const createRef = useRef<{ anchor: number } | null>(null)
@@ -1872,6 +1927,31 @@ function GridRow({
     }
     return ids
   }, [row.kind, rowAssignments])
+
+  // E-6 / T-16a: per-assignment earliest allowed start day for live drag clamping.
+  // Partner work bars are never clamped (they may overlap freely).
+  // Partner leave bars clamp only against other leave siblings (T-16a).
+  // Non-Partner bars clamp against all siblings.
+  const clampStartFor = useMemo(() => {
+    const m = new Map<string, number>()
+    if (row.kind !== 'person') return m
+    const isPartner = row.person.rank === 'Partner'
+    const isHolFn = (n: number) => holidaySet.has(n)
+    for (const a of rowAssignments) {
+      if (isPartner && a.kind === 'work') continue  // T-16: Partner work bars never clamped
+      const aS = dateToNum(a.start)
+      // T-16a: for Partner leave, only check preceding leave siblings; work siblings are invisible
+      const candidates = (isPartner && a.kind === 'leave')
+        ? rowAssignments.filter(b => b.id !== a.id && b.kind === 'leave')
+        : rowAssignments.filter(b => b.id !== a.id)
+      let maxEnd = -Infinity
+      for (const b of candidates) {
+        if (dateToNum(b.start) < aS) maxEnd = Math.max(maxEnd, dateToNum(b.end_date))
+      }
+      if (maxEnd !== -Infinity) m.set(a.id, nextWorkday(maxEnd, isHolFn))
+    }
+    return m
+  }, [row, rowAssignments, holidaySet])
 
   function startX(e: ReactPointerEvent | ReactMouseEvent) {
     return clientXToDay((e as ReactPointerEvent).clientX ?? (e as ReactMouseEvent).clientX)
@@ -2051,6 +2131,9 @@ function GridRow({
             hasConflict={conflictIds.has(a.id)}
             preStudyStart={getPreStudyStart(a)}
             tooltipInfo={barTooltip(a)}
+            clampStart={clampStartFor.get(a.id)}
+            onDragLive={row.kind === 'person' && row.person.rank === 'Partner' && a.kind === 'work' ? onDragLive : undefined}
+            onDragEnd={row.kind === 'person' && row.person.rank === 'Partner' && a.kind === 'work' ? onDragEnd : undefined}
             onUpdate={onUpdate}
             onClick={onOpenEdit}
           />
