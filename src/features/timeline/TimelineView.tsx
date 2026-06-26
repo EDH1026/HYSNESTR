@@ -1366,7 +1366,7 @@ export default function TimelineView() {
     // §5.2 T-3: workitem rows show only the span band (WorkItemBand); per-person bars live in workitem-sub sub-rows only.
     let rowAssignments: Assignment[]
     if (row.kind === 'person') {
-      rowAssignments = assignments.filter(a => a.person_id === row.person.id && a.kind === 'work')
+      rowAssignments = assignments.filter(a => a.person_id === row.person.id)
     } else if (row.kind === 'workitem') {
       rowAssignments = []
     } else if (row.kind === 'workitem-sub') {
