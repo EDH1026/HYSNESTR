@@ -1,11 +1,13 @@
 import { useState, useMemo } from 'react'
-import { FolderPlus, Pencil, ChevronUp, ChevronDown, Lock } from 'lucide-react'
+import { FolderPlus, Pencil, ChevronUp, ChevronDown, Lock, Upload } from 'lucide-react'
 import { useAllWorkItems, useUpdateWorkItem } from '@/features/workitems/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
 import { useSettings } from '@/features/admin/hooks'
 import WorkItemModal from '@/features/workitems/WorkItemModal'
+import BulkUploadModal from '@/features/workitems/BulkUploadModal'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import { buildWorkItemColorMap } from '@/lib/colors'
+import { useQueryClient } from '@tanstack/react-query'
 import type { WorkItem, WorkItemType } from '@/types'
 
 const TYPES: WorkItemType[] = ['project', 'proposal', 'pipeline']
@@ -45,15 +47,18 @@ function SortTh({ label, field, sort, dir, onSort }: {
 
 export default function WorkItemsPage() {
   const { data: workItems = [], isLoading, error } = useAllWorkItems()
-  const { canEdit } = useAuthz()
+  const { canEdit, isAdmin } = useAuthz()
   const { data: settings } = useSettings()
   const updateWI     = useUpdateWorkItem()
+  const qc           = useQueryClient()
   const editable     = canEdit('global')
+  const admin        = isAdmin()
   const startMonth   = settings?.fiscal_year_start_month ?? 7
 
   const colorMap = useMemo(() => buildWorkItemColorMap(workItems), [workItems])
 
   const [modal,        setModal]        = useState<WorkItem | null | false>(false)
+  const [showBulk,     setShowBulk]     = useState(false)
   const [nameSearch,   setNameSearch]   = useState('')
   const [typeFilter,   setTypeFilter]   = useState<WorkItemType[]>([])
   const [statusFilter, setStatusFilter] = useState<string[]>([])
@@ -122,11 +127,18 @@ export default function WorkItemsPage() {
             {hasFilter ? `${filtered.length} / ${workItems.length}` : workItems.length} 항목
           </p>
         </div>
-        {editable && (
-          <button className="btn-primary gap-1.5 text-xs" onClick={() => setModal(null)}>
-            <FolderPlus size={14} /> Add Work Item
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {admin && (
+            <button className="btn-secondary gap-1.5 text-xs" onClick={() => setShowBulk(true)}>
+              <Upload size={13} /> 대량 업로드
+            </button>
+          )}
+          {editable && (
+            <button className="btn-primary gap-1.5 text-xs" onClick={() => setModal(null)}>
+              <FolderPlus size={14} /> Add Work Item
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filter bar */}
@@ -270,6 +282,16 @@ export default function WorkItemsPage() {
           />
         )
       })()}
+
+      {showBulk && (
+        <BulkUploadModal
+          onClose={() => setShowBulk(false)}
+          onSuccess={() => {
+            void qc.invalidateQueries({ queryKey: ['work-items'] })
+            void qc.invalidateQueries({ queryKey: ['assignments'] })
+          }}
+        />
+      )}
     </div>
   )
 }
