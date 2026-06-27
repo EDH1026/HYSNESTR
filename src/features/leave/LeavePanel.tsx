@@ -286,34 +286,53 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
         </div>
       ) : (
         <>
-          {/* ── Summary cards ─────────────────────────────── */}
-          <div className="grid grid-cols-3 gap-3">
-            <SummaryCard label="총 적립" value={ledger.totalAccrued} color="brand" />
-            <SummaryCard label="사용"    value={ledger.totalUsed}    color="gray" />
-            <SummaryCard label="잔여"    value={ledger.remaining}    color={ledger.remaining < 0 ? 'red' : 'green'} />
+          {/* ── LV-5 §7-8: 6-way summary ─────────────────── */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <span className="text-[10px] font-semibold text-muted uppercase tracking-wide">실제 (기준일까지 확정)</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <SummaryCard label="실제 적립" value={ledger.actualAccrued}    color="brand" />
+              <SummaryCard label="실제 사용" value={ledger.actualUsed}       color="gray" />
+              <SummaryCard label="현재 잔여" value={ledger.currentRemaining} color={ledger.currentRemaining < 0 ? 'red' : 'green'} />
+            </div>
+            <div className="flex items-center gap-1.5 mt-1 mb-0.5">
+              <span className="text-[10px] font-semibold text-muted uppercase tracking-wide">예정 (기준일 이후 추가분)</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <SummaryCard label="+ 적립 예정" value={ledger.scheduledAccrued}  color="brand" dim />
+              <SummaryCard label="+ 사용 예정" value={ledger.scheduledUsed}     color="gray"  dim />
+              <SummaryCard label="잔여 예정"   value={ledger.projectedRemaining} color={ledger.projectedRemaining < 0 ? 'red' : 'green'} dim />
+            </div>
           </div>
 
-          {/* ── Breakdown by type ─────────────────────────── */}
+          {/* ── Breakdown by type (6-way) ─────────────────── */}
           {Object.keys(ledger.byType).length > 0 && (
             <section>
               <h3 className="mb-2 text-xs font-semibold text-muted uppercase tracking-wide">유형별 현황</h3>
-              <div className="card p-0 overflow-hidden">
-                <table className="w-full text-xs">
+              <div className="card p-0 overflow-hidden overflow-x-auto">
+                <table className="w-full text-xs min-w-[480px]">
                   <thead>
                     <tr className="bg-surface-50 border-b border-border text-muted">
-                      <th className="px-3 py-2 text-left font-medium">유형</th>
-                      <th className="px-3 py-2 text-right font-medium">적립</th>
-                      <th className="px-3 py-2 text-right font-medium">사용</th>
-                      <th className="px-3 py-2 text-right font-medium">잔여</th>
+                      <th className="px-3 py-2 text-left font-medium" rowSpan={2}>유형</th>
+                      <th className="px-3 py-1.5 text-center font-medium border-l border-border" colSpan={2}>적립</th>
+                      <th className="px-3 py-1.5 text-center font-medium border-l border-border" colSpan={2}>사용</th>
+                    </tr>
+                    <tr className="bg-surface-50 border-b border-border text-muted">
+                      <th className="px-3 py-1.5 text-right font-medium border-l border-border">실제</th>
+                      <th className="px-3 py-1.5 text-right font-medium text-muted/60">예정</th>
+                      <th className="px-3 py-1.5 text-right font-medium border-l border-border">실제</th>
+                      <th className="px-3 py-1.5 text-right font-medium text-muted/60">예정</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {(Object.entries(ledger.byType) as [AccrualType, { accrued: number; used: number }][]).map(([type, v]) => (
+                    {(Object.entries(ledger.byType) as [AccrualType, NonNullable<typeof ledger.byType[AccrualType]>][]).map(([type, v]) => (
                       <tr key={type} className="hover:bg-surface-50">
                         <td className="px-3 py-2 font-medium text-gray-700">{type}</td>
-                        <td className="px-3 py-2 text-right">{v.accrued}</td>
-                        <td className="px-3 py-2 text-right">{v.used}</td>
-                        <td className="px-3 py-2 text-right font-medium">{Math.round((v.accrued - v.used) * 10) / 10}</td>
+                        <td className="px-3 py-2 text-right border-l border-border">{v.actualAccrued}</td>
+                        <td className="px-3 py-2 text-right text-muted">{v.scheduledAccrued}</td>
+                        <td className="px-3 py-2 text-right border-l border-border">{v.actualUsed}</td>
+                        <td className="px-3 py-2 text-right text-muted">{v.scheduledUsed}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -556,20 +575,26 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
 // ── Summary card ──────────────────────────────────────────────
 
 type CardColor = 'brand' | 'gray' | 'green' | 'red'
-const CARD_STYLES: Record<CardColor, { bg: string; text: string; num: string }> = {
-  brand: { bg: 'bg-brand-50',   text: 'text-brand-700',   num: 'text-brand-800'  },
-  gray:  { bg: 'bg-surface-100',text: 'text-muted',        num: 'text-gray-800'   },
-  green: { bg: 'bg-emerald-50', text: 'text-emerald-700', num: 'text-emerald-900' },
-  red:   { bg: 'bg-red-50',     text: 'text-red-600',     num: 'text-red-700'    },
+const CARD_STYLES: Record<CardColor, { bg: string; dimBg: string; text: string; dimText: string; num: string; dimNum: string }> = {
+  brand: { bg: 'bg-brand-50',    dimBg: 'bg-white border border-brand-200',   text: 'text-brand-700',   dimText: 'text-brand-400',   num: 'text-brand-800',  dimNum: 'text-brand-500'   },
+  gray:  { bg: 'bg-surface-100', dimBg: 'bg-white border border-border',      text: 'text-muted',       dimText: 'text-muted',        num: 'text-gray-800',   dimNum: 'text-gray-400'    },
+  green: { bg: 'bg-emerald-50',  dimBg: 'bg-white border border-emerald-200', text: 'text-emerald-700', dimText: 'text-emerald-400', num: 'text-emerald-900', dimNum: 'text-emerald-500' },
+  red:   { bg: 'bg-red-50',      dimBg: 'bg-white border border-red-200',     text: 'text-red-600',     dimText: 'text-red-300',     num: 'text-red-700',     dimNum: 'text-red-400'     },
 }
 
-function SummaryCard({ label, value, color }: { label: string; value: number; color: CardColor }) {
+function SummaryCard({ label, value, color, dim }: { label: string; value: number; color: CardColor; dim?: boolean }) {
   const s = CARD_STYLES[color]
+  const bg   = dim ? s.dimBg   : s.bg
+  const text = dim ? s.dimText : s.text
+  const num  = dim ? s.dimNum  : s.num
   return (
-    <div className={`rounded-lg p-3 ${s.bg}`}>
-      <p className={`text-xs font-medium ${s.text}`}>{label}</p>
-      <p className={`text-2xl font-bold tabular-nums mt-1 ${s.num}`}>{value}</p>
-      <p className={`text-xs ${s.text}`}>일</p>
+    <div className={`rounded-lg p-3 ${bg}`}>
+      <p className={`text-xs font-medium ${text}`}>{label}</p>
+      {dim
+        ? <p className={`text-xl font-semibold tabular-nums mt-1 ${num}`}>{value}</p>
+        : <p className={`text-2xl font-bold tabular-nums mt-1 ${num}`}>{value}</p>
+      }
+      <p className={`text-xs ${text}`}>일</p>
     </div>
   )
 }

@@ -56,10 +56,24 @@ export interface Ledger {
   accruals:     LedgerAccrualEntry[]
   usages:       LedgerUsageEntry[]
   unpaid:       LedgerUnpaidEntry[]
-  totalAccrued: number
-  totalUsed:    number
-  remaining:    number
-  byType:       Partial<Record<AccrualType, { accrued: number; used: number }>>
+  totalAccrued: number      // all accruals (actual + scheduled)
+  totalUsed:    number      // all usages
+  remaining:    number      // totalAccrued − totalUsed
+  byType:       Partial<Record<AccrualType, {
+    accrued:          number
+    used:             number
+    actualAccrued:    number   // LV-5: date ≤ asOf
+    scheduledAccrued: number   // LV-5: date > asOf
+    actualUsed:       number   // LV-5: workdays on/before asOf
+    scheduledUsed:    number   // LV-5: workdays after asOf
+  }>>
+  // LV-5 §7-8: 6-way as-of classification
+  actualAccrued:      number   // 실제 적립 — accruals with date ≤ asOf
+  scheduledAccrued:   number   // 적립 예정 — accruals with date > asOf
+  actualUsed:         number   // 실제 사용 — workdays used on/before asOf
+  scheduledUsed:      number   // 사용 예정 — workdays to be used after asOf
+  currentRemaining:   number   // 현재 잔여 = actualAccrued − actualUsed
+  projectedRemaining: number   // 잔여 예정 = (actualAccrued+scheduledAccrued) − (actualUsed+scheduledUsed)
 }
 
 // ── Leave type classification ─────────────────────────────────
@@ -330,24 +344,92 @@ export function computeLedger(
   const totalUsed    = Math.round(usages.reduce((s, u) => s + u.days, 0) * 10) / 10
   const remaining    = Math.round((totalAccrued - totalUsed) * 10) / 10
 
-  // Breakdown by accrual type (FIFO-based: shows which pool was consumed, used for deduction-source display)
-  const byType: Partial<Record<AccrualType, { accrued: number; used: number }>> = {}
+  // LV-5 §7-8: 6-way as-of classification ──────────────────
+  const asOfDateStr = numToStr(today)
+
+  // Split accruals: date ≤ asOf → actual; date > asOf → scheduled
+  let _actualAccrued = 0, _scheduledAccrued = 0
+  for (const e of allAccruals) {
+    if (e.date <= asOfDateStr) _actualAccrued    += e.days
+    else                       _scheduledAccrued += e.days
+  }
+  const actualAccrued    = Math.round(_actualAccrued    * 10) / 10
+  const scheduledAccrued = Math.round(_scheduledAccrued * 10) / 10
+
+  // Split usages: workdays on/before asOf → actual; workdays after asOf → scheduled
+  let _actualUsed = 0, _scheduledUsed = 0
+  for (const u of usages) {
+    if (u.isManual) {
+      if (u.start <= asOfDateStr) _actualUsed    += u.days
+      else                        _scheduledUsed += u.days
+    } else {
+      const uS = dateToNum(u.start), uE = dateToNum(u.end)
+      if (uE <= today) {
+        _actualUsed += u.days
+      } else if (uS > today) {
+        _scheduledUsed += u.days
+      } else {
+        const act = countWorkdays(uS, today, isHoliday)
+        _actualUsed    += act
+        _scheduledUsed += Math.max(0, u.days - act)
+      }
+    }
+  }
+  const actualUsed       = Math.round(_actualUsed    * 10) / 10
+  const scheduledUsed    = Math.round(_scheduledUsed * 10) / 10
+  const currentRemaining   = Math.round((actualAccrued - actualUsed) * 10) / 10
+  const projectedRemaining = Math.round((actualAccrued + scheduledAccrued - actualUsed - scheduledUsed) * 10) / 10
+
+  // Breakdown by accrual type (FIFO-based) with 6-way split ─
+  type ByTypeEntry = {
+    accrued: number; used: number
+    actualAccrued: number; scheduledAccrued: number
+    actualUsed: number; scheduledUsed: number
+  }
+  const makeEntry = (): ByTypeEntry =>
+    ({ accrued: 0, used: 0, actualAccrued: 0, scheduledAccrued: 0, actualUsed: 0, scheduledUsed: 0 })
+  const byType: Partial<Record<AccrualType, ByTypeEntry>> = {}
 
   for (const e of allAccruals) {
-    const entry = (byType[e.type] ??= { accrued: 0, used: 0 })
+    const entry = (byType[e.type] ??= makeEntry())
     entry.accrued = Math.round((entry.accrued + e.days) * 10) / 10
+    if (e.date <= asOfDateStr) entry.actualAccrued    = Math.round((entry.actualAccrued    + e.days) * 10) / 10
+    else                       entry.scheduledAccrued = Math.round((entry.scheduledAccrued + e.days) * 10) / 10
   }
+
   for (const u of usages) {
+    // Compute actual fraction for workdays in this usage that fall on/before asOf
+    let actFrac: number
+    if (u.days === 0) {
+      actFrac = 0
+    } else if (u.isManual) {
+      actFrac = u.start <= asOfDateStr ? 1 : 0
+    } else {
+      const uS = dateToNum(u.start), uE = dateToNum(u.end)
+      if (uE <= today)   actFrac = 1
+      else if (uS > today) actFrac = 0
+      else actFrac = countWorkdays(uS, today, isHoliday) / u.days
+    }
+
     for (const d of u.deductions) {
       const acc = allAccruals.find(e => e.id === d.accrualId)
       if (acc) {
-        const entry = (byType[acc.type] ??= { accrued: 0, used: 0 })
+        const entry = (byType[acc.type] ??= makeEntry())
         entry.used = Math.round((entry.used + d.days) * 10) / 10
+        const dAct   = Math.round(d.days * actFrac       * 10) / 10
+        const dSched = Math.round(d.days * (1 - actFrac) * 10) / 10
+        entry.actualUsed    = Math.round((entry.actualUsed    + dAct)   * 10) / 10
+        entry.scheduledUsed = Math.round((entry.scheduledUsed + dSched) * 10) / 10
       }
     }
   }
 
-  return { asOf: today, accruals: allAccruals, usages, unpaid, totalAccrued, totalUsed, remaining, byType }
+  return {
+    asOf: today, accruals: allAccruals, usages, unpaid,
+    totalAccrued, totalUsed, remaining, byType,
+    actualAccrued, scheduledAccrued, actualUsed, scheduledUsed,
+    currentRemaining, projectedRemaining,
+  }
 }
 
 // ── Helpers re-exported for tests ─────────────────────────────
