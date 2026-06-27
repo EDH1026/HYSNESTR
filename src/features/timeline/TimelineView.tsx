@@ -50,11 +50,17 @@ import type { Assignment, Person, WorkItem } from '@/types'
 import type { ViewMode, RowData, ModalState } from './types'
 import {
   LABEL_W, ROW_H, HEADER_ROW_H, BAR_PAD, HANDLE_W, DRAG_THRESHOLD,
-  DAY_MIN, DAY_MAX, DAY_DEFAULT,
+  DAY_MIN, DAY_MAX,
   ZOOM_WEEK, ZOOM_DAY,
   WEEKEND_BG, HOLIDAY_BG, TODAY_COLOR,
   RANK_ORDER,
 } from './constants'
+
+// T-1: compute dayWidth so ~90 days (≈3 months) fill the grid on first load
+function calcDefaultDayWidth(): number {
+  const lW = window.innerWidth < 768 ? 120 : LABEL_W
+  return Math.max(DAY_MIN, Math.min(DAY_MAX, Math.round((window.innerWidth - lW) / 90)))
+}
 import {
   TYPE_FAMILY, LEAVE_GREEN, buildWorkItemColorMap, barColorOf,
 } from '@/lib/colors'
@@ -1031,7 +1037,7 @@ export default function TimelineView() {
   }, [])
 
   const [viewMode,          setViewMode]          = useState<ViewMode>('person')
-  const [dayWidth,          setDayWidth]          = useState(DAY_DEFAULT)
+  const [dayWidth,          setDayWidth]          = useState(calcDefaultDayWidth)
   const [labelW,            setLabelW]            = useState(() => window.innerWidth < 768 ? 120 : LABEL_W)
   const [modal,             setModal]             = useState<ModalState>({ open: false, mode: 'create', prefill: {} })
   const [expandedWorkItems,    setExpandedWorkItems]    = useState<Set<string>>(new Set())
@@ -1286,12 +1292,15 @@ export default function TimelineView() {
     return viewStart + Math.floor((clientX - rect.left + scrollLeft) / dayWidth)
   }, [viewStart, dayWidth])
 
-  // Scroll to today
+  // Scroll to today (+ reset zoom to ~3 months when called from the button)
   function scrollToToday() {
-    const el = gridBodyRef.current
-    if (!el) return
-    const x = (todayNum - viewStart) * dayWidth - el.clientWidth / 2
-    el.scrollTo({ left: Math.max(0, x), behavior: 'smooth' })
+    const newW = calcDefaultDayWidth()
+    setDayWidth(newW)   // T-1: reset to ~3-month zoom (no-op on mount since state was already newW)
+    requestAnimationFrame(() => {
+      const el = gridBodyRef.current
+      if (!el) return
+      el.scrollTo({ left: Math.max(0, (todayNum - viewStart) * newW - el.clientWidth / 2), behavior: 'smooth' })
+    })
   }
 
   // Scroll to today on mount

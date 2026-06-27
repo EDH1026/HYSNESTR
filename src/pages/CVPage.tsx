@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { FileText } from 'lucide-react'
 import { useAllPeople } from '@/features/people/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
 import { useAllAssignments } from '@/features/timeline/hooks'
@@ -172,25 +171,20 @@ export default function CVPage() {
                   <th className="px-4 py-2.5 text-left font-medium">직급</th>
                   <th className="px-4 py-2.5 text-left font-medium">역할</th>
                   <th className="px-4 py-2.5 text-right font-medium">프로젝트 수</th>
-                  <th className="px-4 py-2.5 text-right font-medium">작업</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {accessible.map(p => {
                   const entries = computeCv(p.id, workItems, assignments)
                   return (
-                    <tr key={p.id} className="hover:bg-surface-50 transition-colors">
+                    <tr key={p.id} className="hover:bg-surface-50 transition-colors cursor-pointer"
+                        onClick={() => setPanel(p)}>
                       <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
                       <td className="px-4 py-3">
                         <span className="pill bg-brand-100 text-brand-700">{p.rank}</span>
                       </td>
                       <td className="px-4 py-3 text-muted">{p.role || '—'}</td>
                       <td className="px-4 py-3 text-right text-muted tabular-nums">{entries.length}</td>
-                      <td className="px-4 py-3 text-right">
-                        <button onClick={() => setPanel(p)} className="btn-secondary text-xs py-1 gap-1.5">
-                          <FileText size={11} /> 미리보기
-                        </button>
-                      </td>
                     </tr>
                   )
                 })}

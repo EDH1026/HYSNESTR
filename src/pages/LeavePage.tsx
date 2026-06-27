@@ -5,7 +5,6 @@
  * Viewer: own leave data rendered inline (no modal, no filter).
  */
 import { useState, useMemo, useCallback } from 'react'
-import { BookOpen } from 'lucide-react'
 import { useAllPeople } from '@/features/people/hooks'
 import { useAllAssignments } from '@/features/timeline/hooks'
 import { useAllAccruals } from '@/features/leave/hooks'
@@ -200,12 +199,12 @@ export default function LeavePage() {
                   <th className="px-4 py-2.5 text-right font-medium">총 적립</th>
                   <th className="px-4 py-2.5 text-right font-medium">사용</th>
                   <th className="px-4 py-2.5 text-right font-medium">잔여</th>
-                  <th className="px-4 py-2.5 w-16" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {summaries.map(({ person: p, ledger: l }) => (
-                  <tr key={p.id} className="hover:bg-surface-50 transition-colors">
+                  <tr key={p.id} className="hover:bg-surface-50 transition-colors cursor-pointer"
+                      onClick={() => setPanel(p)}>
                     <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
                     <td className="px-4 py-3">
                       <span className="pill bg-brand-100 text-brand-700">{p.rank}</span>
@@ -225,14 +224,6 @@ export default function LeavePage() {
                       ].join(' ')}>
                         {l.remaining}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => setPanel(p)}
-                        className="btn-secondary text-xs py-1 gap-1.5"
-                      >
-                        <BookOpen size={11} /> 상세
-                      </button>
                     </td>
                   </tr>
                 ))}
