@@ -6,9 +6,10 @@ import GrantsManager     from '@/features/admin/GrantsManager'
 import AuditLogViewer    from '@/features/admin/AuditLogViewer'
 import BackupRestore     from '@/features/admin/BackupRestore'
 import SecurityChecklist from '@/features/admin/SecurityChecklist'
+import HolidaySyncPanel  from '@/features/admin/HolidaySyncPanel'
 import { useSettings, useUpdateSettings, useLeaveTypes, useUpdateLeaveType } from '@/features/admin/hooks'
 
-type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings'
+type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings' | 'holidays'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'accounts', label: '계정 관리' },
@@ -17,6 +18,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'backup',   label: '백업/복원' },
   { id: 'security', label: '보안 체크리스트' },
   { id: 'settings', label: '앱 설정' },
+  { id: 'holidays', label: '공휴일 동기화' },
 ]
 
 const MONTH_NAMES = [
@@ -168,6 +170,7 @@ export default function AdminPage() {
           {tab === 'backup'   && <BackupRestore />}
           {tab === 'security' && <SecurityChecklist />}
           {tab === 'settings' && <SettingsPanel />}
+          {tab === 'holidays' && <HolidaySyncPanel />}
         </div>
       </div>
     </div>

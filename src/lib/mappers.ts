@@ -132,11 +132,13 @@ export function toAccrual(
 export function toHoliday(
   row: Database['public']['Tables']['holidays']['Row'],
 ): Holiday {
+  const r = row as typeof row & { source?: 'auto' | 'manual' | null }
   return {
     id:        row.id,
     name:      row.name,
     date:      row.date,
     recurring: row.recurring,
+    source:    r.source ?? 'manual',
   }
 }
 
@@ -163,5 +165,5 @@ export type UpdateAssignmentInput = Partial<Omit<Assignment, 'id'>>
 export type CreateAccrualInput = Omit<Accrual, 'id'>
 export type UpdateAccrualInput = Partial<Omit<Accrual, 'id'>>
 
-export type CreateHolidayInput = Omit<Holiday, 'id'>
-export type UpdateHolidayInput = Partial<Omit<Holiday, 'id'>>
+export type CreateHolidayInput = Omit<Holiday, 'id' | 'source'>
+export type UpdateHolidayInput = Partial<Omit<Holiday, 'id' | 'source'>>

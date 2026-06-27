@@ -121,6 +121,7 @@ export interface Holiday {
   name: string
   date: string                // YYYY-MM-DD
   recurring: boolean          // true = same month/day repeats every year
+  source?: 'auto' | 'manual'  // HOL-4: 'auto' = API-synced; 'manual' = admin-added (default)
 }
 
 /**

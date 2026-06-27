@@ -176,3 +176,63 @@ export function useDeleteHoliday() {
     },
   })
 }
+
+// ── HOL-5: Holiday sync (HOL-1~4) ────────────────────────────
+
+export interface SyncHolidaysResult {
+  added:   number
+  updated: number
+  total:   number
+  years:   string
+  errors?: string[]
+}
+
+export interface HolidaySyncLogRow {
+  id:           string
+  synced_at:    string
+  year_range:   string
+  added:        number
+  updated:      number
+  total:        number
+  error:        string | null
+  triggered_by: string | null
+}
+
+export function useSyncHolidays() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (): Promise<SyncHolidaysResult> => {
+      const { data, error } = await supabase.functions.invoke('sync-holidays', {
+        method: 'POST',
+        body:   {},
+      })
+      if (error) throw new Error(error.message ?? 'Sync failed')
+      if (data?.error) throw new Error(data.error)
+      return data as SyncHolidaysResult
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.holidays.all() })
+      qc.invalidateQueries({ queryKey: ['holiday_sync_log'] })
+    },
+  })
+}
+
+export function useHolidaySyncLog() {
+  return useQuery({
+    queryKey: ['holiday_sync_log'],
+    queryFn: async (): Promise<HolidaySyncLogRow[]> => {
+      const { data, error } = await (supabase as any)
+        .from('holiday_sync_log')
+        .select('*')
+        .order('synced_at', { ascending: false })
+        .limit(10)
+      if (error) {
+        // Table may not exist yet if migration hasn't run
+        if (error.code === '42P01') return []
+        throw error
+      }
+      return (data ?? []) as HolidaySyncLogRow[]
+    },
+    staleTime: 1000 * 30,
+  })
+}
