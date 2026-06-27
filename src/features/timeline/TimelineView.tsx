@@ -469,11 +469,14 @@ function AssignmentBar({
 
   const [liveStart, setLiveStart] = useState(origStart)
   const [liveEnd,   setLiveEnd]   = useState(origEnd)
-  const barRef  = useRef<HTMLDivElement>(null)
+  // E-7: hover state drives visual handle emphasis
+  const [hovered, setHovered] = useState(false)
+
+  const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{
     kind:         'move' | 'resize-left' | 'resize-right'
     origStart:    number; origEnd: number; startX: number; moved: boolean
-    origWorkdays: number   // captured at drag-start for leave snap
+    origWorkdays: number
   } | null>(null)
 
   useEffect(() => { setLiveStart(origStart) }, [origStart])
@@ -482,42 +485,66 @@ function AssignmentBar({
   const x = (liveStart - viewStart) * dayWidth
   const w = Math.max((liveEnd - liveStart + 1) * dayWidth, 3)
 
-  // Tooltip state
-  const [tipPos, setTipPos] = useState<{ x: number; y: number } | null>(null)
+  // E-7: overhang container — HANDLE_HIT px hit-zone on each side regardless of bar width;
+  //      container widens as needed to guarantee MIN_MOVE_PX of central move zone.
+  const HANDLE_HIT  = 8   // px per side (4px inside bar + 4px outside)
+  const MIN_MOVE_PX = 8   // minimum central move zone px
+  const innerBarOffset = Math.max(
+    HANDLE_HIT / 2,
+    Math.ceil((MIN_MOVE_PX + 2 * HANDLE_HIT - w) / 2),
+  )
+  const containerW    = w + 2 * innerBarOffset
+  const containerLeft = x - innerBarOffset
 
-  // isHoliday adapter — stable reference if holidaySet reference is stable
+  function getKind(posX: number): 'resize-left' | 'resize-right' | 'move' {
+    if (!canEdit) return 'move'
+    if (posX <= HANDLE_HIT)              return 'resize-left'
+    if (posX >= containerW - HANDLE_HIT) return 'resize-right'
+    return 'move'
+  }
+
+  const [tipPos, setTipPos] = useState<{ x: number; y: number } | null>(null)
   const isHolidayFn = useCallback((n: number) => holidaySet.has(n), [holidaySet])
 
   function onPointerDown(e: ReactPointerEvent) {
-    setTipPos(null)   // hide tooltip during drag
+    setTipPos(null)
     e.stopPropagation()
     if (!canEdit) return
     e.preventDefault()
-    const rect  = e.currentTarget.getBoundingClientRect()
-    const posX  = e.clientX - rect.left
-    const barW  = rect.width
-    // E-7: resize handles only active when bar is wide enough to show them visually (prevents
-    //      "cursor says move, bar actually resizes" on 1-2 day blocks)
-    const hW    = barW > HANDLE_W * 3 ? HANDLE_W : 0
-    const kind  = hW > 0 && posX <= hW          ? 'resize-left'
-                : hW > 0 && posX >= barW - hW   ? 'resize-right'
-                : 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const posX = e.clientX - rect.left
+    const kind = getKind(posX)
     const origWorkdays = isLeave ? workdayCount(liveStart, liveEnd, holidaySet) : 0
     dragRef.current = { kind, origStart: liveStart, origEnd: liveEnd, startX: e.clientX, moved: false, origWorkdays }
-    barRef.current?.setPointerCapture(e.pointerId)
+    containerRef.current?.setPointerCapture(e.pointerId)
+    // Snap cursor immediately to drag operation
+    if (containerRef.current) containerRef.current.style.cursor = kind === 'move' ? 'grabbing' : 'ew-resize'
   }
 
   function onPointerMove(e: ReactPointerEvent) {
+    // Update cursor (imperative — avoids re-render on every mouse move)
+    if (canEdit && containerRef.current) {
+      if (dragRef.current) {
+        containerRef.current.style.cursor = dragRef.current.kind === 'move' ? 'grabbing' : 'ew-resize'
+      } else {
+        const rect = containerRef.current.getBoundingClientRect()
+        containerRef.current.style.cursor = getKind(e.clientX - rect.left) === 'move' ? 'grab' : 'ew-resize'
+      }
+    }
+    // Tooltip tracking during hover (not during drag)
+    if (tooltipInfo && !dragRef.current) setTipPos({ x: e.clientX, y: e.clientY })
+
     if (!dragRef.current) return
     const dx = e.clientX - dragRef.current.startX
     if (Math.abs(dx) > DRAG_THRESHOLD) dragRef.current.moved = true
     const dd = Math.round(dx / dayWidth)
     const { kind, origStart: os, origEnd: oe, origWorkdays } = dragRef.current
+
     if (kind === 'move') {
       const rawStart = os + dd
       // §5.3 #2: snap leave start to first workday on/after the dragged position
       let newStart = isLeave ? nextWorkday(rawStart - 1, isHolidayFn) : rawStart
-      // E-6: real-time clamp — prevent leftward overlap with preceding blocks (non-Partner only)
+      // E-6: real-time clamp — prevent leftward overlap with preceding blocks
       if (clampStart !== undefined && newStart < clampStart) newStart = clampStart
       const newEnd = isLeave && origWorkdays > 0
         ? snapLeaveEnd(newStart, origWorkdays, isHolidayFn)
@@ -542,6 +569,7 @@ function AssignmentBar({
     if (!dragRef.current) return
     const moved = dragRef.current.moved
     dragRef.current = null
+    if (containerRef.current) containerRef.current.style.cursor = canEdit ? 'grab' : 'pointer'
     if (!moved) {
       onClick(assignment)
     } else {
@@ -552,108 +580,157 @@ function AssignmentBar({
 
   function onPointerCancel() {
     dragRef.current = null
+    if (containerRef.current) containerRef.current.style.cursor = canEdit ? 'grab' : 'pointer'
     setLiveStart(origStart)
     setLiveEnd(origEnd)
     onDragEnd?.()
   }
 
+  // Grip visual style (shared for left/right)
+  const gripStyle = (side: 'left' | 'right'): React.CSSProperties => ({
+    position: 'absolute',
+    ...(side === 'left'
+      ? { left: innerBarOffset - HANDLE_HIT / 2 }
+      : { left: innerBarOffset + w - HANDLE_HIT / 2 }),
+    top: '50%', transform: 'translateY(-50%)',
+    width:  HANDLE_HIT,
+    height: '65%',
+    maxHeight: 20,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    pointerEvents: 'none',
+  })
+
   return (
     <>
+      {/* E-7: container is wider than the visual bar, providing overhang hit-zones */}
       <div
-        ref={barRef}
+        ref={containerRef}
         data-assignment-bar="true"
         style={{
-          position: 'absolute', left: x, top: topOffset,
-          width: w, height,
-          borderRadius: 4, overflow: 'hidden',
-          cursor: canEdit ? 'grab' : 'pointer',
-          zIndex: 10, userSelect: 'none',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+          position:   'absolute',
+          left:       containerLeft,
+          top:        topOffset,
+          width:      containerW,
+          height,
+          zIndex:     10,
+          userSelect: 'none',
+          cursor:     canEdit ? 'grab' : 'pointer',
+          overflow:   'visible',
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
-        onMouseEnter={e => tooltipInfo && setTipPos({ x: e.clientX, y: e.clientY })}
-        onMouseMove={e => tooltipInfo && setTipPos({ x: e.clientX, y: e.clientY })}
-        onMouseLeave={() => setTipPos(null)}
+        onMouseEnter={e => {
+          setHovered(true)
+          if (tooltipInfo) setTipPos({ x: e.clientX, y: e.clientY })
+        }}
+        onMouseLeave={() => { setHovered(false); setTipPos(null) }}
       >
-        {/* §5.6 Pre-study background (hatched) — portion before main_start */}
-        {(() => {
-          const preStudyPx = (preStudyStart != null && preStudyStart > liveStart)
-            ? Math.max(0, Math.min((preStudyStart - liveStart) * dayWidth, w))
-            : 0
-          const mainPx = w - preStudyPx
-          const hPad   = canEdit && w > HANDLE_W * 3 ? HANDLE_W : 0
+        {/* ── Visual bar (clips fills/labels to bar bounds) ── */}
+        <div style={{
+          position:     'absolute',
+          left:         innerBarOffset,
+          top:          0,
+          width:        w,
+          height:       '100%',
+          borderRadius: 4,
+          overflow:     'hidden',
+          boxShadow:    '0 1px 2px rgba(0,0,0,0.15)',
+          pointerEvents:'none',
+        }}>
+          {(() => {
+            const preStudyPx = (preStudyStart != null && preStudyStart > liveStart)
+              ? Math.max(0, Math.min((preStudyStart - liveStart) * dayWidth, w))
+              : 0
+            const mainPx = w - preStudyPx
+            const labelPad = 4  // px from bar edges for text
 
-          return (
-            <>
-              {/* Pre-study hatched fill */}
-              {preStudyPx > 0 && (
-                <div style={{
-                  position: 'absolute', left: 0, top: 0, width: preStudyPx, height: '100%',
-                  background: `repeating-linear-gradient(-45deg,${color}bb,${color}bb 2px,${color}44 2px,${color}44 5px)`,
-                  borderRight: mainPx > 0 ? `1.5px solid ${color}` : 'none',
-                }} />
-              )}
+            return (
+              <>
+                {/* Pre-study hatched fill */}
+                {preStudyPx > 0 && (
+                  <div style={{
+                    position: 'absolute', left: 0, top: 0, width: preStudyPx, height: '100%',
+                    background: `repeating-linear-gradient(-45deg,${color}bb,${color}bb 2px,${color}44 2px,${color}44 5px)`,
+                    borderRight: mainPx > 0 ? `1.5px solid ${color}` : 'none',
+                  }} />
+                )}
 
-              {/* Main phase solid fill */}
-              {mainPx > 0 && (
-                <div style={{
-                  position: 'absolute', left: preStudyPx, top: 0, right: 0, height: '100%',
-                  background: color,
-                }} />
-              )}
+                {/* Main phase solid fill */}
+                {mainPx > 0 && (
+                  <div style={{
+                    position: 'absolute', left: preStudyPx, top: 0, right: 0, height: '100%',
+                    background: color,
+                  }} />
+                )}
 
-              {/* Left resize handle */}
-              {canEdit && w > HANDLE_W * 3 && (
-                <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: HANDLE_W, cursor: 'ew-resize', zIndex: 2 }} />
-              )}
+                {/* Pre-study label */}
+                {preStudyPx >= 36 && (
+                  <div style={{
+                    position: 'absolute',
+                    left: labelPad, top: 0, bottom: 0, width: preStudyPx - labelPad,
+                    display: 'flex', alignItems: 'center', paddingInline: 3,
+                    fontSize: 10, fontStyle: 'italic', fontWeight: 400, color: 'white',
+                    overflow: 'hidden', whiteSpace: 'nowrap', zIndex: 1,
+                  }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>Pre-study</span>
+                  </div>
+                )}
 
-              {/* Pre-study label ("Pre-study" italic) */}
-              {preStudyPx >= 36 && (
-                <div style={{
-                  position: 'absolute',
-                  left: hPad, top: 0, bottom: 0, width: preStudyPx - hPad,
-                  display: 'flex', alignItems: 'center', paddingInline: 3,
-                  fontSize: 10, fontStyle: 'italic', fontWeight: 400, color: 'white',
-                  overflow: 'hidden', whiteSpace: 'nowrap', zIndex: 1,
-                }}>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>Pre-study</span>
-                </div>
-              )}
+                {/* Main phase label */}
+                {mainPx >= 28 && (
+                  <div style={{
+                    position: 'absolute',
+                    left:  preStudyPx + labelPad,
+                    top:   0, bottom: 0, right: labelPad,
+                    display: 'flex', alignItems: 'center', paddingInline: 2,
+                    fontSize: 11, fontWeight: 500, color: 'white',
+                    overflow: 'hidden', whiteSpace: 'nowrap', zIndex: 1,
+                  }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{label}</span>
+                  </div>
+                )}
 
-              {/* Main phase label (person/workitem name) */}
-              {mainPx >= 28 && (
-                <div style={{
-                  position: 'absolute',
-                  left: preStudyPx + (preStudyPx > 0 ? 4 : hPad),
-                  top: 0, bottom: 0,
-                  right: hPad,
-                  display: 'flex', alignItems: 'center', paddingInline: preStudyPx > 0 ? 2 : 2,
-                  fontSize: 11, fontWeight: 500, color: 'white',
-                  overflow: 'hidden', whiteSpace: 'nowrap', zIndex: 1,
-                }}>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{label}</span>
-                </div>
-              )}
+                {/* §9.3 Conflict indicator */}
+                {hasConflict && (
+                  <div title="⚠ 중복 배정" style={{
+                    position: 'absolute', top: 3, right: 3,
+                    width: 7, height: 7, borderRadius: '50%',
+                    background: '#f97316', border: '1.5px solid white',
+                    zIndex: 20, pointerEvents: 'none',
+                  }} />
+                )}
+              </>
+            )
+          })()}
+        </div>
 
-              {/* Right resize handle */}
-              {canEdit && w > HANDLE_W * 3 && (
-                <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: HANDLE_W, cursor: 'ew-resize', zIndex: 2 }} />
-              )}
-
-              {/* §9.3 Conflict indicator */}
-              {hasConflict && (
-                <div title="⚠ 중복 배정" style={{
-                  position: 'absolute', top: 3, right: 3,
-                  width: 7, height: 7, borderRadius: '50%',
-                  background: '#f97316', border: '1.5px solid white', zIndex: 20, pointerEvents: 'none',
-                }} />
-              )}
-            </>
-          )
-        })()}
+        {/* ── E-7: Resize grip visuals (centered on bar edges, pointer-events:none) ── */}
+        {canEdit && (
+          <>
+            <div style={gripStyle('left')}>
+              <div style={{
+                width:      hovered ? 3 : 2,
+                height:     '100%',
+                background: hovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)',
+                borderRadius: 2,
+                boxShadow:  hovered ? '0 0 4px rgba(0,0,0,0.35)' : 'none',
+                transition: 'width 0.1s ease, background 0.1s ease',
+              }} />
+            </div>
+            <div style={gripStyle('right')}>
+              <div style={{
+                width:      hovered ? 3 : 2,
+                height:     '100%',
+                background: hovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)',
+                borderRadius: 2,
+                boxShadow:  hovered ? '0 0 4px rgba(0,0,0,0.35)' : 'none',
+                transition: 'width 0.1s ease, background 0.1s ease',
+              }} />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Hover tooltip — portal so it renders above all stacking contexts */}
