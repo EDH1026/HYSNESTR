@@ -23,7 +23,7 @@ import {
   type DragEvent as ReactDragEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight } from 'lucide-react'
+import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye } from 'lucide-react'
 
 import {
   dateToNum, numToStr, today, isWeekend, isSaturday,
@@ -61,9 +61,74 @@ function calcDefaultDayWidth(): number {
   const lW = window.innerWidth < 768 ? 120 : LABEL_W
   return Math.max(DAY_MIN, Math.min(DAY_MAX, Math.round((window.innerWidth - lW) / 90)))
 }
+
+// T-17: virtual leave preview — fill empty workdays with phantom leave blocks
+function computeVirtualLeaveBlocks(
+  personId:           string,
+  projectedRemaining: number,
+  allAssignments:     Assignment[],
+  todayNum:           number,
+  holidaySet:         Set<number>,
+): Array<{ start: number; end: number }> {
+  const daysToFill = Math.floor(projectedRemaining)
+  if (daysToFill <= 0) return []
+
+  // Mark every calendar day covered by a real assignment for this person
+  const occupied = new Set<number>()
+  for (const a of allAssignments) {
+    if (a.person_id !== personId) continue
+    const s = dateToNum(a.start)
+    const e = dateToNum(a.end_date)
+    for (let d = s; d <= e; d++) occupied.add(d)
+  }
+
+  // Scan forward, collecting empty workdays until quota is exhausted
+  const virtualDays: number[] = []
+  let remaining = daysToFill
+  let scan      = todayNum + 1
+  const maxScan = todayNum + 730   // 2-year horizon
+
+  while (remaining > 0 && scan <= maxScan) {
+    if (!isWeekend(scan) && !holidaySet.has(scan) && !occupied.has(scan)) {
+      virtualDays.push(scan)
+      remaining--
+    }
+    scan++
+  }
+
+  if (virtualDays.length === 0) return []
+
+  // Group consecutive virtual days into visual blocks.
+  // A new block starts whenever a real-assignment day falls between two virtual days.
+  // Non-working days (weekends/holidays) between virtual days are included in the same block.
+  const blocks: Array<{ start: number; end: number }> = []
+  let blockStart       = virtualDays[0]
+  let blockLastVirtual = virtualDays[0]
+
+  for (let i = 1; i < virtualDays.length; i++) {
+    const prev = virtualDays[i - 1]
+    const curr = virtualDays[i]
+    let gap = false
+    for (let d = prev + 1; d < curr; d++) {
+      if (occupied.has(d)) { gap = true; break }
+    }
+    if (gap) {
+      blocks.push({ start: blockStart, end: blockLastVirtual })
+      blockStart = curr
+    }
+    blockLastVirtual = curr
+  }
+  blocks.push({ start: blockStart, end: blockLastVirtual })
+
+  return blocks
+}
 import {
   TYPE_FAMILY, LEAVE_GREEN, buildWorkItemColorMap, barColorOf,
 } from '@/lib/colors'
+import { useAllAccruals }  from '@/features/leave/hooks'
+import { computeLedger }   from '@/features/leave/ledger'
+
+import type { Accrual } from '@/types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: person / work-item lookup maps
@@ -1021,6 +1086,7 @@ export default function TimelineView() {
   const { data: workItems = [] } = useAllWorkItems()
   const { data: assignments = [] } = useAllAssignments()
   const { data: holidays  = [] } = useAllHolidays()
+  const { data: accruals  = [] } = useAllAccruals() as { data: Accrual[] }
   const { data: settings }       = useSettings()
   const updateAssignment = useUpdateAssignment()
   const updateWorkItem   = useUpdateWorkItem()
@@ -1045,6 +1111,9 @@ export default function TimelineView() {
   const [highlightedPersonIds, setHighlightedPersonIds] = useState<Set<string>>(new Set())
   const [detailWorkItem,    setDetailWorkItem]     = useState<WorkItem | null>(null)
   const [editWorkItem,      setEditWorkItem]       = useState<WorkItem | null>(null)
+  // T-17: virtual leave preview toggle
+  const [showVirtualLeave, setShowVirtualLeave] = useState(false)
+
   // T-16: live drag position so Partner lane counts recompute in real-time during drag
   const [draggingLive, setDraggingLive] = useState<{ id: string; start: number; end: number } | null>(null)
   const handleDragLive = useCallback((id: string, liveStart: number, liveEnd: number) => {
@@ -1148,6 +1217,27 @@ export default function TimelineView() {
     }
     return s
   }, [holidays, viewStart, viewEnd])
+
+  // T-17: per-person virtual leave blocks (only computed when toggle is on & person view)
+  const virtualLeaveBlocksMap = useMemo((): Map<string, Array<{ start: number; end: number }>> => {
+    if (!showVirtualLeave || viewMode !== 'person') return new Map()
+    const isHol = (n: number) => holidaySet.has(n)
+    const map   = new Map<string, Array<{ start: number; end: number }>>()
+    for (const p of people) {
+      const ledger = computeLedger(p.id, {
+        workItems,
+        assignments,
+        accruals,
+        isHoliday: isHol,
+        today: todayNum,
+      })
+      const blocks = computeVirtualLeaveBlocks(
+        p.id, ledger.projectedRemaining, assignments, todayNum, holidaySet,
+      )
+      if (blocks.length > 0) map.set(p.id, blocks)
+    }
+    return map
+  }, [showVirtualLeave, viewMode, people, accruals, assignments, workItems, holidaySet, todayNum])
 
   // Build row list — filtered and sorted (§5.2 F-1.8)
   const rows: RowData[] = useMemo(() => {
@@ -1506,6 +1596,7 @@ export default function TimelineView() {
         workItemMap={workItemMap}
         colorMap={colorMap}
         holidaySet={holidaySet}
+        virtualLeaveBlocks={row.kind === 'person' ? virtualLeaveBlocksMap.get(row.person.id) : undefined}
         onUpdate={handleUpdateAssignment}
         onUpdateWI={handleUpdateWorkItem}
         onOpenCreate={openCreate}
@@ -1575,6 +1666,21 @@ export default function TimelineView() {
           <Calendar size={13} /> Today
         </button>
 
+        {/* T-17: virtual leave preview toggle (person view only) */}
+        {viewMode === 'person' && (
+          <button
+            onClick={() => setShowVirtualLeave(v => !v)}
+            title="잔여 예정 휴가 가상 배정 미리보기"
+            className={[
+              'btn-secondary gap-1.5 text-xs',
+              showVirtualLeave ? 'ring-2 ring-emerald-400 text-emerald-700' : '',
+            ].join(' ')}
+          >
+            <Eye size={13} />
+            잔여 예정
+          </button>
+        )}
+
         {/* New assignment */}
         {globalEdit && (
           <button
@@ -1633,6 +1739,21 @@ export default function TimelineView() {
               {type}
             </span>
           ))}
+
+          {/* T-17: virtual leave legend */}
+          {showVirtualLeave && viewMode === 'person' && (
+            <>
+              <span style={{ width: 1, height: 14, background: '#d1d5db', display: 'inline-block', flexShrink: 0 }} />
+              <span className="flex items-center gap-1 text-[11px] text-emerald-700 font-medium">
+                <span style={{
+                  display: 'inline-block', width: 14, height: 10, borderRadius: 2,
+                  background: 'repeating-linear-gradient(-45deg,rgba(134,239,172,0.6),rgba(134,239,172,0.6) 3px,rgba(220,252,231,0.4),rgba(220,252,231,0.4) 6px)',
+                  border: '1.5px dashed rgba(74,222,128,0.8)',
+                }} />
+                가상 배정
+              </span>
+            </>
+          )}
 
           {/* divider */}
           <span style={{ width: 1, height: 14, background: '#d1d5db', display: 'inline-block', flexShrink: 0 }} />
@@ -1900,7 +2021,8 @@ interface GridRowProps {
   peopleMap:      Map<string, Person>
   workItemMap:    Map<string, WorkItem>
   colorMap:       Map<string, string>
-  holidaySet:     Set<number>
+  holidaySet:          Set<number>
+  virtualLeaveBlocks?: Array<{ start: number; end: number }>
   onUpdate:       (id: string, patch: { start: string; end_date: string }) => void
   onUpdateWI:     (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
   onOpenCreate:   (row: RowData, startNum: number, endNum: number) => void
@@ -1915,6 +2037,7 @@ function GridRow({
   row, rowAssignments, laneMap, dayWidth, viewStart,
   canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
   peopleMap, workItemMap, colorMap, holidaySet,
+  virtualLeaveBlocks,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
   onDragLive, onDragEnd,
 }: GridRowProps) {
@@ -2111,6 +2234,31 @@ function GridRow({
           onOpenDetail={onOpenDetail ? () => onOpenDetail(row.workItem) : undefined}
         />
       )}
+
+      {/* T-17: virtual leave preview blocks — behind real bars (z=3) */}
+      {virtualLeaveBlocks && virtualLeaveBlocks.map((blk, i) => {
+        const left  = (blk.start - viewStart) * dayWidth
+        const width = (blk.end - blk.start + 1) * dayWidth
+        return (
+          <div
+            key={`vl-${i}`}
+            title="가상 배정 (잔여 예정 휴가)"
+            style={{
+              position:      'absolute',
+              left:          Math.max(0, left),
+              width:         Math.max(2, width),
+              top:           BAR_PAD,
+              height:        ROW_H - BAR_PAD * 2,
+              borderRadius:  3,
+              background:    'repeating-linear-gradient(-45deg,rgba(134,239,172,0.55),rgba(134,239,172,0.55) 3px,rgba(220,252,231,0.35),rgba(220,252,231,0.35) 6px)',
+              border:        '1.5px dashed rgba(74,222,128,0.8)',
+              boxSizing:     'border-box',
+              pointerEvents: 'none',
+              zIndex:        3,
+            }}
+          />
+        )
+      })}
 
       {/* Ghost bar while drag-creating */}
       {ghost && (
