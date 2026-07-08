@@ -7,9 +7,10 @@ import AuditLogViewer    from '@/features/admin/AuditLogViewer'
 import BackupRestore     from '@/features/admin/BackupRestore'
 import SecurityChecklist from '@/features/admin/SecurityChecklist'
 import HolidaySyncPanel  from '@/features/admin/HolidaySyncPanel'
+import BulkUploadPanel   from '@/features/admin/BulkUploadPanel'
 import { useSettings, useUpdateSettings, useLeaveTypes, useUpdateLeaveType } from '@/features/admin/hooks'
 
-type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings' | 'holidays'
+type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings' | 'holidays' | 'bulk'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'accounts', label: '계정 관리' },
@@ -19,6 +20,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'security', label: '보안 체크리스트' },
   { id: 'settings', label: '앱 설정' },
   { id: 'holidays', label: '공휴일 동기화' },
+  { id: 'bulk',     label: '일괄 업로드' },
 ]
 
 const MONTH_NAMES = [
@@ -171,6 +173,7 @@ export default function AdminPage() {
           {tab === 'security' && <SecurityChecklist />}
           {tab === 'settings' && <SettingsPanel />}
           {tab === 'holidays' && <HolidaySyncPanel />}
+          {tab === 'bulk'     && <BulkUploadPanel />}
         </div>
       </div>
     </div>
