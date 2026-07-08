@@ -8,19 +8,21 @@ import BackupRestore     from '@/features/admin/BackupRestore'
 import SecurityChecklist from '@/features/admin/SecurityChecklist'
 import HolidaySyncPanel  from '@/features/admin/HolidaySyncPanel'
 import BulkUploadPanel   from '@/features/admin/BulkUploadPanel'
+import MigrationPanel    from '@/features/admin/MigrationPanel'
 import { useSettings, useUpdateSettings, useLeaveTypes, useUpdateLeaveType } from '@/features/admin/hooks'
 
-type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings' | 'holidays' | 'bulk'
+type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings' | 'holidays' | 'bulk' | 'migration'
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'accounts', label: '계정 관리' },
-  { id: 'grants',   label: 'Grant 관리' },
-  { id: 'audit',    label: '감사 로그' },
-  { id: 'backup',   label: '백업/복원' },
-  { id: 'security', label: '보안 체크리스트' },
-  { id: 'settings', label: '앱 설정' },
-  { id: 'holidays', label: '공휴일 동기화' },
-  { id: 'bulk',     label: '일괄 업로드' },
+  { id: 'accounts',  label: '계정 관리' },
+  { id: 'grants',    label: 'Grant 관리' },
+  { id: 'audit',     label: '감사 로그' },
+  { id: 'backup',    label: '백업/복원' },
+  { id: 'security',  label: '보안 체크리스트' },
+  { id: 'settings',  label: '앱 설정' },
+  { id: 'holidays',  label: '공휴일 동기화' },
+  { id: 'bulk',      label: '일괄 업로드' },
+  { id: 'migration', label: '데이터 이관' },
 ]
 
 const MONTH_NAMES = [
@@ -166,14 +168,15 @@ export default function AdminPage() {
       {/* Tab content */}
       <div className="flex-1 overflow-auto p-6">
         <div className="max-w-3xl">
-          {tab === 'accounts' && <AccountManager />}
-          {tab === 'grants'   && <GrantsManager />}
-          {tab === 'audit'    && <AuditLogViewer />}
-          {tab === 'backup'   && <BackupRestore />}
-          {tab === 'security' && <SecurityChecklist />}
-          {tab === 'settings' && <SettingsPanel />}
-          {tab === 'holidays' && <HolidaySyncPanel />}
-          {tab === 'bulk'     && <BulkUploadPanel />}
+          {tab === 'accounts'  && <AccountManager />}
+          {tab === 'grants'    && <GrantsManager />}
+          {tab === 'audit'     && <AuditLogViewer />}
+          {tab === 'backup'    && <BackupRestore />}
+          {tab === 'security'  && <SecurityChecklist />}
+          {tab === 'settings'  && <SettingsPanel />}
+          {tab === 'holidays'  && <HolidaySyncPanel />}
+          {tab === 'bulk'      && <BulkUploadPanel />}
+          {tab === 'migration' && <MigrationPanel />}
         </div>
       </div>
     </div>

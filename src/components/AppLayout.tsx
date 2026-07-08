@@ -12,7 +12,6 @@ import {
   FileText,
   Hash,
   Settings,
-  Database,
   LogOut,
   Menu,
   X,
@@ -52,7 +51,6 @@ const NAV: {
   { to: '/work-items', label: 'Work Items',       icon: Briefcase,       editorOnly: true },
   { to: '/holidays',   label: 'Holidays',         icon: CalendarCheck,   editorOnly: true },
   // ── Admin only ────────────────────────────────────────────
-  { to: '/migration',  label: 'Migration',        icon: Database,        adminOnly: true  },
   { to: '/admin',      label: 'Admin',            icon: Settings,        adminOnly: true  },
 ]
 

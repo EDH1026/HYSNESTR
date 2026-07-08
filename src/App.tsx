@@ -20,7 +20,6 @@ import LeavePage          from '@/pages/LeavePage'
 import HolidaysPage       from '@/pages/HolidaysPage'
 import CVPage             from '@/pages/CVPage'
 import AdminPage          from '@/pages/AdminPage'
-import MigrationPage      from '@/pages/MigrationPage'
 import DataTestPage       from '@/pages/DataTestPage'
 /** All authenticated users → /dashboard. */
 function HomeRedirect() {
@@ -84,8 +83,7 @@ export default function App() {
 
                 {/* ── Admin only ────────────────────────────── */}
                 <Route element={<AdminGuard />}>
-                  <Route path="admin"     element={<AdminPage />} />
-                  <Route path="migration" element={<MigrationPage />} />
+                  <Route path="admin" element={<AdminPage />} />
                 </Route>
               </Route>
             </Route>
