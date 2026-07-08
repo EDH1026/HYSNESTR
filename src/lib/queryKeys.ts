@@ -55,4 +55,9 @@ export const queryKeys = {
   leaveTypes: {
     all: () => ['leaveTypes'] as const,
   },
+
+  annualLeave: {
+    grants:      (personId: string) => ['annualLeaveGrants',      { personId }] as const,
+    adjustments: (personId: string) => ['annualLeaveAdjustments', { personId }] as const,
+  },
 } as const

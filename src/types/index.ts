@@ -159,6 +159,31 @@ export interface AuditLog {
 }
 
 // ---------------------------------------------------------------------------
+// §5.13 Annual leave (법정연차) types
+// ---------------------------------------------------------------------------
+
+/** Per-person, per-year statutory leave grant (법정연차·신입사원 휴가 수동 입력). */
+export interface AnnualLeaveGrant {
+  id:         string
+  person_id:  string
+  year:       number          // calendar year (1/1 기준)
+  days:       number
+  note:       string | null
+  created_at: string
+}
+
+/** Manual +/- adjustment to annual leave balance. */
+export interface AnnualLeaveAdjustment {
+  id:         string
+  person_id:  string
+  direction:  'accrual' | 'usage'
+  days:       number          // positive or negative
+  date:       string          // YYYY-MM-DD
+  note:       string | null
+  created_at: string
+}
+
+// ---------------------------------------------------------------------------
 // Derived / UI-only types (not stored in the DB)
 // ---------------------------------------------------------------------------
 

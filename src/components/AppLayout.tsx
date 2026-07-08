@@ -9,6 +9,7 @@ import {
   Briefcase,
   Umbrella,
   CalendarCheck,
+  CalendarCheck2,
   FileText,
   Hash,
   Settings,
@@ -49,7 +50,8 @@ const NAV: {
   // ── Editor / admin only ───────────────────────────────────
   { to: '/people',     label: 'People',          icon: Users,           editorOnly: true },
   { to: '/work-items', label: 'Work Items',       icon: Briefcase,       editorOnly: true },
-  { to: '/holidays',   label: 'Holidays',         icon: CalendarCheck,   editorOnly: true },
+  { to: '/holidays',     label: 'Holidays',         icon: CalendarCheck,    editorOnly: true },
+  { to: '/annual-leave', label: '연차 관리',        icon: CalendarCheck2,   editorOnly: true },
   // ── Admin only ────────────────────────────────────────────
   { to: '/admin',      label: 'Admin',            icon: Settings,        adminOnly: true  },
 ]
