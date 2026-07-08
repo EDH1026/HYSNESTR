@@ -1721,13 +1721,15 @@ export default function TimelineView() {
       setHighlightedPersonIds(new Set([pid]))
       setViewMode('person')
       const rowIdx = rows.findIndex(r => r.kind === 'person' && r.person.id === pid)
-      if (rowIdx >= 0) {
-        const scrollTop = Math.max(0, rowTops[rowIdx] - 60)
-        requestAnimationFrame(() => {
-          gridBodyRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' })
-          labelsBodyRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' })
-        })
-      }
+      const scrollTop = rowIdx >= 0 ? Math.max(0, rowTops[rowIdx] - 60) : undefined
+      requestAnimationFrame(() => {
+        const el = gridBodyRef.current
+        if (!el) return
+        // T-16: scroll to today horizontally (same logic as the "오늘" button)
+        const leftToday = Math.max(0, (todayNum - viewStart) * dayWidth - el.clientWidth / 2)
+        el.scrollTo({ left: leftToday, ...(scrollTop !== undefined ? { top: scrollTop } : {}), behavior: 'smooth' })
+        if (scrollTop !== undefined) labelsBodyRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' })
+      })
     }
 
     if (navState.openDetailWorkItemId) {
