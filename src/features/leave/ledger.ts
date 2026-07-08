@@ -10,7 +10,7 @@
  * No side effects; safe to call in useMemo.
  */
 
-import { dateToNum, numToStr, numToDate, isWeekend, nextWorkday } from '@/lib/date'
+import { dateToNum, numToStr, numToDate, isWeekend, isSaturday, nextWorkday } from '@/lib/date'
 import type { WorkItem, Assignment, Accrual, AccrualType, LeaveType } from '@/types'
 
 // ── Output types ──────────────────────────────────────────────
@@ -136,33 +136,26 @@ export function computeLedger(
 
   const autoAccruals: LedgerAccrualEntry[] = []
 
+  // §7.1: collect per-project intervals for 프로젝트휴가 (one round per project, not per assignment)
+  const projIntervals = new Map<string, { wi: WorkItem; ivs: Array<{s: number; e: number}> }>()
+
   if (!isPartner) for (const a of myAssignments) {
     if (a.kind !== 'work' || !a.work_item_id) continue
     const wi = wiMap.get(a.work_item_id)
     if (!wi || wi.type === 'pipeline') continue   // pipeline: no accruals
 
-    // 1a. 프로젝트휴가: only for type=project with a main_start defined
+    // 1a. Accumulate (assignment ∩ main phase) intervals per project
     if (wi.type === 'project' && wi.main_start) {
       const mainS = dateToNum(wi.main_start)
       const mainE = dateToNum(wi.end_date)
       const aS    = dateToNum(a.start)
       const aE    = dateToNum(a.end_date)
-
-      const intS = Math.max(aS, mainS)
-      const intE = Math.min(aE, mainE)
-      const calDays = Math.max(0, intE - intS + 1)
-      const days = Math.round(calDays / 10)
-
-      if (days > 0) {
-        autoAccruals.push({
-          id:        `auto-proj-${a.id}`,
-          type:      '프로젝트휴가',
-          days,
-          date:      wi.end_date,     // credited on project end
-          sourceId:  wi.id,
-          remaining: days,
-          isAuto:    true,
-        })
+      const intS  = Math.max(aS, mainS)
+      const intE  = Math.min(aE, mainE)
+      if (intE >= intS) {
+        const bucket = projIntervals.get(wi.id)
+        if (bucket) bucket.ivs.push({ s: intS, e: intE })
+        else projIntervals.set(wi.id, { wi, ivs: [{ s: intS, e: intE }] })
       }
     }
 
@@ -171,8 +164,8 @@ export function computeLedger(
       let wkDays = 0
       for (const d of a.weekend_dates) {
         const n = dateToNum(d)
-        // Weekend (Sat or Sun) always 0.5; weekday holiday 1.0 (PRD v2.11 §7-2)
-        wkDays += isWeekend(n) ? 0.5 : 1.0
+        // Saturday=0.5; Sunday or holiday (any day)=1.0 (PRD §7-2)
+        wkDays += (!isHoliday(n) && isSaturday(n)) ? 0.5 : 1.0
       }
       if (wkDays > 0) {
         autoAccruals.push({
@@ -185,6 +178,33 @@ export function computeLedger(
           isAuto:    true,
         })
       }
+    }
+  }
+
+  // 1a. Per-project 프로젝트휴가: merge overlapping intervals, sum, round once
+  for (const [wiId, { wi, ivs }] of projIntervals) {
+    const sorted = [...ivs].sort((a, b) => a.s - b.s)
+    const merged: Array<{s: number; e: number}> = [{ ...sorted[0] }]
+    for (let i = 1; i < sorted.length; i++) {
+      const last = merged[merged.length - 1]
+      if (sorted[i].s <= last.e + 1) {
+        if (sorted[i].e > last.e) last.e = sorted[i].e
+      } else {
+        merged.push({ ...sorted[i] })
+      }
+    }
+    const totalCalDays = merged.reduce((sum, iv) => sum + (iv.e - iv.s + 1), 0)
+    const days = Math.round(totalCalDays / 10)
+    if (days > 0) {
+      autoAccruals.push({
+        id:        `auto-proj-${wiId}`,
+        type:      '프로젝트휴가',
+        days,
+        date:      wi.end_date,
+        sourceId:  wi.id,
+        remaining: days,
+        isAuto:    true,
+      })
     }
   }
 

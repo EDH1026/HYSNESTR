@@ -170,6 +170,59 @@ describe('프로젝트휴가 auto-accrual', () => {
   })
 })
 
+// ── §7.1 Split-assignment 프로젝트휴가 (per-project sum round) ──
+
+describe('§7.1 split-assignment 프로젝트휴가', () => {
+  const wi = mkWi({
+    id:         'wi-split',
+    type:       'project',
+    start:      '2024-01-01',
+    main_start: '2024-01-01',
+    end_date:   '2024-12-31',
+  })
+
+  it('4+4 split → sum=8 → round(8/10)=1, single accrual entry', () => {
+    // 2024-01-01 ~ 2024-01-04 = 4 cal days, 2024-01-10 ~ 2024-01-13 = 4 cal days
+    const a1 = mkAssignment({ person_id: 'p1', work_item_id: 'wi-split', start: '2024-01-01', end_date: '2024-01-04' })
+    const a2 = mkAssignment({ person_id: 'p1', work_item_id: 'wi-split', start: '2024-01-10', end_date: '2024-01-13' })
+    const ledger = computeLedger('p1', {
+      workItems: [wi], assignments: [a1, a2], accruals: [],
+      isHoliday: NO_HOLIDAY, today: dateToNum('2025-01-10'),
+    })
+    const projEntries = ledger.accruals.filter(e => e.type === '프로젝트휴가')
+    expect(projEntries).toHaveLength(1)
+    expect(projEntries[0].days).toBe(1)
+  })
+
+  it('12+9 split → sum=21 → round(21/10)=2', () => {
+    // 2024-01-01 ~ 2024-01-12 = 12 cal days, 2024-02-01 ~ 2024-02-09 = 9 cal days
+    const a1 = mkAssignment({ person_id: 'p1', work_item_id: 'wi-split', start: '2024-01-01', end_date: '2024-01-12' })
+    const a2 = mkAssignment({ person_id: 'p1', work_item_id: 'wi-split', start: '2024-02-01', end_date: '2024-02-09' })
+    const ledger = computeLedger('p1', {
+      workItems: [wi], assignments: [a1, a2], accruals: [],
+      isHoliday: NO_HOLIDAY, today: dateToNum('2025-01-10'),
+    })
+    const projEntries = ledger.accruals.filter(e => e.type === '프로젝트휴가')
+    expect(projEntries).toHaveLength(1)
+    expect(projEntries[0].days).toBe(2)
+  })
+
+  it('overlapping assignments — overlap counted once, not twice', () => {
+    // a1: 2024-01-01 ~ 2024-01-10 (10 days), a2: 2024-01-06 ~ 2024-01-20 (15 days)
+    // union = 2024-01-01 ~ 2024-01-20 = 20 days → round(2.0) = 2
+    // naive sum = 25 days → round(2.5) = 3  (wrong without dedup)
+    const a1 = mkAssignment({ person_id: 'p1', work_item_id: 'wi-split', start: '2024-01-01', end_date: '2024-01-10' })
+    const a2 = mkAssignment({ person_id: 'p1', work_item_id: 'wi-split', start: '2024-01-06', end_date: '2024-01-20' })
+    const ledger = computeLedger('p1', {
+      workItems: [wi], assignments: [a1, a2], accruals: [],
+      isHoliday: NO_HOLIDAY, today: dateToNum('2025-01-10'),
+    })
+    const projEntries = ledger.accruals.filter(e => e.type === '프로젝트휴가')
+    expect(projEntries).toHaveLength(1)
+    expect(projEntries[0].days).toBe(2)   // union 20 days → round(2.0)=2, not naive 3
+  })
+})
+
 // ── 3. Weekend sub accrual ────────────────────────────────────
 
 describe('주말/휴일대체 auto-accrual', () => {
@@ -361,7 +414,7 @@ describe('FIFO deduction', () => {
     })
     expect(ledger.usages[0].deficit).toBe(2)
     expect(ledger.usages[0].days).toBe(3)
-    expect(ledger.totalUsed).toBe(1)   // only 1 day was actually deducted
+    expect(ledger.totalUsed).toBe(3)   // §5.10: total leave days consumed regardless of accrual coverage
   })
 
   it('computes totalAccrued, totalUsed, remaining correctly', () => {

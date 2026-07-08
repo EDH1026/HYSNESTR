@@ -12,14 +12,31 @@ import Modal from '@/components/Modal'
 import { useAllWorkItems } from '@/features/workitems/hooks'
 import { useAssignmentsByPerson } from '@/features/timeline/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
+import { dateToNum } from '@/lib/date'
 import type { Person, WorkItem, Assignment } from '@/types'
 
 // ── CV entry (one row per project / proposal) ─────────────────
 
 export interface CvEntry {
   workItem: WorkItem
-  start:    string    // earliest assignment start for this person
-  end:      string    // latest assignment end_date for this person
+  periods:  Array<{start: string; end: string}>   // V-4: actual merged intervals
+}
+
+function mergeIntervals(
+  ivs: Array<{start: string; end: string}>,
+): Array<{start: string; end: string}> {
+  if (ivs.length === 0) return []
+  const sorted = [...ivs].sort((a, b) => a.start.localeCompare(b.start))
+  const merged = [{ ...sorted[0] }]
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1]
+    if (dateToNum(sorted[i].start) <= dateToNum(last.end) + 1) {
+      if (sorted[i].end > last.end) last.end = sorted[i].end
+    } else {
+      merged.push({ ...sorted[i] })
+    }
+  }
+  return merged
 }
 
 export function computeCv(
@@ -41,35 +58,33 @@ export function computeCv(
       )
       if (mine.length === 0) return []
 
-      // §5.9 V-1: for projects with a pre-study phase, use (assignment ∩ main phase).
+      // §5.9 V-1/V-4: for projects with a pre-study phase, clamp to main phase.
       // If the person only participated in pre-study, exclude this project from CV.
       if (w.type === 'project' && w.main_start) {
-        const mainStart = w.main_start   // "YYYY-MM-DD" — start of main phase
-        const mainEnd   = w.end_date     // "YYYY-MM-DD" — end of main phase
+        const mainStart = w.main_start
+        const mainEnd   = w.end_date
 
-        // Keep only assignments that overlap the main phase
         const mainMine = mine.filter(
           a => a.start <= mainEnd && a.end_date >= mainStart,
         )
-        if (mainMine.length === 0) return []  // pre-study only → exclude
+        if (mainMine.length === 0) return []
 
-        // Clamp each assignment to main phase boundaries
-        const start = mainMine
-          .map(a => (a.start >= mainStart ? a.start : mainStart))
-          .sort()[0]
-        const end   = mainMine
-          .map(a => (a.end_date <= mainEnd ? a.end_date : mainEnd))
-          .sort().reverse()[0]
-
-        return [{ workItem: w, start, end }]
+        const intervals = mainMine.map(a => ({
+          start: a.start < mainStart ? mainStart : a.start,
+          end:   a.end_date > mainEnd ? mainEnd : a.end_date,
+        }))
+        return [{ workItem: w, periods: mergeIntervals(intervals) }]
       }
 
-      // Proposals and projects without pre-study: use full assignment range
-      const start = mine.map(a => a.start).sort()[0]
-      const end   = mine.map(a => a.end_date).sort().reverse()[0]
-      return [{ workItem: w, start, end }]
+      // Proposals and projects without pre-study: use full assignment ranges
+      const intervals = mine.map(a => ({ start: a.start, end: a.end_date }))
+      return [{ workItem: w, periods: mergeIntervals(intervals) }]
     })
-    .sort((a, b) => b.end.localeCompare(a.end))
+    .sort((a, b) => {
+      const endA = a.periods[a.periods.length - 1]?.end ?? ''
+      const endB = b.periods[b.periods.length - 1]?.end ?? ''
+      return endB.localeCompare(endA)
+    })
 }
 
 // ── HTML generator ────────────────────────────────────────────
@@ -90,7 +105,7 @@ function generateHtml(person: Person, entries: CvEntry[], includeProposal: boole
       <dl class="details">
         <dt>Engagement No.</dt><dd>${escHtml(e.workItem.engagement_number ?? '—')}</dd>
         <dt>Client</dt><dd>${escHtml(e.workItem.client ?? '—')}</dd>
-        <dt>Period</dt><dd>${e.start} – ${e.end}</dd>
+        <dt>Period</dt><dd>${e.periods.map(p => `${p.start} – ${p.end}`).join(', ')}</dd>
       </dl>
       ${tags}
     </article>`
@@ -260,7 +275,7 @@ export default function CvPanel({ person, onClose, inline }: Props) {
                   <h3 className="text-sm font-semibold text-gray-900 truncate">{e.workItem.name}</h3>
                 </div>
                 <span className="flex-shrink-0 font-mono text-xs text-muted">
-                  {e.start} – {e.end}
+                  {e.periods.map(p => `${p.start} – ${p.end}`).join(', ')}
                 </span>
               </div>
 

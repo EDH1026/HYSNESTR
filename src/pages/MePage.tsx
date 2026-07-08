@@ -248,7 +248,7 @@ function CvTab({ entries }: { entries: CvEntry[] }) {
           <div className="flex items-start justify-between gap-2">
             <h3 className="text-sm font-semibold text-gray-900">{e.workItem.name}</h3>
             <span className="flex-shrink-0 font-mono text-xs text-muted">
-              {e.start} – {e.end}
+              {e.periods.map(p => `${p.start} – ${p.end}`).join(', ')}
             </span>
           </div>
           <dl className="grid grid-cols-[130px_1fr] gap-x-3 gap-y-1 text-xs">

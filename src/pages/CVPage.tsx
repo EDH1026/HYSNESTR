@@ -93,11 +93,13 @@ export default function CVPage() {
     if (periodFrom || periodTo) {
       out = out.filter(p => {
         const entries = computeCv(p.id, workItems, assignments)
-        return entries.some((e: { start: string; end: string }) => {
-          if (periodTo   && e.start > periodTo)   return false
-          if (periodFrom && e.end   < periodFrom) return false
-          return true
-        })
+        return entries.some(e =>
+          e.periods.some(p => {
+            if (periodTo   && p.start > periodTo)   return false
+            if (periodFrom && p.end   < periodFrom) return false
+            return true
+          }),
+        )
       })
     }
 
