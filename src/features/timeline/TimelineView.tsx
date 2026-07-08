@@ -23,7 +23,7 @@ import {
   type DragEvent as ReactDragEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye, Pencil, Copy, Trash2, FileText, CalendarDays } from 'lucide-react'
 
 import {
@@ -1692,6 +1692,10 @@ export default function TimelineView() {
     return tops
   }, [rowHeights])
 
+  // Ref kept in sync so RAF callbacks can read the latest rowTops after re-renders
+  const rowTopsRef = useRef<number[]>([])
+  useEffect(() => { rowTopsRef.current = rowTops }, [rowTops])
+
   // Scroll sync — vertical only (header X is native via single container)
   function handleGridScroll() {
     if (isSyncingRef.current) return
@@ -1730,38 +1734,51 @@ export default function TimelineView() {
   useEffect(() => { scrollToToday() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // D-6 / §5.11a: handle navigation state (dashboard drill-down + global search jump)
+  // T-16 fix: track last-handled key (not a boolean) so re-navigation to the same/different
+  // person via Ctrl+K (same route, no remount) always re-triggers correctly.
   const location = useLocation()
+  const navigate = useNavigate()
   const navState = (location.state ?? null) as {
     highlightPersonId?:    string
     openDetailWorkItemId?: string
   } | null
-  const hasHandledNavState = useRef(false)
+  const lastHandledNavKey = useRef<string>('')
   useEffect(() => {
-    if (hasHandledNavState.current) return
-    if (!navState?.highlightPersonId && !navState?.openDetailWorkItemId) return
-    if (rows.length === 0) return   // wait for data
-    hasHandledNavState.current = true
-    // Clear state so back/forward navigation doesn't retrigger
-    window.history.replaceState(null, '')
+    const pid = navState?.highlightPersonId ?? ''
+    const wid = navState?.openDetailWorkItemId ?? ''
 
-    if (navState.highlightPersonId) {
-      const pid = navState.highlightPersonId
-      setHighlightedPersonIds(new Set([pid]))
-      setViewMode('person')
-      const rowIdx = rows.findIndex(r => r.kind === 'person' && r.person.id === pid)
-      const scrollTop = rowIdx >= 0 ? Math.max(0, rowTops[rowIdx] - 60) : undefined
-      requestAnimationFrame(() => {
-        const el = gridBodyRef.current
-        if (!el) return
-        // T-16: scroll to today horizontally (same logic as the "오늘" button)
-        const leftToday = Math.max(0, (todayNum - viewStart) * dayWidth - el.clientWidth / 2)
-        el.scrollTo({ left: leftToday, ...(scrollTop !== undefined ? { top: scrollTop } : {}), behavior: 'smooth' })
-        if (scrollTop !== undefined) labelsBodyRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' })
-      })
+    if (!pid && !wid) {
+      // navState was cleared (by us below) → reset key so the next navigation re-triggers
+      lastHandledNavKey.current = ''
+      return
     }
 
-    if (navState.openDetailWorkItemId) {
-      const wi = workItems.find(w => w.id === navState.openDetailWorkItemId)
+    const key = `${pid}|${wid}`
+    if (key === lastHandledNavKey.current) return  // guard against rows-refetch re-runs
+    if (rows.length === 0) return                  // wait for data
+
+    lastHandledNavKey.current = key
+    // Clear through React Router so useLocation() updates and dep changes for next navigation
+    navigate(location.pathname, { replace: true, state: null })
+
+    if (pid) {
+      setHighlightedPersonIds(new Set([pid]))
+      setViewMode('person')
+      // Double RAF: first frame lets React flush state-update re-renders (setHighlightedPersonIds),
+      // second frame reads the fresh rowTopsRef and performs the scroll.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const el = gridBodyRef.current
+        if (!el) return
+        const rowIdx = rows.findIndex(r => r.kind === 'person' && r.person.id === pid)
+        const freshTop = rowIdx >= 0 ? Math.max(0, rowTopsRef.current[rowIdx] - 60) : undefined
+        const leftToday = Math.max(0, (todayNum - viewStart) * dayWidth - el.clientWidth / 2)
+        el.scrollTo({ left: leftToday, ...(freshTop !== undefined ? { top: freshTop } : {}), behavior: 'smooth' })
+        if (freshTop !== undefined) labelsBodyRef.current?.scrollTo({ top: freshTop, behavior: 'smooth' })
+      }))
+    }
+
+    if (wid) {
+      const wi = workItems.find(w => w.id === wid)
       if (wi) setDetailWorkItem(wi)
     }
   }, [rows, navState?.highlightPersonId, navState?.openDetailWorkItemId])  // eslint-disable-line react-hooks/exhaustive-deps
