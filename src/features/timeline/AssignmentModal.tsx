@@ -15,7 +15,8 @@ import Modal                            from '@/components/Modal'
 import { useAllHolidays, useLeaveTypes }  from '@/features/admin/hooks'
 import { useCreateAssignment, useUpdateAssignment, useDeleteAssignment } from './hooks'
 import { useHistory }  from '@/lib/history'
-import { makeAssignmentCreate, makeAssignmentModalEdit, makeAssignmentDelete } from '@/lib/historyOps'
+import { makeAssignmentCreate, makeAssignmentModalEdit, makeAssignmentDelete, combine } from '@/lib/historyOps'
+import type { HistoryEntry } from '@/lib/history'
 import type { WorkItem, Person, LeaveType } from '@/types'
 import type { ModalState } from './types'
 
@@ -132,10 +133,12 @@ interface Props {
   canEditPipeline: boolean   // hides pipeline items in selector when false
   readOnly?:       boolean   // true → view only (no save button)
   onClose:         () => void
+  // E-5: called after save when assignment is kind=work; returns HistoryEntry or null
+  onWorkItemExpand?: (wiId: string, newStart: string, newEnd: string) => HistoryEntry | null
 }
 
 export default function AssignmentModal({
-  state, people, workItems, canEditPipeline, readOnly = false, onClose,
+  state, people, workItems, canEditPipeline, readOnly = false, onClose, onWorkItemExpand,
 }: Props) {
   const create = useCreateAssignment()
   const update = useUpdateAssignment()
@@ -280,12 +283,18 @@ export default function AssignmentModal({
       note:         form.note || null,
     }
     try {
+      // E-5: compute work item expansion (fires mutation inside callback, returns HistoryEntry)
+      const wiEnt = base.kind === 'work' && base.work_item_id
+        ? onWorkItemExpand?.(base.work_item_id, base.start, base.end_date) ?? null
+        : null
       if (state.mode === 'create') {
         const created = await create.mutateAsync(base)
-        push(makeAssignmentCreate(created))
+        const asgnEnt = makeAssignmentCreate(created)
+        push(wiEnt ? combine('배정 생성', asgnEnt, wiEnt) : asgnEnt)
       } else if (state.editTarget) {
         await update.mutateAsync({ id: state.editTarget.id, ...base })
-        push(makeAssignmentModalEdit(state.editTarget, base))
+        const asgnEnt = makeAssignmentModalEdit(state.editTarget, base)
+        push(wiEnt ? combine('배정 수정', asgnEnt, wiEnt) : asgnEnt)
       }
       onClose()
     } catch (err) {

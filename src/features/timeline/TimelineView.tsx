@@ -42,7 +42,8 @@ import {
 import { useAllHolidays, useSettings }   from '@/features/admin/hooks'
 import { useAuthz }         from '@/hooks/useAuthz'
 import { useHistory }       from '@/lib/history'
-import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete } from '@/lib/historyOps'
+import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete, combine } from '@/lib/historyOps'
+import type { HistoryEntry } from '@/lib/history'
 import { useAuth }          from '@/hooks/useAuth'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import AssignmentModal      from './AssignmentModal'
@@ -1876,6 +1877,7 @@ export default function TimelineView() {
     if (delta === 0) { setSelectedIds(new Set()); return }
     const isHol = (n: number) => holidaySet.has(n)
     const allPairs: { id: string; oldStart: string; oldEnd: string; newStart: string; newEnd: string }[] = []
+    const wiExpItems: { kind: string; work_item_id: string | null | undefined; newStart: string; newEnd: string }[] = []
     for (const selId of selectedIds) {
       const a = assignments.find(x => x.id === selId)
       if (!a || !canEditAsgn(a)) continue
@@ -1893,8 +1895,14 @@ export default function TimelineView() {
       const p = { start: numToStr(newS), end_date: numToStr(newE) }
       updateAssignment.mutate({ id: selId, ...p })
       allPairs.push({ id: selId, oldStart: a.start, oldEnd: a.end_date, newStart: p.start, newEnd: p.end_date })
+      // E-5: collect items for work item expansion check
+      wiExpItems.push({ kind: a.kind, work_item_id: a.work_item_id, newStart: p.start, newEnd: p.end_date })
     }
-    if (allPairs.length > 0) push(makeAssignmentDrag('다중 배정 이동', allPairs))
+    if (allPairs.length > 0) {
+      const asgnEntry = makeAssignmentDrag('다중 배정 이동', allPairs)
+      const wiExps = buildWIExpansions(wiExpItems)
+      push(wiExps.length ? combine('다중 배정 이동', asgnEntry, ...wiExps) : asgnEntry)
+    }
     setSelectedIds(new Set())
   }
 
@@ -1921,9 +1929,12 @@ export default function TimelineView() {
     const movedPerson = peopleMap.get(moved.person_id)
     if (movedPerson?.rank === 'Partner' && moved.kind === 'work') {
       updateAssignment.mutate({ id, ...patch })
-      push(makeAssignmentDrag('배정 이동', [{
+      const asgnEntry = makeAssignmentDrag('배정 이동', [{
         id, oldStart: moved.start, oldEnd: moved.end_date, newStart: patch.start, newEnd: patch.end_date,
-      }]))
+      }])
+      // E-5: auto-expand work item if assignment goes out of bounds
+      const wiExps = buildWIExpansions([{ kind: moved.kind, work_item_id: moved.work_item_id, newStart: patch.start, newEnd: patch.end_date }])
+      push(wiExps.length ? combine('배정 이동', asgnEntry, ...wiExps) : asgnEntry)
       return
     }
 
@@ -1979,7 +1990,17 @@ export default function TimelineView() {
         return { id: pp.id, oldStart: orig?.start ?? pp.start, oldEnd: orig?.end_date ?? pp.end_date, newStart: pp.start, newEnd: pp.end_date }
       }),
     ]
-    push(makeAssignmentDrag('배정 이동', allPairs))
+    // E-5: auto-expand work items for moved + cascaded work assignments
+    const asgnEntry = makeAssignmentDrag('배정 이동', allPairs)
+    const wiExpItems = [
+      { kind: moved.kind, work_item_id: moved.work_item_id, newStart: effectivePatch.start, newEnd: effectivePatch.end_date },
+      ...pushPatches.map(pp => {
+        const orig = assignments.find(a => a.id === pp.id)
+        return { kind: orig?.kind ?? '', work_item_id: orig?.work_item_id, newStart: pp.start, newEnd: pp.end_date }
+      }),
+    ]
+    const wiExps = buildWIExpansions(wiExpItems)
+    push(wiExps.length ? combine('배정 이동', asgnEntry, ...wiExps) : asgnEntry)
   }
   function handleUpdateWorkItem(
     id: string,
@@ -1988,6 +2009,38 @@ export default function TimelineView() {
     const wi = workItemMap.get(id)
     updateWorkItem.mutate({ id, ...patch })
     if (wi) push(makeWorkItemUpdate(wi, patch))
+  }
+
+  // E-5: compute work item expansion patches for a batch of assignment changes.
+  // Returns one entry per affected work item (collapsed to min start / max end).
+  // Fires updateWorkItem mutations as a side effect; returns HistoryEntry[] for bundling.
+  function buildWIExpansions(
+    items: { kind: string; work_item_id: string | null | undefined; newStart: string; newEnd: string }[],
+  ): HistoryEntry[] {
+    // Collect max end / min start per wiId across all items
+    const agg = new Map<string, { minS: string; maxE: string; wi: WorkItem }>()
+    for (const item of items) {
+      if (item.kind !== 'work' || !item.work_item_id) continue
+      const wi = workItemMap.get(item.work_item_id)
+      if (!wi || isWIClosed(wi)) continue
+      const cur = agg.get(item.work_item_id)
+      if (!cur) {
+        agg.set(item.work_item_id, { minS: item.newStart, maxE: item.newEnd, wi })
+      } else {
+        if (dateToNum(item.newStart) < dateToNum(cur.minS)) cur.minS = item.newStart
+        if (dateToNum(item.newEnd)   > dateToNum(cur.maxE)) cur.maxE = item.newEnd
+      }
+    }
+    const entries: HistoryEntry[] = []
+    for (const [wiId, { minS, maxE, wi }] of agg) {
+      const patch: { start?: string; end_date?: string } = {}
+      if (dateToNum(maxE) > dateToNum(wi.end_date))  patch.end_date = maxE
+      if (dateToNum(minS) < dateToNum(wi.start))     patch.start    = minS
+      if (!patch.start && !patch.end_date) continue
+      updateWorkItem.mutate({ id: wiId, ...patch })
+      entries.push(makeWorkItemUpdate(wi, patch))
+    }
+    return entries
   }
 
   // ─── Per-row grid content renderer ────────────────────────────────────────
@@ -2416,6 +2469,11 @@ export default function TimelineView() {
         workItems={workItems}
         canEditPipeline={canEditPipeline}
         onClose={closeModal}
+        onWorkItemExpand={(wiId, newStart, newEnd) => {
+          // E-5: modal create/edit path — fire expansion and return HistoryEntry for bundling
+          const exps = buildWIExpansions([{ kind: 'work', work_item_id: wiId, newStart, newEnd }])
+          return exps[0] ?? null
+        }}
       />
 
       {/* ── Work item detail modal (§5.7) ── */}

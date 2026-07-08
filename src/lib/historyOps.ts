@@ -9,6 +9,17 @@ import { queryKeys }   from '@/lib/queryKeys'
 import type { HistoryEntry } from '@/lib/history'
 import type { Assignment, WorkItem, Person, Accrual } from '@/types'
 
+// ── Combine ───────────────────────────────────────────────────
+// Merge multiple HistoryEntry objects into one atomic Undo/Redo step.
+// Undo runs entries in reverse order; Redo runs in original order.
+export function combine(label: string, ...entries: HistoryEntry[]): HistoryEntry {
+  return {
+    label,
+    undo: async () => { for (const e of [...entries].reverse()) await e.undo() },
+    redo: async () => { for (const e of entries) await e.redo() },
+  }
+}
+
 function inv(key: readonly unknown[]) {
   void queryClient.invalidateQueries({ queryKey: key as unknown[] })
 }
