@@ -20,10 +20,6 @@ interface Props {
 
 const MAX_RESULTS = 6
 
-function highlight(text: string, q: string): string {
-  return text  // purely used for matching; rendering shows raw text
-}
-
 function matchesPerson(p: Person, q: string): boolean {
   const lq = q.toLowerCase()
   if (p.name.toLowerCase().includes(lq)) return true

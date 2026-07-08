@@ -38,12 +38,11 @@ import {
   useAllAssignments,
   useUpdateAssignment,
   useDeleteAssignment,
-  useCreateAssignment,
 } from '@/features/timeline/hooks'
 import { useAllHolidays, useSettings }   from '@/features/admin/hooks'
 import { useAuthz }         from '@/hooks/useAuthz'
 import { useHistory }       from '@/lib/history'
-import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete, makeAssignmentCreate } from '@/lib/historyOps'
+import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete } from '@/lib/historyOps'
 import { useAuth }          from '@/hooks/useAuth'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import AssignmentModal      from './AssignmentModal'
@@ -965,7 +964,7 @@ interface CtxMenuProps {
 }
 
 function AssignmentContextMenu({
-  assignment, x, y, workItem,
+  assignment, x, y,
   hasEditRole, isClosed, canSeeLeave,
   onClose, onEdit, onDuplicate, onDelete, onDetail, onLeave,
 }: CtxMenuProps) {
@@ -1356,7 +1355,6 @@ export default function TimelineView() {
   const { data: settings }       = useSettings()
   const updateAssignment = useUpdateAssignment()
   const deleteAssignment = useDeleteAssignment()
-  const createAssignment = useCreateAssignment()
   const updateWorkItem   = useUpdateWorkItem()
   const { canEdit }      = useAuthz()
   const { push }         = useHistory()
@@ -1390,13 +1388,11 @@ export default function TimelineView() {
   const [selectedIds,       setSelectedIds]       = useState<Set<string>>(new Set())
   const [multiDragLeaderId, setMultiDragLeaderId] = useState<string | null>(null)
   const [multiDragDelta,    setMultiDragDelta]    = useState<number | null>(null)
-  // Stable refs for useCallback closures
+  // Stable refs for useCallback closures (selectedIds / assignments declared above; peopleMapRef declared after peopleMap)
   const selectedIdsRef  = useRef(selectedIds)
   const assignmentsRef  = useRef(assignments)
-  const peopleMapRef    = useRef(peopleMap)
   useEffect(() => { selectedIdsRef.current  = selectedIds  }, [selectedIds])
   useEffect(() => { assignmentsRef.current  = assignments  }, [assignments])
-  useEffect(() => { peopleMapRef.current    = peopleMap    }, [peopleMap])
 
   // T-16: live drag position so Partner lane counts recompute in real-time during drag
   const [draggingLive, setDraggingLive] = useState<{ id: string; start: number; end: number } | null>(null)
@@ -1446,6 +1442,9 @@ export default function TimelineView() {
   const peopleMap    = useMemo(() => idx(people),    [people])
   const workItemMap  = useMemo(() => idx(workItems), [workItems])
   const colorMap     = useMemo(() => buildWorkItemColorMap(workItems), [workItems])
+  // peopleMapRef: stable ref for useCallback closures (must be after peopleMap)
+  const peopleMapRef = useRef(peopleMap)
+  useEffect(() => { peopleMapRef.current = peopleMap }, [peopleMap])
 
   const todayNum = useMemo(() => today(), [])
 

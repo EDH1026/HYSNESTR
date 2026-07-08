@@ -4,7 +4,7 @@
  * 인력·작업항목 각각 CSV 템플릿 다운로드 + 업로드 → 미리보기/검증 → 확정.
  * 작업항목 업로드는 기존 BulkUploadModal 재활용.
  */
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef } from 'react'
 import { Upload, Download, AlertTriangle, CheckCircle2, Loader2, Users, Briefcase } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { supabase }   from '@/lib/supabase'
@@ -111,8 +111,8 @@ interface CommitResult { inserted: number; updated: number; failed: number; erro
 
 async function commitPeople(rows: PersonRow[], upsertOnLPN: boolean): Promise<CommitResult> {
   // Fetch existing LPN index
-  const { data: existing, error: fetchErr } = await supabase
-    .from('people').select('id, lpn')
+  const { data: existing, error: fetchErr } = await (supabase
+    .from('people').select('id, lpn') as any as Promise<{ data: { id: string; lpn: string | null }[] | null; error: { message: string } | null }>)
   if (fetchErr) throw new Error(fetchErr.message)
   const lpnMap = new Map<string, string>()
   for (const p of existing ?? []) {
@@ -133,7 +133,7 @@ async function commitPeople(rows: PersonRow[], upsertOnLPN: boolean): Promise<Co
     }
     const existingId = r.lpn ? lpnMap.get(r.lpn) : undefined
     if (existingId && upsertOnLPN) {
-      const { error } = await supabase.from('people').update(payload).eq('id', existingId)
+      const { error } = await supabase.from('people').update(payload as any).eq('id', existingId)
       if (error) errors.push(`행 ${r.rowNum} 갱신 실패: ${error.message}`)
       else updated++
     } else {
