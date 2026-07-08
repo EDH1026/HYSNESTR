@@ -458,6 +458,7 @@ interface AssignmentBarProps {
   onUpdate:     (id: string, patch: { start: string; end_date: string }, dragKind?: 'move' | 'resize-left' | 'resize-right') => void
   onClick:      (a: Assignment) => void
   onContextMenu?: (a: Assignment, x: number, y: number) => void  // T-12: right-click context menu
+  onDoubleClick?: () => void   // T-15: workitem-sub bar dblclick → person highlight
   // T-14: multi-select
   isSelected?:     boolean
   multiMoveDelta?: number | null   // follower-bar live preview offset (calendar days)
@@ -470,7 +471,7 @@ function AssignmentBar({
   height    = ROW_H - 2 * BAR_PAD,
   isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo,
   clampStart, onDragLive, onDragEnd,
-  onUpdate, onClick, onContextMenu,
+  onUpdate, onClick, onContextMenu, onDoubleClick,
   isSelected, multiMoveDelta, onToggleSelect,
 }: AssignmentBarProps) {
   const origStart = useMemo(() => dateToNum(assignment.start),    [assignment.start])
@@ -645,6 +646,7 @@ function AssignmentBar({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
+        onDoubleClick={onDoubleClick ? e => { e.stopPropagation(); onDoubleClick() } : undefined}
         onContextMenu={e => {
           e.preventDefault()
           e.stopPropagation()
@@ -887,7 +889,12 @@ function RowLabel({ row, color = '#1e40af', isExpanded, highlighted, rowHeight, 
   if (row.kind === 'workitem-sub') {
     const p = row.person
     return (
-      <div style={{ height: ROW_H }} className="flex items-center gap-2 pl-8 pr-3 border-b border-border/30 bg-surface-50/60">
+      <div
+        style={{ height: ROW_H, borderLeft: highlighted ? '3px solid #eab308' : '3px solid transparent' }}
+        className="flex items-center gap-2 pl-6 pr-3 border-b border-border/30 bg-surface-50/60"
+        onDoubleClick={onDoubleClick}
+        title={onDoubleClick ? `더블클릭: ${p.name} 하이라이트 토글` : undefined}
+      >
         <div style={{ width: 2, height: 16, borderRadius: 1, background: '#cbd5e1', flexShrink: 0 }} />
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium text-gray-700 truncate">{p.name}</div>
@@ -2038,6 +2045,7 @@ export default function TimelineView() {
         onDragLive={handleDragLive}
         onDragEnd={handleDragEnd}
         onBarCtxMenu={(a, x, y) => setCtxMenu({ assignment: a, x, y })}
+        onPersonDblClick={globalEdit ? toggleHighlight : undefined}
         selectedIds={selectedIds}
         multiDragLeaderId={multiDragLeaderId}
         multiDragDelta={multiDragDelta}
@@ -2317,7 +2325,9 @@ export default function TimelineView() {
                   (row.kind === 'leave-all' && expandedLeave)
                 }
                 highlighted={
-                  globalEdit && viewMode === 'person' && row.kind === 'person'
+                  globalEdit && row.kind === 'person' && viewMode === 'person'
+                    ? highlightedPersonIds.has(row.person.id)
+                    : globalEdit && row.kind === 'workitem-sub' && viewMode === 'workitem'
                     ? highlightedPersonIds.has(row.person.id)
                     : undefined
                 }
@@ -2328,7 +2338,9 @@ export default function TimelineView() {
                 }
                 onOpenDetail={row.kind === 'workitem' ? () => setDetailWorkItem(row.workItem) : undefined}
                 onDoubleClick={
-                  globalEdit && viewMode === 'person' && row.kind === 'person'
+                  globalEdit && row.kind === 'person' && viewMode === 'person'
+                    ? () => toggleHighlight(row.person.id)
+                    : globalEdit && row.kind === 'workitem-sub' && viewMode === 'workitem'
                     ? () => toggleHighlight(row.person.id)
                     : undefined
                 }
@@ -2497,6 +2509,7 @@ interface GridRowProps {
   onDragLive?:     (id: string, liveStart: number, liveEnd: number) => void
   onDragEnd?:      () => void
   onBarCtxMenu?:   (a: Assignment, x: number, y: number) => void   // T-12
+  onPersonDblClick?: (personId: string) => void   // T-15: workitem-sub person dblclick
   // T-14: multi-select
   selectedIds?:       Set<string>
   multiDragLeaderId?: string | null
@@ -2510,7 +2523,7 @@ function GridRow({
   peopleMap, workItemMap, colorMap, holidaySet,
   virtualLeaveBlocks,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
-  onDragLive, onDragEnd, onBarCtxMenu,
+  onDragLive, onDragEnd, onBarCtxMenu, onPersonDblClick,
   selectedIds, multiDragLeaderId, multiDragDelta, onToggleSelect,
 }: GridRowProps) {
   const rowRef    = useRef<HTMLDivElement>(null)
@@ -2772,6 +2785,7 @@ function GridRow({
             onUpdate={onUpdate}
             onClick={onOpenEdit}
             onContextMenu={onBarCtxMenu}
+            onDoubleClick={row.kind === 'workitem-sub' && onPersonDblClick ? () => onPersonDblClick(row.person.id) : undefined}
             isSelected={isSelected}
             multiMoveDelta={isSelected && !isLeader ? multiDragDelta : null}
             onToggleSelect={onToggleSelect}
