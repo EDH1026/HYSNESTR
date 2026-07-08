@@ -4,7 +4,7 @@
  * 탭: 적립 관리 | 퇴사 정산 | 수치 안내
  */
 import { useState, useMemo, useCallback, type FormEvent } from 'react'
-import { Plus, Trash2, Loader2, AlertTriangle, CheckCircle2, Info } from 'lucide-react'
+import { Plus, Trash2, Loader2, AlertTriangle, Info } from 'lucide-react'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import { computeSettlement, computeTimesheetFigures } from './annualLeave'
 import {

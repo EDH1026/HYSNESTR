@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { computeLedger, delayBonus, buildHolidaySet } from './ledger'
-import { dateToNum, numToStr } from '@/lib/date'
+import { dateToNum } from '@/lib/date'
 import type { WorkItem, Assignment, Accrual } from '@/types'
 
 // ── Test helpers ──────────────────────────────────────────────
