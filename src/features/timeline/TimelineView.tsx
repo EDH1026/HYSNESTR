@@ -23,7 +23,7 @@ import {
   type DragEvent as ReactDragEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye } from 'lucide-react'
+import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye, Pencil, Copy, Trash2, FileText, CalendarDays } from 'lucide-react'
 
 import {
   dateToNum, numToStr, today, isWeekend, isSaturday,
@@ -36,11 +36,14 @@ import { useAllWorkItems, useUpdateWorkItem }     from '@/features/workitems/hoo
 import {
   useAllAssignments,
   useUpdateAssignment,
+  useDeleteAssignment,
+  useCreateAssignment,
 } from '@/features/timeline/hooks'
 import { useAllHolidays, useSettings }   from '@/features/admin/hooks'
 import { useAuthz }         from '@/hooks/useAuthz'
 import { useHistory }       from '@/lib/history'
-import { makeAssignmentDrag, makeWorkItemUpdate } from '@/lib/historyOps'
+import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete, makeAssignmentCreate } from '@/lib/historyOps'
+import { useAuth }          from '@/hooks/useAuth'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import AssignmentModal      from './AssignmentModal'
 import WorkItemDetailModal  from '@/features/workitems/WorkItemDetailModal'
@@ -452,8 +455,13 @@ interface AssignmentBarProps {
   clampStart?:  number          // E-6: earliest allowed start day for non-Partner live drag preview
   onDragLive?:  (id: string, liveStart: number, liveEnd: number) => void  // T-16: real-time lane recompute
   onDragEnd?:   () => void      // T-16: clear live drag state
-  onUpdate:     (id: string, patch: { start: string; end_date: string }) => void
+  onUpdate:     (id: string, patch: { start: string; end_date: string }, dragKind?: 'move' | 'resize-left' | 'resize-right') => void
   onClick:      (a: Assignment) => void
+  onContextMenu?: (a: Assignment, x: number, y: number) => void  // T-12: right-click context menu
+  // T-14: multi-select
+  isSelected?:     boolean
+  multiMoveDelta?: number | null   // follower-bar live preview offset (calendar days)
+  onToggleSelect?: (a: Assignment) => void
 }
 
 function AssignmentBar({
@@ -462,7 +470,8 @@ function AssignmentBar({
   height    = ROW_H - 2 * BAR_PAD,
   isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo,
   clampStart, onDragLive, onDragEnd,
-  onUpdate, onClick,
+  onUpdate, onClick, onContextMenu,
+  isSelected, multiMoveDelta, onToggleSelect,
 }: AssignmentBarProps) {
   const origStart = useMemo(() => dateToNum(assignment.start),    [assignment.start])
   const origEnd   = useMemo(() => dateToNum(assignment.end_date), [assignment.end_date])
@@ -477,13 +486,17 @@ function AssignmentBar({
     kind:         'move' | 'resize-left' | 'resize-right'
     origStart:    number; origEnd: number; startX: number; moved: boolean
     origWorkdays: number
+    modKey:       boolean   // T-14: shift/ctrl pressed at drag start
   } | null>(null)
 
   useEffect(() => { setLiveStart(origStart) }, [origStart])
   useEffect(() => { setLiveEnd(origEnd)     }, [origEnd])
 
-  const x = (liveStart - viewStart) * dayWidth
-  const w = Math.max((liveEnd - liveStart + 1) * dayWidth, 3)
+  // T-14: follower bars show offset position during multi-drag
+  const dispStart = (multiMoveDelta != null) ? origStart + multiMoveDelta : liveStart
+  const dispEnd   = (multiMoveDelta != null) ? origEnd   + multiMoveDelta : liveEnd
+  const x = (dispStart - viewStart) * dayWidth
+  const w = Math.max((dispEnd - dispStart + 1) * dayWidth, 3)
 
   // E-7: overhang container — HANDLE_HIT px hit-zone on each side regardless of bar width;
   //      container widens as needed to guarantee MIN_MOVE_PX of central move zone.
@@ -503,19 +516,22 @@ function AssignmentBar({
     return 'move'
   }
 
-  const [tipPos, setTipPos] = useState<{ x: number; y: number } | null>(null)
+  const [tipPos,   setTipPos]   = useState<{ x: number; y: number } | null>(null)
+  const [dragTip,  setDragTip]  = useState<{ x: number; y: number } | null>(null)
   const isHolidayFn = useCallback((n: number) => holidaySet.has(n), [holidaySet])
 
   function onPointerDown(e: ReactPointerEvent) {
     setTipPos(null)
     e.stopPropagation()
     if (!canEdit) return
+    if (multiMoveDelta != null) return  // T-14: follower bar during multi-drag — don't initiate drag
     e.preventDefault()
     const rect = e.currentTarget.getBoundingClientRect()
     const posX = e.clientX - rect.left
     const kind = getKind(posX)
     const origWorkdays = isLeave ? workdayCount(liveStart, liveEnd, holidaySet) : 0
-    dragRef.current = { kind, origStart: liveStart, origEnd: liveEnd, startX: e.clientX, moved: false, origWorkdays }
+    const modKey = e.shiftKey || e.ctrlKey || e.metaKey
+    dragRef.current = { kind, origStart: liveStart, origEnd: liveEnd, startX: e.clientX, moved: false, origWorkdays, modKey }
     containerRef.current?.setPointerCapture(e.pointerId)
     // Snap cursor immediately to drag operation
     if (containerRef.current) containerRef.current.style.cursor = kind === 'move' ? 'grabbing' : 'ew-resize'
@@ -563,23 +579,31 @@ function AssignmentBar({
       setLiveEnd(newEnd)
       onDragLive?.(assignment.id, os, newEnd)
     }
+    // T-13: update drag-preview tooltip position
+    setDragTip({ x: e.clientX, y: e.clientY })
   }
 
   function onPointerUp() {
     if (!dragRef.current) return
-    const moved = dragRef.current.moved
+    const moved  = dragRef.current.moved
+    const kind   = dragRef.current.kind
+    const modKey = dragRef.current.modKey
     dragRef.current = null
+    setDragTip(null)
     if (containerRef.current) containerRef.current.style.cursor = canEdit ? 'grab' : 'pointer'
     if (!moved) {
-      onClick(assignment)
+      // T-14: Shift/Ctrl+click → toggle selection; plain click → open edit modal
+      if (modKey && onToggleSelect) onToggleSelect(assignment)
+      else onClick(assignment)
     } else {
-      onUpdate(assignment.id, { start: numToStr(liveStart), end_date: numToStr(liveEnd) })
+      onUpdate(assignment.id, { start: numToStr(liveStart), end_date: numToStr(liveEnd) }, kind)
     }
     onDragEnd?.()
   }
 
   function onPointerCancel() {
     dragRef.current = null
+    setDragTip(null)
     if (containerRef.current) containerRef.current.style.cursor = canEdit ? 'grab' : 'pointer'
     setLiveStart(origStart)
     setLiveEnd(origEnd)
@@ -621,6 +645,12 @@ function AssignmentBar({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
+        onContextMenu={e => {
+          e.preventDefault()
+          e.stopPropagation()
+          setTipPos(null)
+          onContextMenu?.(assignment, e.clientX, e.clientY)
+        }}
         onMouseEnter={e => {
           setHovered(true)
           if (tooltipInfo) setTipPos({ x: e.clientX, y: e.clientY })
@@ -636,7 +666,10 @@ function AssignmentBar({
           height:       '100%',
           borderRadius: 4,
           overflow:     'hidden',
-          boxShadow:    '0 1px 2px rgba(0,0,0,0.15)',
+          // T-14: selection ring
+          boxShadow:    isSelected
+            ? '0 0 0 2px #3b82f6, 0 0 0 3.5px rgba(255,255,255,0.85)'
+            : '0 1px 2px rgba(0,0,0,0.15)',
           pointerEvents:'none',
         }}>
           {(() => {
@@ -732,6 +765,38 @@ function AssignmentBar({
           </>
         )}
       </div>
+
+      {/* T-13: Drag-preview tooltip — live dates during move / resize */}
+      {dragTip && createPortal(
+        <div style={{
+          position:     'fixed',
+          left:         dragTip.x + 14,
+          top:          dragTip.y - 42,
+          zIndex:       9999,
+          pointerEvents:'none',
+          background:   'rgba(15,23,42,0.92)',
+          color:        'white',
+          borderRadius: 6,
+          padding:      '4px 10px',
+          fontSize:     12,
+          fontWeight:   500,
+          lineHeight:   1.5,
+          boxShadow:    '0 4px 12px rgba(0,0,0,0.3)',
+          whiteSpace:   'nowrap',
+        }}>
+          {(() => {
+            const s = dayOfMonthLabel(liveStart)
+            const e = dayOfMonthLabel(liveEnd)
+            if (isLeave) {
+              const wd = workdayCount(liveStart, liveEnd, holidaySet)
+              return `${s} → ${e} · 영업일 ${wd}일`
+            }
+            const cd = liveEnd - liveStart + 1
+            return `${s} → ${e} · ${cd}일`
+          })()}
+        </div>,
+        document.body,
+      )}
 
       {/* Hover tooltip — portal so it renders above all stacking contexts */}
       {tipPos && tooltipInfo && createPortal(
@@ -875,6 +940,129 @@ function GhostBar({ startNum, endNum, dayWidth, viewStart }: {
       border: '2px dashed rgba(99,102,241,0.55)',
       borderRadius: 4, pointerEvents: 'none', zIndex: 8,
     }} />
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: AssignmentContextMenu (T-12)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface CtxMenuProps {
+  assignment:  Assignment
+  x:           number
+  y:           number
+  workItem?:   WorkItem
+  hasEditRole: boolean   // user has edit permission (ignoring Closed status)
+  isClosed:    boolean   // linked work item is Closed (always false for leave)
+  canSeeLeave: boolean   // viewer: only own person; editor+: always
+  onClose:     () => void
+  onEdit:      () => void
+  onDuplicate: () => void
+  onDelete:    () => void
+  onDetail:    () => void
+  onLeave:     () => void
+}
+
+function AssignmentContextMenu({
+  assignment, x, y, workItem,
+  hasEditRole, isClosed, canSeeLeave,
+  onClose, onEdit, onDuplicate, onDelete, onDetail, onLeave,
+}: CtxMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function onMouseDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) onClose()
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown',   onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown',   onKeyDown)
+    }
+  }, [onClose])
+
+  // Clamp to viewport
+  const MENU_W = 196
+  const left = Math.min(x + 4, window.innerWidth  - MENU_W - 8)
+  const top  = Math.min(y + 4, window.innerHeight - 220)
+
+  const hasDetail    = !!assignment.work_item_id
+  const hasViewItems = hasDetail || canSeeLeave
+  const hasDivider   = hasEditRole && hasViewItems
+
+  const item = (disabled?: boolean) => [
+    'w-full flex items-center gap-2 px-3 py-[5px] text-[13px] text-left rounded transition-colors',
+    disabled
+      ? 'text-muted cursor-not-allowed opacity-50'
+      : 'text-gray-700 hover:bg-surface-100 cursor-pointer',
+  ].join(' ')
+
+  const dangerItem = (disabled?: boolean) => [
+    item(disabled),
+    !disabled ? 'hover:bg-red-50 hover:text-red-700 text-red-600' : '',
+  ].join(' ')
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      style={{ position: 'fixed', left, top, zIndex: 9999, minWidth: MENU_W }}
+      className="bg-white border border-border rounded-lg shadow-card-md py-1"
+      onContextMenu={e => e.preventDefault()}
+    >
+      {hasEditRole && (
+        <>
+          <button
+            className={item(isClosed)}
+            disabled={isClosed}
+            title={isClosed ? 'Closed 상태 — 편집 불가' : undefined}
+            onClick={isClosed ? undefined : () => { onClose(); onEdit() }}
+          >
+            <Pencil size={13} /> 편집
+            {isClosed && <span className="ml-auto text-[10px] text-muted">Closed</span>}
+          </button>
+          <button
+            className={item(isClosed)}
+            disabled={isClosed}
+            title={isClosed ? 'Closed 상태 — 복제 불가' : undefined}
+            onClick={isClosed ? undefined : () => { onClose(); onDuplicate() }}
+          >
+            <Copy size={13} /> 복제
+          </button>
+          <button
+            className={dangerItem(isClosed)}
+            disabled={isClosed}
+            title={isClosed ? 'Closed 상태 — 삭제 불가' : undefined}
+            onClick={isClosed ? undefined : () => { onClose(); onDelete() }}
+          >
+            <Trash2 size={13} /> 삭제
+          </button>
+        </>
+      )}
+
+      {hasDivider && <div className="border-t border-border/50 my-1" />}
+
+      {hasDetail && (
+        <button
+          className={item()}
+          onClick={() => { onClose(); onDetail() }}
+        >
+          <FileText size={13} /> 작업 상세 열기
+        </button>
+      )}
+      {canSeeLeave && (
+        <button
+          className={item()}
+          onClick={() => { onClose(); onLeave() }}
+        >
+          <CalendarDays size={13} /> 이 사람 휴가 보기
+        </button>
+      )}
+    </div>,
+    document.body,
   )
 }
 
@@ -1166,9 +1354,12 @@ export default function TimelineView() {
   const { data: accruals  = [] } = useAllAccruals() as { data: Accrual[] }
   const { data: settings }       = useSettings()
   const updateAssignment = useUpdateAssignment()
+  const deleteAssignment = useDeleteAssignment()
+  const createAssignment = useCreateAssignment()
   const updateWorkItem   = useUpdateWorkItem()
   const { canEdit }      = useAuthz()
   const { push }         = useHistory()
+  const { myPersonId }   = useAuth()
   const startMonth       = settings?.fiscal_year_start_month ?? 7
 
   useLayoutEffect(() => {
@@ -1191,12 +1382,42 @@ export default function TimelineView() {
   // T-17: virtual leave preview toggle
   const [showVirtualLeave, setShowVirtualLeave] = useState(false)
 
+  // T-12: right-click context menu
+  const [ctxMenu, setCtxMenu] = useState<{ assignment: Assignment; x: number; y: number } | null>(null)
+
+  // T-14: multi-select
+  const [selectedIds,       setSelectedIds]       = useState<Set<string>>(new Set())
+  const [multiDragLeaderId, setMultiDragLeaderId] = useState<string | null>(null)
+  const [multiDragDelta,    setMultiDragDelta]    = useState<number | null>(null)
+  // Stable refs for useCallback closures
+  const selectedIdsRef  = useRef(selectedIds)
+  const assignmentsRef  = useRef(assignments)
+  const peopleMapRef    = useRef(peopleMap)
+  useEffect(() => { selectedIdsRef.current  = selectedIds  }, [selectedIds])
+  useEffect(() => { assignmentsRef.current  = assignments  }, [assignments])
+  useEffect(() => { peopleMapRef.current    = peopleMap    }, [peopleMap])
+
   // T-16: live drag position so Partner lane counts recompute in real-time during drag
   const [draggingLive, setDraggingLive] = useState<{ id: string; start: number; end: number } | null>(null)
   const handleDragLive = useCallback((id: string, liveStart: number, liveEnd: number) => {
-    setDraggingLive({ id, start: liveStart, end: liveEnd })
+    const a = assignmentsRef.current.find(x => x.id === id)
+    if (!a) return
+    // T-16: Partner work bar → trigger live lane recompute
+    if (a.kind === 'work' && peopleMapRef.current.get(a.person_id)?.rank === 'Partner') {
+      setDraggingLive({ id, start: liveStart, end: liveEnd })
+    }
+    // T-14: multi-drag delta for follower bars live preview
+    if (selectedIdsRef.current.size > 1 && selectedIdsRef.current.has(id)) {
+      const delta = liveStart - dateToNum(a.start)
+      setMultiDragLeaderId(id)
+      setMultiDragDelta(delta)
+    }
   }, [])
-  const handleDragEnd = useCallback(() => setDraggingLive(null), [])
+  const handleDragEnd = useCallback(() => {
+    setDraggingLive(null)
+    setMultiDragLeaderId(null)
+    setMultiDragDelta(null)
+  }, [])
 
   // ─── Sort / filter state (§5.2 F-1.8) ────────────────────────────────────
   const [showFilter,   setShowFilter]   = useState(false)
@@ -1473,6 +1694,15 @@ export default function TimelineView() {
   // Scroll to today on mount
   useEffect(() => { scrollToToday() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
+  // T-14: Escape clears multi-select
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSelectedIds(new Set())
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   // Modal helpers
   function openCreate(row: RowData, startNum: number, endNum: number) {
     const prefill: ModalState['prefill'] = { startNum, endNum }
@@ -1532,15 +1762,105 @@ export default function TimelineView() {
       return next
     })
   }
-  // T-12: click on empty grid area clears all highlights
+  // T-12/T-14: click on empty grid area clears highlights and multi-selection
   function handleGridBodyClick(e: ReactMouseEvent) {
     if (!(e.target as Element).closest('[data-assignment-bar]')) {
       setHighlightedPersonIds(new Set())
+      setSelectedIds(new Set())
     }
   }
 
+  // ─── T-12: Context-menu handlers ─────────────────────────────────────────
+
+  function handleCtxDelete(a: Assignment) {
+    const label = a.kind === 'leave'
+      ? `${a.leave_type ?? '휴가'} (${a.start} ~ ${a.end_date})`
+      : `배정 (${a.start} ~ ${a.end_date})`
+    if (!window.confirm(`삭제하시겠습니까?\n${label}`)) return
+    deleteAssignment.mutate(a.id, {
+      onSuccess: () => push(makeAssignmentDelete(a)),
+    })
+  }
+
+  function handleCtxDuplicate(a: Assignment) {
+    const isHol  = (n: number) => holidaySet.has(n)
+    const origEnd   = dateToNum(a.end_date)
+    const origStart = dateToNum(a.start)
+    const duration  = origEnd - origStart
+
+    const newStart = a.kind === 'leave' ? nextWorkday(origEnd, isHol) : origEnd + 1
+    const newEnd   = newStart + duration
+
+    setModal({
+      open:   true,
+      mode:   'create',
+      prefill: {
+        personId:   a.person_id,
+        workItemId: a.work_item_id ?? undefined,
+        kind:       a.kind as 'work' | 'leave',
+        leaveType:  a.leave_type ?? undefined,
+        startNum:   newStart,
+        endNum:     newEnd,
+      },
+    })
+  }
+
+  function handleCtxViewLeave(personId: string) {
+    setViewMode('person')
+    const p = peopleMap.get(personId)
+    if (p) setPersonNameSearch(p.name)
+    setShowFilter(true)
+    // Scroll to today so the person's leave bars are visible
+    requestAnimationFrame(() => scrollToToday())
+  }
+
+  // ─── T-14: Multi-select handlers ─────────────────────────────────────────
+
+  function handleToggleSelect(a: Assignment) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(a.id)) next.delete(a.id)
+      else next.add(a.id)
+      return next
+    })
+  }
+
+  function handleMultiDragCommit(leaderId: string, leaderPatch: { start: string; end_date: string }) {
+    const leader = assignments.find(a => a.id === leaderId)
+    if (!leader) return
+    const delta = dateToNum(leaderPatch.start) - dateToNum(leader.start)
+    if (delta === 0) { setSelectedIds(new Set()); return }
+    const isHol = (n: number) => holidaySet.has(n)
+    const allPairs: { id: string; oldStart: string; oldEnd: string; newStart: string; newEnd: string }[] = []
+    for (const selId of selectedIds) {
+      const a = assignments.find(x => x.id === selId)
+      if (!a || !canEditAsgn(a)) continue
+      const origS = dateToNum(a.start)
+      const origE = dateToNum(a.end_date)
+      let newS: number, newE: number
+      if (a.kind === 'leave') {
+        const wdCount = Math.max(1, workdayCount(origS, origE, holidaySet))
+        newS = nextWorkday(origS + delta - 1, isHol)
+        newE = snapLeaveEnd(newS, wdCount, isHol)
+      } else {
+        newS = origS + delta
+        newE = origE + delta
+      }
+      const p = { start: numToStr(newS), end_date: numToStr(newE) }
+      updateAssignment.mutate({ id: selId, ...p })
+      allPairs.push({ id: selId, oldStart: a.start, oldEnd: a.end_date, newStart: p.start, newEnd: p.end_date })
+    }
+    if (allPairs.length > 0) push(makeAssignmentDrag('다중 배정 이동', allPairs))
+    setSelectedIds(new Set())
+  }
+
   // Mutation callbacks
-  function handleUpdateAssignment(id: string, patch: { start: string; end_date: string }) {
+  function handleUpdateAssignment(id: string, patch: { start: string; end_date: string }, dragKind?: 'move' | 'resize-left' | 'resize-right') {
+    // T-14: intercept multi-drag bulk move
+    if (dragKind === 'move' && selectedIds.size > 1 && selectedIds.has(id)) {
+      handleMultiDragCommit(id, patch)
+      return
+    }
     const moved = assignments.find(a => a.id === id)
     if (!moved?.person_id) {
       updateAssignment.mutate({ id, ...patch })
@@ -1682,6 +2002,11 @@ export default function TimelineView() {
         onOpenDetail={row.kind === 'workitem' ? (wi) => setDetailWorkItem(wi) : undefined}
         onDragLive={handleDragLive}
         onDragEnd={handleDragEnd}
+        onBarCtxMenu={(a, x, y) => setCtxMenu({ assignment: a, x, y })}
+        selectedIds={selectedIds}
+        multiDragLeaderId={multiDragLeaderId}
+        multiDragDelta={multiDragDelta}
+        onToggleSelect={handleToggleSelect}
       />
     )
   }
@@ -2074,6 +2399,34 @@ export default function TimelineView() {
           onClose={() => setEditWorkItem(null)}
         />
       )}
+
+      {/* ── T-12: Assignment right-click context menu ── */}
+      {ctxMenu && (() => {
+        const a         = ctxMenu.assignment
+        const wi        = a.work_item_id ? workItemMap.get(a.work_item_id) : undefined
+        const closed    = wi ? isWIClosed(wi) : false
+        // "has edit role" = user can edit independent of Closed status
+        const hasRole   = globalEdit || canEdit('person', a.person_id) ||
+                          (a.work_item_id ? canEdit('work_item', a.work_item_id) : false)
+        const seeLeave  = hasRole || a.person_id === myPersonId
+        return (
+          <AssignmentContextMenu
+            assignment={a}
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            workItem={wi}
+            hasEditRole={hasRole}
+            isClosed={closed}
+            canSeeLeave={seeLeave}
+            onClose={() => setCtxMenu(null)}
+            onEdit={() => openEdit(a)}
+            onDuplicate={() => handleCtxDuplicate(a)}
+            onDelete={() => handleCtxDelete(a)}
+            onDetail={() => { if (wi) setDetailWorkItem(wi) }}
+            onLeave={() => handleCtxViewLeave(a.person_id)}
+          />
+        )
+      })()}
     </div>
   )
 }
@@ -2100,14 +2453,20 @@ interface GridRowProps {
   colorMap:       Map<string, string>
   holidaySet:          Set<number>
   virtualLeaveBlocks?: Array<{ start: number; end: number }>
-  onUpdate:       (id: string, patch: { start: string; end_date: string }) => void
+  onUpdate:       (id: string, patch: { start: string; end_date: string }, dragKind?: 'move' | 'resize-left' | 'resize-right') => void
   onUpdateWI:     (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
   onOpenCreate:   (row: RowData, startNum: number, endNum: number) => void
   onOpenEdit:     (a: Assignment) => void
-  onDropPerson:  (personId: string, row: RowData) => void
-  onOpenDetail?: (wi: WorkItem) => void
-  onDragLive?:   (id: string, liveStart: number, liveEnd: number) => void
-  onDragEnd?:    () => void
+  onDropPerson:    (personId: string, row: RowData) => void
+  onOpenDetail?:   (wi: WorkItem) => void
+  onDragLive?:     (id: string, liveStart: number, liveEnd: number) => void
+  onDragEnd?:      () => void
+  onBarCtxMenu?:   (a: Assignment, x: number, y: number) => void   // T-12
+  // T-14: multi-select
+  selectedIds?:       Set<string>
+  multiDragLeaderId?: string | null
+  multiDragDelta?:    number | null
+  onToggleSelect?:    (a: Assignment) => void
 }
 
 function GridRow({
@@ -2116,7 +2475,8 @@ function GridRow({
   peopleMap, workItemMap, colorMap, holidaySet,
   virtualLeaveBlocks,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
-  onDragLive, onDragEnd,
+  onDragLive, onDragEnd, onBarCtxMenu,
+  selectedIds, multiDragLeaderId, multiDragDelta, onToggleSelect,
 }: GridRowProps) {
   const rowRef    = useRef<HTMLDivElement>(null)
   const createRef = useRef<{ anchor: number } | null>(null)
@@ -2347,9 +2707,15 @@ function GridRow({
 
       {/* Assignment bars */}
       {rowAssignments.map(a => {
-        const lane  = laneMap?.get(a.id) ?? 0
-        const wi    = workItemMap.get(a.work_item_id ?? '')
-        const color = barColorOf(wi, a.kind, a.leave_type, colorMap)
+        const lane       = laneMap?.get(a.id) ?? 0
+        const wi         = workItemMap.get(a.work_item_id ?? '')
+        const color      = barColorOf(wi, a.kind, a.leave_type, colorMap)
+        const isSelected = selectedIds?.has(a.id) ?? false
+        const isLeader   = a.id === multiDragLeaderId
+        // T-16: Partners' work bars get onDragLive for lane recompute; T-14: selected bars get it for multi-drag delta
+        const needsDragLive =
+          (row.kind === 'person' && row.person.rank === 'Partner' && a.kind === 'work') ||
+          (isSelected && (selectedIds?.size ?? 0) > 1)
         return (
           <AssignmentBar
             key={a.id}
@@ -2366,10 +2732,14 @@ function GridRow({
             preStudyStart={getPreStudyStart(a)}
             tooltipInfo={barTooltip(a)}
             clampStart={clampStartFor.get(a.id)}
-            onDragLive={row.kind === 'person' && row.person.rank === 'Partner' && a.kind === 'work' ? onDragLive : undefined}
-            onDragEnd={row.kind === 'person' && row.person.rank === 'Partner' && a.kind === 'work' ? onDragEnd : undefined}
+            onDragLive={needsDragLive ? onDragLive : undefined}
+            onDragEnd={needsDragLive ? onDragEnd : undefined}
             onUpdate={onUpdate}
             onClick={onOpenEdit}
+            onContextMenu={onBarCtxMenu}
+            isSelected={isSelected}
+            multiMoveDelta={isSelected && !isLeader ? multiDragDelta : null}
+            onToggleSelect={onToggleSelect}
           />
         )
       })}

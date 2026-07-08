@@ -174,7 +174,7 @@ export default function AssignmentModal({
     personId:     state.prefill.personId    ?? '',
     kind:         (state.prefill.kind       ?? 'work') as 'work' | 'leave',
     workItemId:   state.prefill.workItemId  ?? '',
-    leaveType:    '' as LeaveType | '',
+    leaveType:    (state.prefill.leaveType ?? '') as LeaveType | '',
     start:        state.prefill.startNum != null ? numToStr(state.prefill.startNum) : '',
     end:          state.prefill.endNum   != null ? numToStr(state.prefill.endNum)   : '',
     weekendDates: [] as string[],

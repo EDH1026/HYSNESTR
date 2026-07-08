@@ -18,6 +18,7 @@ export interface ModalState {
     personId?:           string
     workItemId?:         string
     kind?:               'work' | 'leave'
+    leaveType?:          string   // T-12: pre-fill leave type when duplicating
     startNum?:           number
     endNum?:             number
     lastProjectEndNum?:  number   // for '종료 후 잔여 소진' auto-date
