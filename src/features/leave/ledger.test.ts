@@ -4,11 +4,10 @@
  * Coverage:
  *   1. Project leave (프로젝트휴가): round(calDays / 10), intersection with main phase
  *   2. Weekend sub (주말/휴일대체): Saturday=0.5, Sunday=1.0, holiday=1.0 regardless of weekend
- *   3. Delay compensation (지연보상): 15-day threshold, bonus table edge values
- *   4. FIFO deduction order and remainder tracking
- *   5. Unpaid leave (no balance effect)
- *   6. Pipeline exclusion — no accruals from pipeline assignments
- *   7. delayBonus helper boundaries
+ *   3. FIFO deduction order and remainder tracking
+ *   4. Unpaid leave (no balance effect)
+ *   5. Pipeline exclusion — no accruals from pipeline assignments
+ *   6. delayBonus helper boundaries (reference table — 지연보상 is now manual-only, §7.3)
  */
 
 import { describe, it, expect } from 'vitest'
@@ -50,7 +49,7 @@ function mkAssignment(
   }
 }
 
-// ── 1. delayBonus helper ──────────────────────────────────────
+// ── 1. delayBonus helper (reference table for manual accrual, §7.3) ──
 
 describe('delayBonus', () => {
   it('returns 0 for ≤ 1.0 days', () => {
@@ -77,7 +76,7 @@ describe('delayBonus', () => {
   })
 })
 
-// ── 2. Project leave accrual ──────────────────────────────────
+// ── 2. Project leave accrual ─────────────────────────────────
 
 describe('프로젝트휴가 auto-accrual', () => {
   const wi = mkWi({
@@ -282,90 +281,7 @@ describe('주말/휴일대체 auto-accrual', () => {
   })
 })
 
-// ── 4. Delay compensation ─────────────────────────────────────
-
-describe('지연보상', () => {
-  const wi = mkWi({
-    id:         'wi1',
-    type:       'project',
-    start:      '2024-01-01',
-    main_start: '2024-01-01',
-    end_date:   '2024-03-10', // 69 days → round(69/10) = 7 → bonus = 3
-  })
-
-  function makeScenario(daysAfterEnd: number, leaveType?: string) {
-    const projEndNum = dateToNum('2024-03-10')
-    const today = projEndNum + daysAfterEnd
-
-    const workA = mkAssignment({
-      person_id: 'p1', work_item_id: 'wi1',
-      start: '2024-01-01', end_date: '2024-03-10',
-    })
-
-    const leaveA: Assignment | undefined = leaveType ? mkAssignment({
-      person_id: 'p1',
-      kind:       'leave',
-      leave_type: leaveType as any,
-      start:      numToStr(projEndNum + 5),
-      end_date:   numToStr(projEndNum + 5),
-    }) : undefined
-
-    return computeLedger('p1', {
-      workItems:   [wi],
-      assignments: leaveA ? [workA, leaveA] : [workA],
-      accruals:    [],
-      isHoliday:   NO_HOLIDAY,
-      today,
-    })
-  }
-
-  it('no delay bonus when delay < 15 days', () => {
-    const ledger = makeScenario(14)
-    expect(ledger.accruals.find(e => e.type === '지연보상')).toBeUndefined()
-  })
-
-  it('delay bonus applies at exactly 15 days', () => {
-    const ledger = makeScenario(15)
-    expect(ledger.accruals.find(e => e.type === '지연보상')).toBeDefined()
-  })
-
-  it('bonus = +3 for 7 days accrued (≥ 5.5)', () => {
-    // 69-day main phase → round(69/10) = 7 days
-    const ledger = makeScenario(20)
-    const delay = ledger.accruals.find(e => e.type === '지연보상')
-    expect(delay?.days).toBe(3)
-  })
-
-  it('지정휴가 after project end does NOT count as "first use" — delay still triggers', () => {
-    // 지정휴가 on day 5, no other leave, today = day 20 → refDate = day 20
-    const ledger = makeScenario(20, '지정휴가')
-    expect(ledger.accruals.find(e => e.type === '지연보상')).toBeDefined()
-  })
-
-  it('non-지정휴가 leave on day 5 stops the delay at 5 days (< 15) → no bonus', () => {
-    // 프로젝트휴가 leave on day 5 → refDate = projEnd + 5 → delay = 5 < 15
-    const ledger = makeScenario(20, '프로젝트휴가')
-    expect(ledger.accruals.find(e => e.type === '지연보상')).toBeUndefined()
-  })
-
-  it('does not apply for ongoing projects (project end > today)', () => {
-    const future = mkWi({
-      id: 'wiFuture', type: 'project',
-      start: '2024-01-01', main_start: '2024-01-01', end_date: '2025-12-31',
-    })
-    const a = mkAssignment({
-      person_id: 'p1', work_item_id: 'wiFuture',
-      start: '2024-01-01', end_date: '2024-12-31',
-    })
-    const ledger = computeLedger('p1', {
-      workItems: [future], assignments: [a], accruals: [],
-      isHoliday: NO_HOLIDAY, today: dateToNum('2024-06-01'),
-    })
-    expect(ledger.accruals.find(e => e.type === '지연보상')).toBeUndefined()
-  })
-})
-
-// ── 5. FIFO deduction ─────────────────────────────────────────
+// ── 4. FIFO deduction ─────────────────────────────────────────
 
 describe('FIFO deduction', () => {
   it('deducts oldest accrual first', () => {
@@ -491,17 +407,6 @@ describe('pipeline exclusion', () => {
     expect(ledger.accruals.find(e => e.type === '주말/휴일대체')).toBeUndefined()
   })
 
-  it('pipeline does not trigger delay compensation', () => {
-    const a = mkAssignment({
-      person_id: 'p1', work_item_id: 'wiP',
-      start: '2024-01-01', end_date: '2024-03-31',
-    })
-    const ledger = computeLedger('p1', {
-      workItems: [pipeline], assignments: [a], accruals: [],
-      isHoliday: NO_HOLIDAY, today: dateToNum('2025-01-01'),
-    })
-    expect(ledger.accruals.find(e => e.type === '지연보상')).toBeUndefined()
-  })
 })
 
 // ── 8. Workday counting (weekends and holidays excluded) ──────

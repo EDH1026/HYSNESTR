@@ -24,7 +24,7 @@ import { makeAccrualCreate, makeAccrualDelete } from '@/lib/historyOps'
 import { dateToNum, numToStr, today, isWeekend, nextWorkday } from '@/lib/date'
 import type { Person, AccrualType, LeaveType } from '@/types'
 
-const MANUAL_TYPES: AccrualType[] = ['포상휴가', '특별휴가', '프로젝트휴가', '주말/휴일대체']
+const MANUAL_TYPES: AccrualType[] = ['포상휴가', '특별휴가', '지연보상', '프로젝트휴가', '주말/휴일대체']
 
 // ── Shared accrual/usage form ─────────────────────────────────
 
@@ -94,6 +94,18 @@ function AccrualForm({ personId, direction, onDone }: AccrualFormProps) {
             value={form.days} onChange={e => setForm(f => ({ ...f, days: e.target.value }))} />
         </div>
       </div>
+      {!isUsage && form.type === '지연보상' && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <p className="font-semibold mb-1">지연보상 권장 기준 (안내만, 강제 아님)</p>
+          <p>해당 프로젝트 프로젝트휴가 적립분 기준:</p>
+          <ul className="mt-0.5 space-y-0.5 list-disc list-inside text-[11px]">
+            <li>1일 이하 → +0일</li>
+            <li>1.5~3일 → +1일</li>
+            <li>3.5~5일 → +2일</li>
+            <li>5.5일 이상 → +3일</li>
+          </ul>
+        </div>
+      )}
       <div>
         <label className="mb-0.5 block text-xs text-gray-600">
           {isUsage ? '차감일' : '적립일'}

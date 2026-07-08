@@ -2,15 +2,15 @@
  * computeLedger — pure leave-ledger engine (PRD §7)
  *
  * Produces a fully-computed snapshot of one person's leave account:
- *   • Auto-accruals derived from assignments (프로젝트휴가, 주말/휴일대체, 지연보상)
- *   • Stored manual accruals (포상휴가, 특별휴가, …)
+ *   • Auto-accruals derived from assignments (프로젝트휴가, 주말/휴일대체)
+ *   • Stored manual accruals (포상휴가, 특별휴가, 지연보상, …)
  *   • FIFO deductions per paid leave usage
  *   • Unpaid leave list (리프레시, 휴직)
  *
  * No side effects; safe to call in useMemo.
  */
 
-import { dateToNum, numToStr, numToDate, isWeekend, isSaturday, nextWorkday } from '@/lib/date'
+import { dateToNum, numToStr, numToDate, isWeekend, isSaturday } from '@/lib/date'
 import type { WorkItem, Assignment, Accrual, AccrualType, LeaveType } from '@/types'
 
 // ── Output types ──────────────────────────────────────────────
@@ -208,60 +208,8 @@ export function computeLedger(
     }
   }
 
-  // ── Step 2: Delay compensation (project-level) ─────────────
-  // Must run after auto-accruals are known so we can sum per-project totals.
-
-  // Paid leave assignments that are NOT 지정휴가 (sorted by start)
-  const nonDesignatedLeave = myAssignments
-    .filter(a => a.kind === 'leave' && isPaidLeave(a.leave_type) && a.leave_type !== '지정휴가')
-    .sort((a, b) => a.start.localeCompare(b.start))
-
-  // Per-project: find all work assignments (for per-project accrual sum)
-  const projectWis = new Set(
-    myAssignments
-      .filter(a => a.kind === 'work' && a.work_item_id)
-      .map(a => {
-        const wi = wiMap.get(a.work_item_id!)
-        return wi && wi.type === 'project' ? wi.id : null
-      })
-      .filter(Boolean) as string[],
-  )
-
-  if (!isPartner) for (const wiId of projectWis) {
-    const wi = wiMap.get(wiId)!
-    const projectEndNum = dateToNum(wi.end_date)
-
-    // Only apply delay comp for projects that have already ended
-    if (projectEndNum >= today) continue
-
-    // Sum all auto-accruals from this project
-    const projectAccrued = autoAccruals
-      .filter(e => e.sourceId === wiId)
-      .reduce((s, e) => s + e.days, 0)
-    if (projectAccrued === 0) continue
-
-    // First non-지정휴가 paid leave taken AFTER project end
-    const firstUse = nonDesignatedLeave.find(a => a.start > wi.end_date)
-    const refNum = firstUse ? dateToNum(firstUse.start) : today
-
-    const delay = refNum - projectEndNum   // calendar days
-    if (delay < 15) continue
-
-    const bonus = delayBonus(projectAccrued)
-    if (bonus === 0) continue
-
-    autoAccruals.push({
-      id:        `auto-delay-${wiId}`,
-      type:      '지연보상',
-      days:      bonus,
-      date:      numToStr(nextWorkday(projectEndNum, isHoliday)),  // credited on next business day after project end (§7.5)
-      sourceId:  wiId,
-      remaining: bonus,
-      isAuto:    true,
-    })
-  }
-
   // ── Step 3: Merge stored + auto accruals, sort by date asc ─
+  // §7.3: 지연보상 is manual-only; no auto-calc here.
   // Split stored accruals by direction
   const accrualRecords = myAccruals.filter(a => a.direction !== 'usage')
   const manualUsageRecords = myAccruals.filter(a => a.direction === 'usage')
