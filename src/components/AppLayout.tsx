@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import type { LucideIcon } from 'lucide-react'
 import logo from '@/assets/logo.png'
@@ -20,11 +20,19 @@ import {
   Redo2,
   AlertTriangle,
   Lock,
+  Search,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useHistory } from '@/lib/history'
 import { useMobile } from '@/hooks/useMobile'
-import type { GlobalRole } from '@/types'
+import { useAuthz } from '@/hooks/useAuthz'
+import { useAllAssignments } from '@/features/timeline/hooks'
+import { useAllPeople }      from '@/features/people/hooks'
+import { useAllWorkItems }   from '@/features/workitems/hooks'
+import { buildWorkItemColorMap } from '@/lib/colors'
+import GlobalSearchPalette from './GlobalSearchPalette'
+import WorkItemDetailModal from '@/features/workitems/WorkItemDetailModal'
+import type { GlobalRole, WorkItem } from '@/types'
 
 const NAV: {
   to:           string
@@ -58,8 +66,11 @@ const ROLE_PILL: Record<GlobalRole, string> = {
 export default function AppLayout() {
   const { profile, signOut } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [searchOpen,  setSearchOpen]  = useState(false)
+  const [detailWI,    setDetailWI]    = useState<WorkItem | null>(null)
   const { canUndo, canRedo, undoLabel, redoLabel, error, undo, redo, clearError } = useHistory()
   const isMobile = useMobile()
+  const { canEdit, isAdmin: isAdminFn } = useAuthz()
 
   const displayName    = profile?.name ?? '—'
   const role           = profile?.global_role ?? 'viewer'
@@ -67,8 +78,24 @@ export default function AppLayout() {
   const isViewer       = role === 'viewer'
   const canUseHistory  = !isViewer && !isMobile
 
+  // §5.11a: data for WorkItemDetailModal shown from global search
+  const { data: allAssignments = [] } = useAllAssignments()
+  const { data: allPeople      = [] } = useAllPeople()
+  const { data: allWorkItems   = [] } = useAllWorkItems()
+  const peopleMap = useMemo(
+    () => new Map(allPeople.map(p => [p.id, p])),
+    [allPeople],
+  )
+  const colorMap = useMemo(() => buildWorkItemColorMap(allWorkItems), [allWorkItems])
+
   useEffect(() => {
     function handler(e: KeyboardEvent) {
+      // §5.11a: Ctrl+K / Cmd+K → open global search
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault()
+        setSearchOpen(v => !v)
+        return
+      }
       if (!canUseHistory) return
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
@@ -99,6 +126,18 @@ export default function AppLayout() {
         {/* Close button — mobile only */}
         <button className="ml-auto lg:hidden text-muted hover:text-gray-700" onClick={() => setSidebarOpen(false)}>
           <X size={16} />
+        </button>
+      </div>
+
+      {/* §5.11a: Global search button */}
+      <div className="px-3 py-2 border-b border-border">
+        <button
+          onClick={() => setSearchOpen(true)}
+          className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-muted hover:text-gray-700 hover:bg-surface-100 rounded-md transition-colors border border-border bg-surface-50"
+        >
+          <Search size={13} />
+          <span className="flex-1 text-left text-xs">검색…</span>
+          <kbd className="text-[10px] text-muted/70">Ctrl K</kbd>
         </button>
       </div>
 
@@ -204,6 +243,10 @@ export default function AppLayout() {
           </button>
           <img src={logo} alt="" className="h-8 w-8 flex-shrink-0 object-contain" />
           <span className="text-xs font-semibold text-gray-900">Strategy Team Dashboard</span>
+          {/* §5.11a: search icon (mobile) */}
+          <button onClick={() => setSearchOpen(true)} className="text-muted hover:text-gray-700 p-1">
+            <Search size={18} />
+          </button>
           {canUseHistory && (
             <div className="ml-auto flex items-center gap-1">
               <button onClick={() => void undo()} disabled={!canUndo}
@@ -240,6 +283,32 @@ export default function AppLayout() {
           <Outlet />
         </div>
       </main>
+
+      {/* §5.11a: Global search palette */}
+      {searchOpen && (
+        <GlobalSearchPalette
+          onClose={() => setSearchOpen(false)}
+          onSelectWorkItem={wi => { setDetailWI(wi); setSearchOpen(false) }}
+        />
+      )}
+
+      {/* §5.11a: Work item detail modal opened from search */}
+      {detailWI && (() => {
+        const latest = allWorkItems.find(w => w.id === detailWI.id) ?? detailWI
+        const isClosed = (latest.status ?? latest.project_status ?? 'open') === 'closed'
+        const canEditWI = !isClosed && (isAdminFn() || canEdit('work_item', latest.id))
+        return (
+          <WorkItemDetailModal
+            workItem={latest}
+            assignments={allAssignments}
+            peopleMap={peopleMap}
+            colorMap={colorMap}
+            canEdit={canEditWI}
+            onClose={() => setDetailWI(null)}
+            onEdit={() => setDetailWI(null)}
+          />
+        )
+      })()}
     </div>
   )
 }

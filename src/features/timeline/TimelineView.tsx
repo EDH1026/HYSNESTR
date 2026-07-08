@@ -23,6 +23,7 @@ import {
   type DragEvent as ReactDragEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { useLocation } from 'react-router-dom'
 import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye, Pencil, Copy, Trash2, FileText, CalendarDays } from 'lucide-react'
 
 import {
@@ -1693,6 +1694,41 @@ export default function TimelineView() {
 
   // Scroll to today on mount
   useEffect(() => { scrollToToday() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // D-6 / §5.11a: handle navigation state (dashboard drill-down + global search jump)
+  const location = useLocation()
+  const navState = (location.state ?? null) as {
+    highlightPersonId?:    string
+    openDetailWorkItemId?: string
+  } | null
+  const hasHandledNavState = useRef(false)
+  useEffect(() => {
+    if (hasHandledNavState.current) return
+    if (!navState?.highlightPersonId && !navState?.openDetailWorkItemId) return
+    if (rows.length === 0) return   // wait for data
+    hasHandledNavState.current = true
+    // Clear state so back/forward navigation doesn't retrigger
+    window.history.replaceState(null, '')
+
+    if (navState.highlightPersonId) {
+      const pid = navState.highlightPersonId
+      setHighlightedPersonIds(new Set([pid]))
+      setViewMode('person')
+      const rowIdx = rows.findIndex(r => r.kind === 'person' && r.person.id === pid)
+      if (rowIdx >= 0) {
+        const scrollTop = Math.max(0, rowTops[rowIdx] - 60)
+        requestAnimationFrame(() => {
+          gridBodyRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' })
+          labelsBodyRef.current?.scrollTo({ top: scrollTop, behavior: 'smooth' })
+        })
+      }
+    }
+
+    if (navState.openDetailWorkItemId) {
+      const wi = workItems.find(w => w.id === navState.openDetailWorkItemId)
+      if (wi) setDetailWorkItem(wi)
+    }
+  }, [rows, navState?.highlightPersonId, navState?.openDetailWorkItemId])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // T-14: Escape clears multi-select
   useEffect(() => {

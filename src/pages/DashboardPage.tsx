@@ -5,12 +5,16 @@
  */
 import { useMemo, useState } from 'react'
 import { PieChart, Pie, Cell } from 'recharts'
+import { useNavigate } from 'react-router-dom'
 import { useAllPeople }      from '@/features/people/hooks'
 import { useAllWorkItems }   from '@/features/workitems/hooks'
 import { useAllAssignments } from '@/features/timeline/hooks'
 import { useAllHolidays }    from '@/features/admin/hooks'
 import { useSettings }       from '@/features/admin/hooks'
 import { useAuth }           from '@/context/AuthContext'
+import { useAuthz }          from '@/hooks/useAuthz'
+import { buildWorkItemColorMap } from '@/lib/colors'
+import WorkItemDetailModal   from '@/features/workitems/WorkItemDetailModal'
 import {
   today, dateToNum, numToStr,
   monthStart, weekStart, nextWorkday, fyOf, fyRange, isWeekend,
@@ -41,13 +45,14 @@ const BUCKET_DATE_COLOR: Record<WeekBucket, string> = {
 // Sub-components
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ProjectWeekList({ title, rows, isViewer, label, dateLabel, accentColor }: {
+function ProjectWeekList({ title, rows, isViewer, label, dateLabel, accentColor, onClickWI }: {
   title:       string
   rows:        WiRow[]
   isViewer:    boolean
   label:       (n: number) => string
   dateLabel:   string
   accentColor: string
+  onClickWI:   (wi: WorkItem) => void  // D-6: drill-down
 }) {
   return (
     <section className="card p-5">
@@ -61,11 +66,16 @@ function ProjectWeekList({ title, rows, isViewer, label, dateLabel, accentColor 
       ) : (
         <div className="space-y-1">
           {rows.map(({ wi, dateNum, bucket }) => {
-            const name = isViewer && wi.confidential ? '(비공개)' : wi.name
+            const name    = isViewer && wi.confidential ? '(비공개)' : wi.name
+            const masked  = name === '(비공개)'
             return (
-              <div key={wi.id} className="flex items-center gap-2 py-2 border-b border-border/50 last:border-0 min-w-0">
+              <div
+                key={wi.id}
+                className={`flex items-center gap-2 py-2 border-b border-border/50 last:border-0 min-w-0 rounded transition-colors ${!masked ? 'cursor-pointer hover:bg-surface-50' : ''}`}
+                onClick={() => { if (!masked) onClickWI(wi) }}
+              >
                 <span className={`pill text-[10px] flex-shrink-0 ${BUCKET_STYLE[bucket]}`}>{bucket}</span>
-                <span className={`text-sm font-medium truncate flex-1 ${name === '(비공개)' ? 'text-muted italic' : 'text-gray-900'}`}>
+                <span className={`text-sm font-medium truncate flex-1 ${masked ? 'text-muted italic' : 'text-gray-900'}`}>
                   {name}
                 </span>
                 {wi.client && (!wi.confidential || !isViewer) && (
@@ -133,6 +143,8 @@ function DonutCard({ title, sub, num, den, color }: {
 export default function DashboardPage() {
   const { profile }         = useAuth()
   const isViewer            = profile?.global_role === 'viewer'
+  const { canEdit, isAdmin } = useAuthz()
+  const navigate            = useNavigate()
 
   const { data: people      = [], isLoading: lP } = useAllPeople()
   const { data: workItems   = [], isLoading: lW } = useAllWorkItems()
@@ -141,6 +153,11 @@ export default function DashboardPage() {
   const { data: settings,         isLoading: lS } = useSettings()
 
   const isLoading = lP || lW || lA || lH || lS
+
+  // D-6: work item detail drill-down state
+  const [detailWorkItem, setDetailWorkItem] = useState<WorkItem | null>(null)
+  const peopleMap = useMemo(() => new Map(people.map(p => [p.id, p])), [people])
+  const colorMap  = useMemo(() => buildWorkItemColorMap(workItems), [workItems])
 
   const todayNum    = useMemo(() => today(), [])
   const fym         = settings?.fiscal_year_start_month ?? 7
@@ -396,6 +413,7 @@ export default function DashboardPage() {
             label={label}
             dateLabel="시작"
             accentColor="bg-brand-400"
+            onClickWI={setDetailWorkItem}
           />
 
           {/* 프로젝트 종료 */}
@@ -406,6 +424,7 @@ export default function DashboardPage() {
             label={label}
             dateLabel="종료"
             accentColor="bg-rose-400"
+            onClickWI={setDetailWorkItem}
           />
 
         </div>
@@ -430,7 +449,11 @@ export default function DashboardPage() {
                   <div key={p.id} className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="pill bg-surface-100 text-gray-700 text-[11px]">{p.rank}</span>
-                      <span className="text-sm font-medium text-gray-900 truncate">{p.name}</span>
+                      {/* D-6: click → timeline highlight */}
+                      <button
+                        className="text-sm font-medium text-gray-900 truncate hover:text-brand-600 hover:underline text-left"
+                        onClick={() => navigate('/timeline', { state: { highlightPersonId: p.id } })}
+                      >{p.name}</button>
                       {p.role && <span className="text-xs text-muted truncate hidden sm:block">{p.role}</span>}
                     </div>
                     <div className="flex-shrink-0 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-0.5">
@@ -481,7 +504,11 @@ export default function DashboardPage() {
                 {needsAssignment.map(({ person: p, unassignedDays }) => (
                   <div key={p.id} className="flex items-center gap-2 py-2 border-b border-border/50 last:border-0">
                     <span className="pill bg-surface-100 text-gray-700 text-[11px]">{p.rank}</span>
-                    <span className="text-sm font-medium text-gray-900 truncate">{p.name}</span>
+                    {/* D-6: click → timeline highlight */}
+                    <button
+                      className="text-sm font-medium text-gray-900 truncate hover:text-brand-600 hover:underline text-left"
+                      onClick={() => navigate('/timeline', { state: { highlightPersonId: p.id } })}
+                    >{p.name}</button>
                     {p.role && <span className="text-xs text-muted truncate hidden sm:block">{p.role}</span>}
                     <div className="ml-auto flex-shrink-0 text-right">
                       <span className="block text-[11px] text-red-600 font-semibold">
@@ -499,6 +526,24 @@ export default function DashboardPage() {
 
         </div>
       </div>
+
+      {/* D-6: Work item detail drill-down */}
+      {detailWorkItem && (() => {
+        const latest   = workItems.find(w => w.id === detailWorkItem.id) ?? detailWorkItem
+        const isClosed = (latest.status ?? latest.project_status ?? 'open') === 'closed'
+        const canEditWI = !isClosed && (isAdmin() || canEdit('work_item', latest.id))
+        return (
+          <WorkItemDetailModal
+            workItem={latest}
+            assignments={assignments}
+            peopleMap={peopleMap}
+            colorMap={colorMap}
+            canEdit={canEditWI}
+            onClose={() => setDetailWorkItem(null)}
+            onEdit={() => setDetailWorkItem(null)}
+          />
+        )
+      })()}
     </div>
   )
 }
