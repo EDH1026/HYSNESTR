@@ -460,9 +460,11 @@ interface AssignmentBarProps {
   onClick:      (a: Assignment) => void
   onContextMenu?: (a: Assignment, x: number, y: number) => void  // T-12: right-click context menu
   onDoubleClick?: () => void   // T-15: workitem-sub bar dblclick → person highlight
-  // T-14: multi-select
-  isSelected?:     boolean
-  multiMoveDelta?: number | null   // follower-bar live preview offset (calendar days)
+  // T-14: multi-select / bulk-resize
+  isSelected?:          boolean
+  multiMoveDelta?:      number | null   // follower: both endpoints shift (move)
+  multiResizeEndDelta?:   number | null // follower: end shifts (resize-right)
+  multiResizeStartDelta?: number | null // follower: start shifts (resize-left)
   onToggleSelect?: (a: Assignment) => void
 }
 
@@ -473,7 +475,7 @@ function AssignmentBar({
   isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo,
   clampStart, onDragLive, onDragEnd,
   onUpdate, onClick, onContextMenu, onDoubleClick,
-  isSelected, multiMoveDelta, onToggleSelect,
+  isSelected, multiMoveDelta, multiResizeEndDelta, multiResizeStartDelta, onToggleSelect,
 }: AssignmentBarProps) {
   const origStart = useMemo(() => dateToNum(assignment.start),    [assignment.start])
   const origEnd   = useMemo(() => dateToNum(assignment.end_date), [assignment.end_date])
@@ -494,9 +496,13 @@ function AssignmentBar({
   useEffect(() => { setLiveStart(origStart) }, [origStart])
   useEffect(() => { setLiveEnd(origEnd)     }, [origEnd])
 
-  // T-14: follower bars show offset position during multi-drag
-  const dispStart = (multiMoveDelta != null) ? origStart + multiMoveDelta : liveStart
-  const dispEnd   = (multiMoveDelta != null) ? origEnd   + multiMoveDelta : liveEnd
+  // T-14: follower bars show offset position during multi-drag / bulk-resize
+  const dispStart = multiMoveDelta      != null ? origStart + multiMoveDelta      :
+                    multiResizeStartDelta != null ? origStart + multiResizeStartDelta :
+                    liveStart
+  const dispEnd   = multiMoveDelta    != null ? origEnd + multiMoveDelta    :
+                    multiResizeEndDelta != null ? origEnd + multiResizeEndDelta :
+                    liveEnd
   const x = (dispStart - viewStart) * dayWidth
   const w = Math.max((dispEnd - dispStart + 1) * dayWidth, 3)
 
@@ -526,7 +532,7 @@ function AssignmentBar({
     setTipPos(null)
     e.stopPropagation()
     if (!canEdit) return
-    if (multiMoveDelta != null) return  // T-14: follower bar during multi-drag — don't initiate drag
+    if (multiMoveDelta != null || multiResizeEndDelta != null || multiResizeStartDelta != null) return  // T-14: follower during bulk op
     e.preventDefault()
     const rect = e.currentTarget.getBoundingClientRect()
     const posX = e.clientX - rect.left
@@ -1393,9 +1399,12 @@ export default function TimelineView() {
   const [ctxMenu, setCtxMenu] = useState<{ assignment: Assignment; x: number; y: number } | null>(null)
 
   // T-14: multi-select
-  const [selectedIds,       setSelectedIds]       = useState<Set<string>>(new Set())
-  const [multiDragLeaderId, setMultiDragLeaderId] = useState<string | null>(null)
-  const [multiDragDelta,    setMultiDragDelta]    = useState<number | null>(null)
+  const [selectedIds,          setSelectedIds]          = useState<Set<string>>(new Set())
+  const [multiDragLeaderId,    setMultiDragLeaderId]    = useState<string | null>(null)
+  const [multiDragDelta,       setMultiDragDelta]       = useState<number | null>(null)
+  // T-14 bulk-resize: live preview deltas (only one is non-null at a time)
+  const [multiResizeEndDelta,   setMultiResizeEndDelta]   = useState<number | null>(null)
+  const [multiResizeStartDelta, setMultiResizeStartDelta] = useState<number | null>(null)
   // Stable refs for useCallback closures (selectedIds / assignments declared above; peopleMapRef declared after peopleMap)
   const selectedIdsRef  = useRef(selectedIds)
   const assignmentsRef  = useRef(assignments)
@@ -1411,17 +1420,35 @@ export default function TimelineView() {
     if (a.kind === 'work' && peopleMapRef.current.get(a.person_id)?.rank === 'Partner') {
       setDraggingLive({ id, start: liveStart, end: liveEnd })
     }
-    // T-14: multi-drag delta for follower bars live preview
+    // T-14: multi-drag/resize delta for follower bars live preview
     if (selectedIdsRef.current.size > 1 && selectedIdsRef.current.has(id)) {
-      const delta = liveStart - dateToNum(a.start)
+      const aStart = dateToNum(a.start)
+      const aEnd   = dateToNum(a.end_date)
       setMultiDragLeaderId(id)
-      setMultiDragDelta(delta)
+      if (liveStart === aStart && liveEnd !== aEnd) {
+        // resize-right: only end moved
+        setMultiResizeEndDelta(liveEnd - aEnd)
+        setMultiDragDelta(null)
+        setMultiResizeStartDelta(null)
+      } else if (liveEnd === aEnd && liveStart !== aStart) {
+        // resize-left: only start moved
+        setMultiResizeStartDelta(liveStart - aStart)
+        setMultiDragDelta(null)
+        setMultiResizeEndDelta(null)
+      } else {
+        // move: both endpoints shift together
+        setMultiDragDelta(liveStart - aStart)
+        setMultiResizeEndDelta(null)
+        setMultiResizeStartDelta(null)
+      }
     }
   }, [])
   const handleDragEnd = useCallback(() => {
     setDraggingLive(null)
     setMultiDragLeaderId(null)
     setMultiDragDelta(null)
+    setMultiResizeEndDelta(null)
+    setMultiResizeStartDelta(null)
   }, [])
 
   // ─── Sort / filter state (§5.2 F-1.8) ────────────────────────────────────
@@ -1906,12 +1933,92 @@ export default function TimelineView() {
     setSelectedIds(new Set())
   }
 
+  // T-14 bulk resize — commit resize-right or resize-left across all selected bars
+  function handleMultiResizeCommit(
+    leaderId: string,
+    leaderPatch: { start: string; end_date: string },
+    dragKind: 'resize-left' | 'resize-right',
+  ) {
+    const leader = assignments.find(a => a.id === leaderId)
+    if (!leader) return
+    const isHol = (n: number) => holidaySet.has(n)
+    const allPairs: { id: string; oldStart: string; oldEnd: string; newStart: string; newEnd: string }[] = []
+    const wiExpItems: { kind: string; work_item_id: string | null | undefined; newStart: string; newEnd: string }[] = []
+
+    if (dragKind === 'resize-right') {
+      const endDelta = dateToNum(leaderPatch.end_date) - dateToNum(leader.end_date)
+      if (endDelta === 0) { setSelectedIds(new Set()); return }
+      for (const selId of selectedIds) {
+        const a = assignments.find(x => x.id === selId)
+        if (!a || !canEditAsgn(a)) continue
+        const origS = dateToNum(a.start)
+        const origE = dateToNum(a.end_date)
+        // For leave: snap new end to workday; for work: apply delta directly (clamp ≥ start)
+        const rawNewE = origE + endDelta
+        const newE = a.kind === 'leave'
+          ? (endDelta > 0 ? nextWorkday(rawNewE - 1, isHol) : Math.max(origS, rawNewE))
+          : Math.max(rawNewE, origS)
+        const p = { start: a.start, end_date: numToStr(newE) }
+        updateAssignment.mutate({ id: selId, ...p })
+        allPairs.push({ id: selId, oldStart: a.start, oldEnd: a.end_date, newStart: a.start, newEnd: p.end_date })
+        wiExpItems.push({ kind: a.kind, work_item_id: a.work_item_id, newStart: a.start, newEnd: p.end_date })
+      }
+    } else {
+      const startDelta = dateToNum(leaderPatch.start) - dateToNum(leader.start)
+      if (startDelta === 0) { setSelectedIds(new Set()); return }
+      for (const selId of selectedIds) {
+        const a = assignments.find(x => x.id === selId)
+        if (!a || !canEditAsgn(a)) continue
+        const origS = dateToNum(a.start)
+        const origE = dateToNum(a.end_date)
+        const rawNewS = origS + startDelta
+        // For leave: snap new start to workday; for work: apply delta directly (clamp ≤ end)
+        const newS = a.kind === 'leave'
+          ? nextWorkday(rawNewS - 1, isHol)
+          : Math.min(rawNewS, origE)
+        const p = { start: numToStr(newS), end_date: a.end_date }
+        updateAssignment.mutate({ id: selId, ...p })
+        allPairs.push({ id: selId, oldStart: a.start, oldEnd: a.end_date, newStart: p.start, newEnd: a.end_date })
+        wiExpItems.push({ kind: a.kind, work_item_id: a.work_item_id, newStart: p.start, newEnd: a.end_date })
+      }
+    }
+
+    if (allPairs.length > 0) {
+      const asgnEntry = makeAssignmentDrag('다중 배정 리사이즈', allPairs)
+      const wiExps = buildWIExpansions(wiExpItems)
+      push(wiExps.length ? combine('다중 배정 리사이즈', asgnEntry, ...wiExps) : asgnEntry)
+    }
+    setSelectedIds(new Set())
+  }
+
   // Mutation callbacks
   function handleUpdateAssignment(id: string, patch: { start: string; end_date: string }, dragKind?: 'move' | 'resize-left' | 'resize-right') {
     // T-14: intercept multi-drag bulk move
     if (dragKind === 'move' && selectedIds.size > 1 && selectedIds.has(id)) {
       handleMultiDragCommit(id, patch)
       return
+    }
+    // T-14: intercept bulk resize-right when ALL selected bars share the same end_date
+    if (dragKind === 'resize-right' && selectedIds.size > 1 && selectedIds.has(id)) {
+      const leader = assignments.find(a => a.id === id)
+      if (leader) {
+        const allSameEnd = [...selectedIds].every(sid => {
+          const a = assignments.find(x => x.id === sid)
+          return a && a.end_date === leader.end_date
+        })
+        if (allSameEnd) { handleMultiResizeCommit(id, patch, 'resize-right'); return }
+      }
+    }
+    // T-14: intercept bulk resize-left when ALL selected bars share the same start date
+    if (dragKind === 'resize-left' && selectedIds.size > 1 && selectedIds.has(id)) {
+      const leader = assignments.find(a => a.id === id)
+      if (leader) {
+        const allSameStart = [...selectedIds].every(sid => {
+          const a = assignments.find(x => x.id === sid)
+          return a && a.start === leader.start
+        })
+        if (allSameStart) { handleMultiResizeCommit(id, patch, 'resize-left'); return }
+      }
     }
     const moved = assignments.find(a => a.id === id)
     if (!moved?.person_id) {
@@ -2104,6 +2211,8 @@ export default function TimelineView() {
         selectedIds={selectedIds}
         multiDragLeaderId={multiDragLeaderId}
         multiDragDelta={multiDragDelta}
+        multiResizeEndDelta={multiResizeEndDelta}
+        multiResizeStartDelta={multiResizeStartDelta}
         onToggleSelect={handleToggleSelect}
       />
     )
@@ -2570,10 +2679,12 @@ interface GridRowProps {
   onDragEnd?:      () => void
   onBarCtxMenu?:   (a: Assignment, x: number, y: number) => void   // T-12
   onPersonDblClick?: (personId: string) => void   // T-15: workitem-sub person dblclick
-  // T-14: multi-select
-  selectedIds?:       Set<string>
-  multiDragLeaderId?: string | null
-  multiDragDelta?:    number | null
+  // T-14: multi-select / bulk-resize
+  selectedIds?:          Set<string>
+  multiDragLeaderId?:    string | null
+  multiDragDelta?:       number | null
+  multiResizeEndDelta?:   number | null
+  multiResizeStartDelta?: number | null
   onToggleSelect?:    (a: Assignment) => void
 }
 
@@ -2584,7 +2695,7 @@ function GridRow({
   virtualLeaveBlocks,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
   onDragLive, onDragEnd, onBarCtxMenu, onPersonDblClick,
-  selectedIds, multiDragLeaderId, multiDragDelta, onToggleSelect,
+  selectedIds, multiDragLeaderId, multiDragDelta, multiResizeEndDelta, multiResizeStartDelta, onToggleSelect,
 }: GridRowProps) {
   const rowRef    = useRef<HTMLDivElement>(null)
   const createRef = useRef<{ anchor: number } | null>(null)
@@ -2848,6 +2959,8 @@ function GridRow({
             onDoubleClick={row.kind === 'workitem-sub' && onPersonDblClick ? () => onPersonDblClick(row.person.id) : undefined}
             isSelected={isSelected}
             multiMoveDelta={isSelected && !isLeader ? multiDragDelta : null}
+            multiResizeEndDelta={isSelected && !isLeader ? multiResizeEndDelta : null}
+            multiResizeStartDelta={isSelected && !isLeader ? multiResizeStartDelta : null}
             onToggleSelect={onToggleSelect}
           />
         )
