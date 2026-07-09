@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v2.22 |
+| 문서 버전 | v2.23 |
 | 프로그램명 | **전략팀 대시보드** |
 | 화면 표기 | 헤더·타이틀·푸터·코드 어디에도 **EY / EYP / EY-Parthenon 등 브랜드 표기·로고를 노출하지 않는다**(§9.0). 프로그램명은 "전략팀 대시보드"로만 표기. 로고는 `assets/logo.png`(정사각형 아이콘) 사용(§9.0). |
 | 아키텍처 | React + Supabase(Auth · Postgres · RLS) |
@@ -198,6 +198,17 @@
 | AL-9 | 데이터: `annual_leave_grants`(person_id, year, days, note), `annual_leave_adjustments`(person_id, direction, days(+/-), date, note). audit_log 기록. |
 | AL-10 | **퇴사 정산서 HTML 내보내기**: 퇴사 정산 뷰에 **"HTML로 저장"** 버튼을 추가한다. 클릭 시 AL-6의 ①~⑦ 전체(적립 내역·사용 내역 상세 포함)를 담은 **단일 인쇄용 HTML 파일**을 다운로드한다. 문서 상단에 인력명·직급·입사일·퇴사일·정산 기준일을 표기하고, **"법정연차 적립 내역" → "팀 정당 적립 내역"(유형별) → "휴가 사용 내역"(일자별) → "정산 요약"** 순서로 섹션을 명확히 구분한다. 정산 요약은 굵게 강조하고 위 세 섹션의 합계와 정확히 일치시킨다. CV Generator(§5.9)의 HTML 다운로드·인쇄 친화 스타일을 재사용한다. editor/admin과 assistant 모두 다운로드 가능(assistant는 편집 불가, 다운로드는 조회 동작으로 간주). |
 
+### 5.14 Admin (admin 전용 관리 화면)
+
+Admin 탭은 하위 메뉴로 구성된다: 계정 관리 / Grant 관리 / 감사 로그 / 백업(§5.12, §5.11c M-1 통합분 포함).
+
+| ID | 요구사항 |
+|---|---|
+| ADM-1 | **계정 관리**: profiles 목록 조회, global_role(admin/editor/assistant/viewer) 변경, person_id 매칭 설정. admin 전용. |
+| ADM-2 | **Grant 관리**: 역할별 접근 권한 현황 확인·조정. admin 전용. |
+| **ADM-3** | **감사 로그 조회(버그 수정)**: audit_log 테이블(user_id, action, target_type, target_id, at)을 시간 역순으로 표로 조회한다. 기간·사용자·액션 유형 필터를 제공한다. **현재 조회 시 화면에 "[object Object]"가 그대로 노출되고 로그가 표시되지 않는 버그가 있다** — 에러 객체나 원시 응답 객체를 문자열로 변환해 그대로 렌더링하지 말 것. 정상 조회 시 표 형태로 표시하고, 조회 실패 시에는 "감사 로그를 불러오지 못했습니다" 같은 사용자 친화적 에러 메시지로 대체한다. |
+| ADM-4 | **백업/복원**: §5.12·M-1(§5.11c) 참조. Admin 탭으로 통합된 백업/복원 기능. |
+
 ---
 
 ## 6. 인증·권한
@@ -220,7 +231,7 @@
 - Closed 작업/배정은 admin·editor에게도 편집 비활성. Open 전환 후 편집(§5.5). 서버 강제.
 
 ### 6.5 RLS 요지
-- people: 인증 전 역할 SELECT 전체(쓰기 editor/admin). work_items: viewer는 type≠pipeline만(마스킹 work_items_safe). assignments: viewer는 pipeline 연결분 제외. accruals: viewer는 본인만. 전 테이블 쓰기 editor/admin + Closed 잠금. **`annual_leave_grants`/`annual_leave_adjustments`: assistant는 SELECT만 허용(전 인력 대상), INSERT/UPDATE/DELETE는 editor/admin만.** (부록 B)
+- people: 인증 전 역할 SELECT 전체(쓰기 editor/admin). work_items: viewer는 type≠pipeline만(마스킹 work_items_safe). assignments: viewer는 pipeline 연결분 제외. accruals: viewer는 본인만. 전 테이블 쓰기 editor/admin + Closed 잠금. **`annual_leave_grants`/`annual_leave_adjustments`: assistant는 SELECT만 허용(전 인력 대상), INSERT/UPDATE/DELETE는 editor/admin만.** **`audit_log`: admin만 SELECT 가능(다른 역할은 접근 불가), INSERT는 서버(트리거/RPC)에서만 수행하고 클라이언트가 직접 쓰지 않는다.** (부록 B)
 
 ---
 
@@ -292,7 +303,8 @@
 | v2.19 | AL-3 산식에 특별휴가 추가: max(법정연차+주말/휴일대체, 팀 정당 적립)에서 max(법정연차+주말/휴일대체+특별휴가, 팀 정당 적립)으로 확장(특별휴가는 예비군·경조사 등 연차와 별개의 권리이므로 법정연차 쪽 후보에 포함), AL-4/AL-5/AL-6에 무급 휴가는 적립·사용 비교 어느 쪽에도 포함하지 않음을 명시 |
 | v2.20 | LV-5 신설: 휴가 유형별 차감 원천 제한(특별휴가는 특별휴가 적립만 원천 가능, 지정휴가는 프로젝트휴가·포상휴가·주말/휴일대체·지연보상만 원천 가능하고 특별휴가는 원천 불가), LV-6 신설: 특별휴가는 적립 잔여 한도 내에서만 사용 입력 가능하도록 입력 단계에서 검증·차단(선사용 불가), LV-7 신설: 지정휴가 선사용 시 차감 원천 표시를 "범용 N일" 대신 "선사용 N일"로 명확화, LV-1 자동 배정 순서에 지연보상 추가(①주말대체→②프로젝트휴가→③포상→④지연보상) |
 | v2.21 | LV-5·LV-6을 타임라인 배정 생성 경로에도 동일 적용 + 서버단 강제로 강화(재발 방지), LV-8 신설: 차감 원천을 저장값이 아닌 조회 시점 실시간 FIFO 재계산 값으로 변경(나중에 생긴 적립이 과거 지정휴가 선사용분의 원천으로 자동 재배정), T-16 정식 항목 신설: 드릴다운 조건부 스크롤 로직을 폐기하고 타임라인 진입 시 진입 경로 무관하게 항상 오늘 위치로 스크롤하도록 단순화(반복 재발 버그 수정) |
-| **v2.22 (본 개정)** | **E-6 신설: 배정 리사이즈로 기간을 늘릴 때도 LV-6 특별휴가 잔여 검증을 재수행(리사이즈 시 검증 누락 버그 수정)**, **E-3a 신설: Partner는 중복 배정 허용, Partner 외 전 직급은 중복 배정 하드 차단(경고만 뜨고 저장되던 버그 수정)**, **LV-9 신설: 수동 적립(특별휴가 등)은 비고 내용을 원천으로 표시**, **W-3에 Workitem 목록 기본 필터=Open만 표시 추가**, **T-10~T-15를 변경이력에만 있던 상태에서 §5.2 본문에 정식 반영**, **§9.2 신설: 좌측 네비게이션 탭 순서 고정(대시보드→타임라인→Work Items→Engagement 검색→CV Generator→People→Leave→연차관리→Admin)** |
+| v2.22 | E-6 신설: 배정 리사이즈로 기간을 늘릴 때도 LV-6 특별휴가 잔여 검증을 재수행(리사이즈 시 검증 누락 버그 수정), E-3a 신설: Partner는 중복 배정 허용, Partner 외 전 직급은 중복 배정 하드 차단(경고만 뜨고 저장되던 버그 수정), LV-9 신설: 수동 적립(특별휴가 등)은 비고 내용을 원천으로 표시, W-3에 Workitem 목록 기본 필터=Open만 표시 추가, T-10~T-15를 변경이력에만 있던 상태에서 §5.2 본문에 정식 반영, §9.2 신설: 좌측 네비게이션 탭 순서 고정(대시보드→타임라인→Work Items→Engagement 검색→CV Generator→People→Leave→연차관리→Admin) |
+| **v2.23 (본 개정)** | **§5.14 Admin 섹션 신설(계정 관리/Grant 관리/감사 로그/백업 하위 메뉴 정식 문서화)**, **ADM-3 감사 로그 조회 버그 수정: "[object Object]" 원시 노출 대신 정상 표/에러 메시지 표시**, **§6.5 RLS에 audit_log는 admin만 SELECT 가능하다는 규칙 명시(누락되어 있던 RLS 정책 추가 — 조회 실패의 근본 원인일 가능성)** |
 
 ---
 
