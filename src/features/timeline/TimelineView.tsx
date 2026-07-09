@@ -1730,8 +1730,16 @@ export default function TimelineView() {
     })
   }
 
-  // Scroll to today on mount
-  useEffect(() => { scrollToToday() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  // T-16: scroll to today the first time rows are available (works for all entry paths —
+  // direct tab click, drilldown, search jump). The mount-time fire is intentionally
+  // removed because data may not be loaded yet; this effect waits for the grid to render.
+  const initialScrollDone = useRef(false)
+  useEffect(() => {
+    if (rows.length === 0 || initialScrollDone.current) return
+    initialScrollDone.current = true
+    scrollToToday()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length])
 
   // D-6 / §5.11a: handle navigation state (dashboard drill-down + global search jump)
   // T-16 fix: track last-handled key (not a boolean) so re-navigation to the same/different
@@ -2590,6 +2598,8 @@ export default function TimelineView() {
         state={modal}
         people={people}
         workItems={workItems}
+        accruals={accruals}
+        assignments={assignments}
         canEditPipeline={canEditPipeline}
         onClose={closeModal}
         onWorkItemExpand={(wiId, newStart, newEnd) => {

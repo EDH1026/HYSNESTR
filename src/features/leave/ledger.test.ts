@@ -520,6 +520,50 @@ describe('pipeline exclusion', () => {
 
 })
 
+// ── LV-8: retroactive FIFO matching (future accrual satisfies past usage) ──
+
+describe('LV-8 retroactive FIFO matching', () => {
+  it('지정휴가 선사용 후 나중에 적립 추가 → 재조회 시 차감 원천이 "선사용"에서 적립으로 전환', () => {
+    // Usage: 지정휴가 2024-01-15 (2 days) — at this point no accruals exist → deficit=2
+    // Accrual added later: 프로젝트휴가 2024-03-01 (3 days)
+    // After ledger recompute: the earlier usage should be satisfied by the later accrual
+    const accruals: Accrual[] = [
+      { id: 'accProj', person_id: 'p1', type: '프로젝트휴가', days: 3, date: '2024-03-01', source: null, note: null },
+    ]
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '지정휴가',
+      start: '2024-01-15', end_date: '2024-01-16',  // 2 workdays (Mon–Tue)
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-04-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(2)
+    // Despite the accrual being dated AFTER the usage, it satisfies the deficit
+    expect(usage.deficit).toBe(0)
+    expect(usage.deductions.find(d => d.accrualId === 'accProj')?.days).toBe(2)
+  })
+
+  it('특별휴가 선사용(deficit) 후 특별휴가 적립 추가 → 재조회 시 deficit 해소', () => {
+    const accruals: Accrual[] = [
+      { id: 'accS', person_id: 'p1', type: '특별휴가', days: 2, date: '2024-03-01', source: null, note: null },
+    ]
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '특별휴가',
+      start: '2024-01-15', end_date: '2024-01-16',  // 2 workdays
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-04-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(2)
+    expect(usage.deficit).toBe(0)
+    expect(usage.deductions.find(d => d.accrualId === 'accS')?.days).toBe(2)
+  })
+})
+
 // ── 8. Workday counting (weekends and holidays excluded) ──────
 
 describe('workday count in usage', () => {

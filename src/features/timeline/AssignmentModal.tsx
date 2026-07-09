@@ -17,7 +17,7 @@ import { useCreateAssignment, useUpdateAssignment, useDeleteAssignment } from '.
 import { useHistory }  from '@/lib/history'
 import { makeAssignmentCreate, makeAssignmentModalEdit, makeAssignmentDelete, combine } from '@/lib/historyOps'
 import type { HistoryEntry } from '@/lib/history'
-import type { WorkItem, Person, LeaveType } from '@/types'
+import type { WorkItem, Person, Assignment, Accrual, LeaveType } from '@/types'
 import type { ModalState } from './types'
 
 // ── Leave paid/unpaid metadata (client-side; not stored in DB) ──
@@ -126,10 +126,43 @@ function WeekendPicker({ value, onChange, holidaySet, disabled }: WeekendPickerP
 
 // ── Main modal ────────────────────────────────────────────────
 
+// LV-6: compute special leave balance for a person (accrual total − workdays used)
+function computeSpecialLeaveBalance(
+  personId:    string,
+  accruals:    Accrual[],
+  assignments: Assignment[],
+  holidaySet:  Set<number>,
+  excludeId?:  string,   // assignment id to exclude (for edit mode)
+): number {
+  const accrualBalance = accruals
+    .filter(a => a.person_id === personId && a.type === '특별휴가')
+    .reduce((s, a) => s + (a.direction === 'accrual' ? a.days : -a.days), 0)
+
+  const usedDays = assignments
+    .filter(a =>
+      a.person_id  === personId  &&
+      a.kind       === 'leave'   &&
+      a.leave_type === '특별휴가' &&
+      (!excludeId || a.id !== excludeId),
+    )
+    .reduce((s, a) => {
+      const s0 = dateToNum(a.start), e0 = dateToNum(a.end_date)
+      let d = 0
+      for (let n = s0; n <= e0; n++) {
+        if (!isWeekend(n) && !holidaySet.has(n)) d++
+      }
+      return s + d
+    }, 0)
+
+  return Math.round((accrualBalance - usedDays) * 10) / 10
+}
+
 interface Props {
   state:           ModalState
   people:          Person[]
   workItems:       WorkItem[]
+  accruals:        Accrual[]       // LV-6: used for 특별휴가 balance check
+  assignments:     Assignment[]    // LV-6: used for 특별휴가 balance check
   canEditPipeline: boolean   // hides pipeline items in selector when false
   readOnly?:       boolean   // true → view only (no save button)
   onClose:         () => void
@@ -138,7 +171,7 @@ interface Props {
 }
 
 export default function AssignmentModal({
-  state, people, workItems, canEditPipeline, readOnly = false, onClose, onWorkItemExpand,
+  state, people, workItems, accruals, assignments, canEditPipeline, readOnly = false, onClose, onWorkItemExpand,
 }: Props) {
   const create = useCreateAssignment()
   const update = useUpdateAssignment()
@@ -270,6 +303,23 @@ export default function AssignmentModal({
     setErr(null)
     const ve = validateDates()
     if (ve) { setErr(ve); return }
+
+    // LV-6: 특별휴가는 적립 잔여 한도 내에서만 입력 가능
+    if (form.kind === 'leave' && form.leaveType === '특별휴가' && form.start && form.end) {
+      let reqDays = 0
+      const s = dateToNum(form.start), e2 = dateToNum(form.end)
+      for (let d = s; d <= e2; d++) {
+        if (!isWeekend(d) && !holidaySet.has(d)) reqDays++
+      }
+      const bal = computeSpecialLeaveBalance(
+        form.personId, accruals, assignments, holidaySet,
+        state.mode === 'edit' ? state.editTarget?.id : undefined,
+      )
+      if (reqDays > bal) {
+        setErr(`특별휴가 잔여가 부족합니다 (잔여: ${bal}일, 요청: ${reqDays}일)`)
+        return
+      }
+    }
 
     const base = {
       person_id:    form.personId,
