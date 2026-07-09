@@ -6,11 +6,12 @@
  * 탭: 적립 관리 | 퇴사 정산 | 수치 안내
  */
 import { useState, useMemo, useCallback, type FormEvent } from 'react'
-import { Plus, Trash2, Loader2, AlertTriangle, Eye } from 'lucide-react'
+import { Plus, Trash2, Loader2, AlertTriangle, Eye, Download } from 'lucide-react'
 import { useAuthz } from '@/hooks/useAuthz'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
 import { computeAnnualLeaveSettlement, computeTimesheetFigures } from './annualLeave'
+import type { AnnualLeaveSettlementResult } from './annualLeave'
 import {
   useGrantsByPerson,
   useUpsertGrant,
@@ -438,6 +439,180 @@ function deductionSummary(
 }
 
 // ─────────────────────────────────────────────────────────────
+// AL-10: HTML export helpers
+// ─────────────────────────────────────────────────────────────
+
+function escHtml(v: unknown): string {
+  return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function triggerDownload(content: string, filename: string) {
+  const blob = new Blob([content], { type: 'text/html;charset=utf-8' })
+  const url  = URL.createObjectURL(blob)
+  const a    = Object.assign(document.createElement('a'), { href: url, download: filename })
+  document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+function generateSettlementHtml(
+  person:       Person,
+  asOfStr:      string,
+  grantRows:    AnnualLeaveGrant[],
+  adjRows:      AnnualLeaveAdjustment[],
+  accrualRows:  LedgerAccrualEntry[],
+  paidUsages:   LedgerUsageEntry[],
+  result:       AnnualLeaveSettlementResult,
+  workItemById: Map<string, WorkItem>,
+  accrualById:  Map<string, LedgerAccrualEntry>,
+): string {
+  const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+  const basisLabel = result.entitlementBasis === 'statutory' ? '① 법정연차 기준'
+    : result.entitlementBasis === 'team' ? '② 팀 적립 기준' : '① = ②'
+
+  const t1 = [
+    ...grantRows.map(g => `<tr>
+      <td><span class="pill pill-blue">법정연차</span></td>
+      <td>${escHtml(g.year)}년</td>
+      <td>${escHtml(g.note ?? '—')}</td>
+      <td class="num pos">+${escHtml(g.days)}</td></tr>`),
+    ...adjRows.map(a => `<tr>
+      <td><span class="pill ${a.direction === 'accrual' ? 'pill-green' : 'pill-red'}">${a.direction === 'accrual' ? '보정+' : '보정−'}</span></td>
+      <td class="mono">${escHtml(a.date)}</td>
+      <td>${escHtml(a.note ?? '—')}</td>
+      <td class="num ${a.direction === 'accrual' ? 'pos' : 'neg'}">${a.direction === 'accrual' ? '+' : '−'}${escHtml(Math.abs(a.days))}</td></tr>`),
+  ]
+  if (!t1.length) t1.push('<tr><td colspan="4" class="empty">내역 없음</td></tr>')
+
+  const t2 = accrualRows.length
+    ? accrualRows.map(a => `<tr>
+      <td><span class="pill pill-purple">${escHtml(a.type)}</span></td>
+      <td class="mono">${escHtml(a.date)}</td>
+      <td>${a.sourceId ? escHtml(workItemById.get(a.sourceId)?.name ?? '—') : '—'}</td>
+      <td class="num pos">+${escHtml(a.days)}</td></tr>`)
+    : ['<tr><td colspan="4" class="empty">내역 없음</td></tr>']
+
+  const t3 = paidUsages.length
+    ? paidUsages.map(u => {
+        const period  = u.start === u.end ? escHtml(u.start) : `${escHtml(u.start)}~${escHtml(u.end)}`
+        const fifo    = escHtml(deductionSummary(u.deductions, accrualById, workItemById))
+        const deficit = u.deficit > 0 ? ` <span class="neg">(선사용 ${escHtml(u.deficit)}일)</span>` : ''
+        return `<tr>
+      <td class="mono">${period}</td>
+      <td><span class="pill pill-amber">${escHtml(u.type)}</span></td>
+      <td>${fifo}${deficit}</td>
+      <td class="num">−${escHtml(u.days)}</td></tr>`
+      })
+    : ['<tr><td colspan="4" class="empty">내역 없음</td></tr>']
+
+  const netSign = result.netSettlement > 0 ? '+' : ''
+  const excessRow   = result.excess    > 0 ? `<div class="summary-row err"><span>초과 사용분 (퇴사 시 차감)</span><span class="sv">−${result.excess}일</span></div>` : ''
+  const shortfallRow= result.shortfall > 0 ? `<div class="summary-row ok"><span>미달 보상분 (퇴사 시 보상)</span><span class="sv">+${result.shortfall}일</span></div>` : ''
+  const evenRow     = (result.excess === 0 && result.shortfall === 0) ? `<div class="summary-row muted"><span>초과/미달 없음 (권리 = 사용)</span></div>` : ''
+
+  const css = `
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+      font-size:13px;line-height:1.6;color:#111827;max-width:880px;margin:0 auto;padding:48px 40px}
+    header{border-bottom:2px solid #2563eb;padding-bottom:18px;margin-bottom:32px}
+    h1{font-size:22px;font-weight:700;color:#111827}
+    .pi{margin-top:6px;color:#374151;font-size:14px;font-weight:500}
+    .meta{margin-top:3px;color:#6b7280;font-size:12px}
+    section{margin-bottom:28px}
+    h2{font-size:13px;font-weight:600;color:#1e40af;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #e5e7eb}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th{background:#f9fafb;text-align:left;padding:7px 10px;font-weight:500;color:#6b7280;border:1px solid #e5e7eb;white-space:nowrap}
+    td{padding:6px 10px;border:1px solid #e5e7eb;color:#374151;vertical-align:top}
+    tfoot td{background:#f9fafb;font-weight:600;border-top:2px solid #d1d5db}
+    td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+    td.mono{font-family:ui-monospace,monospace;font-size:11px;white-space:nowrap}
+    td.empty{text-align:center;color:#9ca3af;padding:12px}
+    .pos{color:#065f46}.neg{color:#b91c1c}
+    .pill{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:500}
+    .pill-blue{background:#eef2ff;color:#4338ca}
+    .pill-green{background:#ecfdf5;color:#065f46}
+    .pill-red{background:#fef2f2;color:#b91c1c}
+    .pill-purple{background:#f5f3ff;color:#7c3aed}
+    .pill-amber{background:#fffbeb;color:#b45309}
+    .sb{border:1px solid #e5e7eb;border-radius:8px;overflow:hidden}
+    .summary-row{display:flex;align-items:center;justify-content:space-between;
+      padding:10px 14px;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:500}
+    .summary-row:last-child{border-bottom:none}
+    .summary-row.total{background:#1e40af;color:white;font-size:14px;font-weight:700;padding:14px}
+    .summary-row.ok{background:#ecfdf5;color:#065f46}
+    .summary-row.err{background:#fef2f2;color:#b91c1c}
+    .summary-row.muted{color:#9ca3af;font-weight:400}
+    .sv{font-variant-numeric:tabular-nums;font-size:15px;font-weight:700}
+    .basis{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500;margin-left:6px;background:#dbeafe;color:#1e40af}
+    .hint{font-size:11px;color:#9ca3af;margin-left:6px}
+    @media print{body{padding:20px;max-width:none}@page{margin:20mm;size:A4}section{break-inside:avoid}}
+  `
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>퇴사 정산서 — ${escHtml(person.name)}</title>
+<style>${css}</style>
+</head>
+<body>
+<header>
+  <h1>퇴사 정산서</h1>
+  <p class="pi">${escHtml(person.name)} · ${escHtml(person.rank)}${person.role ? ` · ${escHtml(person.role)}` : ''}</p>
+  <p class="meta">입사일: ${escHtml(person.hire_date ?? '미입력')} &nbsp;|&nbsp; 퇴사일(예정): ${escHtml(person.termination_date ?? '미입력')} &nbsp;|&nbsp; 정산 기준일: ${escHtml(asOfStr)}</p>
+  <p class="meta">생성: ${escHtml(generated)}</p>
+</header>
+
+<section>
+  <h2>① 법정연차 적립·보정 내역</h2>
+  <table>
+    <thead><tr><th>항목</th><th>날짜/연도</th><th>사유</th><th>일수</th></tr></thead>
+    <tbody>${t1.join('')}</tbody>
+    <tfoot><tr><td colspan="3">법정연차 누적 합계</td><td class="num">${result.statutory}일</td></tr></tfoot>
+  </table>
+</section>
+
+<section>
+  <h2>② 팀 정당 적립 내역</h2>
+  <table>
+    <thead><tr><th>유형</th><th>날짜</th><th>원천(프로젝트)</th><th>일수</th></tr></thead>
+    <tbody>${t2.join('')}</tbody>
+    <tfoot><tr><td colspan="3">팀 정당 적립 합계</td><td class="num">${result.teamAccrued}일</td></tr></tfoot>
+  </table>
+</section>
+
+<section>
+  <h2>③ 휴가 사용 내역 <span style="font-weight:400;color:#6b7280">(유급 — 무급리프레시·휴직 제외)</span></h2>
+  <table>
+    <thead><tr><th>기간</th><th>유형</th><th>FIFO 차감 원천</th><th>일수</th></tr></thead>
+    <tbody>${t3.join('')}</tbody>
+    <tfoot><tr><td colspan="3">총 유급 사용 합계</td><td class="num">${result.totalUsed}일</td></tr></tfoot>
+  </table>
+</section>
+
+<section>
+  <h2>정산 요약</h2>
+  <div class="sb">
+    <div class="summary-row">
+      <span>총 휴가 권리<span class="basis">${escHtml(basisLabel)}</span><span class="hint">max(①${result.statutory}, ②${result.teamAccrued})</span></span>
+      <span class="sv">${result.totalEntitlement}일</span>
+    </div>
+    <div class="summary-row">
+      <span>총 유급 사용 ③</span>
+      <span class="sv">−${result.totalUsed}일</span>
+    </div>
+    ${excessRow}${shortfallRow}${evenRow}
+    <div class="summary-row total">
+      <span>최종 정산</span>
+      <span class="sv">${netSign}${result.netSettlement}일</span>
+    </div>
+  </div>
+</section>
+</body>
+</html>`
+}
+
+// ─────────────────────────────────────────────────────────────
 // Tab 2: 퇴사 정산
 // ─────────────────────────────────────────────────────────────
 
@@ -483,12 +658,29 @@ function SettlementTab({ person }: { person: Person }) {
       .sort((a, b) => a.start.localeCompare(b.start)),
   [ledger])
 
+  const handleDownload = useCallback(() => {
+    if (!result) return
+    const safeName = person.name.replace(/\s+/g, '_')
+    triggerDownload(
+      generateSettlementHtml(person, asOfStr, grantRows, adjRows, accrualRows, paidUsages, result, workItemById, accrualById),
+      `퇴사정산_${safeName}_${asOfStr}.html`,
+    )
+  }, [person, asOfStr, grantRows, adjRows, accrualRows, paidUsages, result, workItemById, accrualById])
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <label className="text-xs font-medium text-gray-700">기준일 (퇴사 예정일)</label>
         <input type="date" className="input py-1 text-xs w-36"
           value={asOfStr} onChange={e => setAsOfStr(e.target.value)} />
+        <button
+          onClick={handleDownload}
+          disabled={!result}
+          className="ml-auto flex items-center gap-1.5 btn-secondary text-xs py-1 disabled:opacity-40"
+        >
+          <Download size={13} />
+          HTML로 저장
+        </button>
       </div>
 
       {(isLoading || !result) ? (
