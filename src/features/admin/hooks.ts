@@ -201,10 +201,10 @@ export interface HolidaySyncLogRow {
 export function useSyncHolidays() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (): Promise<SyncHolidaysResult> => {
+    mutationFn: async (vars?: { years?: number[] }): Promise<SyncHolidaysResult> => {
       const { data, error } = await supabase.functions.invoke('sync-holidays', {
         method: 'POST',
-        body:   {},
+        body:   vars ?? {},
       })
       if (error) throw new Error(error.message ?? 'Sync failed')
       if (data?.error) throw new Error(data.error)

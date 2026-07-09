@@ -119,10 +119,22 @@ serve(async (req: Request) => {
   }
 
   // ── 2. Fetch holidays — all months in parallel ─────────────
+  // Optional request body: { years?: number[] } — if omitted, default to current+next year
+  let bodyYears: number[] | undefined
+  try {
+    const body = await req.clone().json()
+    if (Array.isArray(body?.years) && body.years.length > 0) {
+      bodyYears = (body.years as number[]).map(Number).filter(y => y >= 2000 && y <= 2100)
+    }
+  } catch { /* no body or non-JSON — use default */ }
+
   const now         = new Date()
   const currentYear = now.getFullYear()
-  const years       = [currentYear, currentYear + 1]
-  const yearRange   = `${years[0]}~${years[years.length - 1]}`
+  const years       = bodyYears ?? [currentYear, currentYear + 1]
+  years.sort((a, b) => a - b)
+  const yearRange   = years.length === 1
+    ? String(years[0])
+    : `${years[0]}~${years[years.length - 1]}`
 
   // Build a flat list of (year, month) pairs and fetch all concurrently
   const tasks: Array<{ year: number; month: number }> = []

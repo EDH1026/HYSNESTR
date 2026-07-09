@@ -7,7 +7,7 @@
  */
 
 import { useState }     from 'react'
-import { RefreshCw, Plus, CheckCircle2, AlertTriangle, Info } from 'lucide-react'
+import { RefreshCw, Plus, CheckCircle2, AlertTriangle, Info, History } from 'lucide-react'
 import {
   useSyncHolidays, useHolidaySyncLog,
   type SyncHolidaysResult, type HolidaySyncLogRow,
@@ -21,14 +21,27 @@ export default function HolidaySyncPanel() {
   const { data: syncLog = [], isLoading: logLoading } = useHolidaySyncLog()
   const { data: holidays = [], isLoading: holLoading } = useAllHolidays()
 
-  const [lastResult, setLastResult] = useState<SyncHolidaysResult | null>(null)
+  const [lastResult,    setLastResult]    = useState<SyncHolidaysResult | null>(null)
+  const [backfillMode, setBackfillMode] = useState(false)
   // undefined = modal closed; null = create mode; Holiday = edit mode
   const [editing, setEditing] = useState<Holiday | null | undefined>(undefined)
 
   async function handleSync() {
     setLastResult(null)
+    setBackfillMode(false)
     try {
-      const r = await sync.mutateAsync()
+      const r = await sync.mutateAsync({})
+      setLastResult(r)
+    } catch {
+      // error surfaced via sync.error
+    }
+  }
+
+  async function handleBackfill() {
+    setLastResult(null)
+    setBackfillMode(true)
+    try {
+      const r = await sync.mutateAsync({ years: [2022, 2023, 2024] })
       setLastResult(r)
     } catch {
       // error surfaced via sync.error
@@ -94,13 +107,24 @@ export default function HolidaySyncPanel() {
             disabled={sync.isPending}
             className="btn-primary gap-2"
           >
-            <RefreshCw size={14} className={sync.isPending ? 'animate-spin' : ''} />
-            {sync.isPending ? '동기화 중…' : '지금 동기화'}
+            <RefreshCw size={14} className={sync.isPending && !backfillMode ? 'animate-spin' : ''} />
+            {sync.isPending && !backfillMode ? '동기화 중…' : '지금 동기화'}
+          </button>
+
+          <button
+            onClick={() => void handleBackfill()}
+            disabled={sync.isPending}
+            className="btn-secondary gap-2"
+            title="2022~2024년 공휴일을 API에서 가져와 과거 데이터를 채웁니다"
+          >
+            <History size={14} className={sync.isPending && backfillMode ? 'animate-spin' : ''} />
+            {sync.isPending && backfillMode ? '채우는 중…' : '과거 데이터 채우기 (2022~2024)'}
           </button>
 
           {lastResult && (
             <span className="flex items-center gap-1.5 text-xs text-emerald-700">
               <CheckCircle2 size={13} />
+              {backfillMode ? '[2022~2024] ' : ''}
               추가 {lastResult.added}건 · 수정 {lastResult.updated}건
               (API 응답 총 {lastResult.total}건)
               {lastResult.errors && lastResult.errors.length > 0 && (
