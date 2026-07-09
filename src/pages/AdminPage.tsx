@@ -8,10 +8,11 @@ import BackupRestore     from '@/features/admin/BackupRestore'
 import SecurityChecklist from '@/features/admin/SecurityChecklist'
 import HolidaySyncPanel  from '@/features/admin/HolidaySyncPanel'
 import BulkUploadPanel   from '@/features/admin/BulkUploadPanel'
-import MigrationPanel    from '@/features/admin/MigrationPanel'
+import MigrationPanel      from '@/features/admin/MigrationPanel'
+import StatutoryFillPanel  from '@/features/admin/StatutoryFillPanel'
 import { useSettings, useUpdateSettings, useLeaveTypes, useUpdateLeaveType } from '@/features/admin/hooks'
 
-type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings' | 'holidays' | 'bulk' | 'migration'
+type Tab = 'accounts' | 'grants' | 'audit' | 'backup' | 'security' | 'settings' | 'holidays' | 'bulk' | 'migration' | 'statutory'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'accounts',  label: '계정 관리' },
@@ -23,6 +24,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'holidays',  label: '공휴일 동기화' },
   { id: 'bulk',      label: '일괄 업로드' },
   { id: 'migration', label: '데이터 이관' },
+  { id: 'statutory', label: '법정연차 배치' },
 ]
 
 const MONTH_NAMES = [
@@ -177,6 +179,7 @@ export default function AdminPage() {
           {tab === 'holidays'  && <HolidaySyncPanel />}
           {tab === 'bulk'      && <BulkUploadPanel />}
           {tab === 'migration' && <MigrationPanel />}
+          {tab === 'statutory' && <StatutoryFillPanel />}
         </div>
       </div>
     </div>

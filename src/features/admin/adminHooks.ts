@@ -88,6 +88,29 @@ export function useDeleteGrant() {
   })
 }
 
+// ── fill-statutory-leave ─────────────────────────────────────
+
+export interface FillStatutoryLeaveResult {
+  anchorDate: string
+  people:     number
+  inserted:   number
+  errors?:    string[]
+}
+
+export function useFillStatutoryLeave() {
+  return useMutation({
+    mutationFn: async (anchorDate: string): Promise<FillStatutoryLeaveResult> => {
+      const { data, error } = await supabase.functions.invoke('fill-statutory-leave', {
+        method: 'POST',
+        body:   { anchorDate },
+      })
+      if (error) throw new Error(error.message ?? 'Fill failed')
+      if (data?.error) throw new Error(data.error)
+      return data as FillStatutoryLeaveResult
+    },
+  })
+}
+
 // ── Audit log ─────────────────────────────────────────────────
 
 export interface AuditLogEntry extends AuditLog {

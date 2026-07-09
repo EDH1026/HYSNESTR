@@ -3,9 +3,9 @@
  *
  * 근로기준법 제60조 기준:
  * - 첫 해: 매월 만근 시 1일 (최대 11개월 = 11일)
- * - 회계연도(calendar) 기준:
- *     입사 다음해 1월 1일: 15 × (입사일~해당년도말 일수 / 입사연도 총일수)
- *     이후 매년 1월 1일: min(25, 15 + floor((해당년 - 입사년 - 1) / 2))
+ * - 회계연도(calendar) 기준 — 회사 회계연도 7월 1일 기준 (PRD v2.28):
+ *     다음 회계연도 7월 1일: 15 × (입사일~해당 7/1 재직일수 / 365)
+ *     이후 매년 7월 1일: min(25, 15 + floor((경과횟수) / 2))
  * - 입사일(anniversary) 기준:
  *     N번째 주년일: min(25, 15 + floor((N - 1) / 2))
  */
@@ -21,9 +21,6 @@ function r1(n: number): number {
   return Math.round(n * 10) / 10
 }
 
-function daysInCalYear(y: number): number {
-  return y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0) ? 366 : 365
-}
 
 /** 두 YYYY-MM-DD 사이 일 수 (end 미포함) */
 function daysBetween(startStr: string, endStr: string): number {
@@ -68,25 +65,29 @@ export function computeStatutoryLeave(
   }
 
   if (anchorType === 'calendar') {
-    // 첫 연차: 다음해 1월 1일, 비례 부여
-    const firstAnnualDate = `${hireYear + 1}-01-01`
-    if (firstAnnualDate <= asOfDate) {
-      // 입사일 ~ 입사년도 말일 (inclusive) 일 수
-      const daysWorked = daysBetween(hireDate, `${hireYear + 1}-01-01`)
-      const days = r1(15 * daysWorked / daysInCalYear(hireYear))
-      events.push({ date: firstAnnualDate, days, kind: 'annual', label: `${hireYear + 1}년 비례연차` })
+    // 첫 연차: 다음 회계연도 7월 1일, 비례 부여 (PRD v2.28 — 7월 1일 기준)
+    // 7월 이후 입사 → 다음해 7/1; 7월 이전(1~6월) 입사 → 같은 해 7/1
+    const hireMonth = parseInt(hireDate.slice(5, 7), 10)
+    const firstFiscalYear = hireMonth < 7 ? hireYear : hireYear + 1
+    const firstFiscalDate = `${firstFiscalYear}-07-01`
+
+    if (firstFiscalDate <= asOfDate) {
+      const daysWorked = daysBetween(hireDate, firstFiscalDate)
+      const days = r1(15 * daysWorked / 365)   // 고정 365 분모 (PRD)
+      events.push({ date: firstFiscalDate, days, kind: 'annual', label: `${firstFiscalYear}년 비례연차` })
     }
 
-    // 이후 매년 1월 1일
-    let year = hireYear + 2
+    // 이후 매년 7월 1일
+    let fiscalYear = firstFiscalYear + 1
+    let n = 1  // n=1 → elapsed=2 → 15일; n=2 → elapsed=3 → 16일 …
     while (true) {
-      const date = `${year}-01-01`
+      const date = `${fiscalYear}-07-01`
       if (date > asOfDate) break
-      // year - hireYear = 경과 연도 수 (첫 비례연차 이후 1부터 시작)
-      const elapsed = year - hireYear  // hireYear+2 → elapsed=2, hireYear+3 → elapsed=3, …
+      const elapsed = n + 1
       const days = Math.min(25, 15 + Math.floor((elapsed - 1) / 2))
-      events.push({ date, days, kind: 'annual', label: `${year}년 연차` })
-      year++
+      events.push({ date, days, kind: 'annual', label: `${fiscalYear}년 연차` })
+      fiscalYear++
+      n++
     }
   } else {
     // 입사일 기준: N번째 주년일
