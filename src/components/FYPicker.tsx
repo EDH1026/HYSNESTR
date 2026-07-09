@@ -54,7 +54,8 @@ interface Props {
 
 export default function FYPicker({ value, onChange, startMonth }: Props) {
   const curFY   = fyOf(today(), startMonth)
-  const fyYears = [curFY - 1, curFY, curFY + 1]
+  // T-7-TEMP: FY09~FY28 전체 목록 (초기 데이터 셋업용)
+  const fyYears = Array.from({ length: 20 }, (_, i) => 2009 + i)
 
   const base    = 'px-2.5 py-1 text-xs font-medium rounded border transition-colors'
   const on      = 'bg-brand-600 text-white border-brand-600'
