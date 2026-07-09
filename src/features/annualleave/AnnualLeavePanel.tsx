@@ -468,8 +468,7 @@ function generateSettlementHtml(
   accrualById:  Map<string, LedgerAccrualEntry>,
 ): string {
   const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
-  const basisLabel = result.entitlementBasis === 'statutory' ? '① 법정연차 기준'
-    : result.entitlementBasis === 'team' ? '② 팀 적립 기준' : '① = ②'
+  const isTeam = result.entitlementBasis === 'team'
 
   const t1 = [
     ...grantRows.map(g => `<tr>
@@ -544,8 +543,13 @@ function generateSettlementHtml(
     .summary-row.err{background:#fef2f2;color:#b91c1c}
     .summary-row.muted{color:#9ca3af;font-weight:400}
     .sv{font-variant-numeric:tabular-nums;font-size:15px;font-weight:700}
-    .basis{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500;margin-left:6px;background:#dbeafe;color:#1e40af}
-    .hint{font-size:11px;color:#9ca3af;margin-left:6px}
+    .sv-sm{font-variant-numeric:tabular-nums;font-size:13px;font-weight:700}
+    .chosen-a{color:#1d4ed8}.chosen-b{color:#7c3aed}.unchosen{color:#9ca3af}
+    .candidates{padding:10px 14px;border-bottom:1px solid #e5e7eb;background:#f9fafb;display:grid;gap:6px}
+    .cand{display:flex;align-items:center;justify-content:space-between;font-size:12px}
+    .badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:500;margin-left:5px}
+    .badge-a{background:#dbeafe;color:#1e40af}.badge-b{background:#ede9fe;color:#6d28d9}
+    .hint{font-size:11px;color:#9ca3af;margin-left:5px}
     @media print{body{padding:20px;max-width:none}@page{margin:20mm;size:A4}section{break-inside:avoid}}
   `
 
@@ -595,8 +599,25 @@ function generateSettlementHtml(
 <section>
   <h2>정산 요약</h2>
   <div class="sb">
+    <div class="candidates">
+      <div class="cand">
+        <span class="${!isTeam ? 'chosen-a' : 'unchosen'}">
+          (a) 법정연차+주말/휴일대체
+          <span class="hint">(${result.statutory}+${result.weekendSub}일)</span>
+          ${!isTeam ? '<span class="badge badge-a">채택</span>' : ''}
+        </span>
+        <span class="sv-sm ${!isTeam ? 'chosen-a' : 'unchosen'}">${result.statutoryPlusWeekend}일</span>
+      </div>
+      <div class="cand">
+        <span class="${isTeam ? 'chosen-b' : 'unchosen'}">
+          (b) 팀 정당 적립 합
+          ${isTeam ? '<span class="badge badge-b">채택</span>' : ''}
+        </span>
+        <span class="sv-sm ${isTeam ? 'chosen-b' : 'unchosen'}">${result.teamAccrued}일</span>
+      </div>
+    </div>
     <div class="summary-row">
-      <span>총 휴가 권리<span class="basis">${escHtml(basisLabel)}</span><span class="hint">max(①${result.statutory}, ②${result.teamAccrued})</span></span>
+      <span>총 휴가 권리 <span class="hint">max(a, b)</span></span>
       <span class="sv">${result.totalEntitlement}일</span>
     </div>
     <div class="summary-row">
@@ -623,16 +644,24 @@ function SettlementTab({ person }: { person: Person }) {
   const { isLoading, ledger, grants, adjustments, workItems } = usePersonData(person.id, asOfStr)
   const asOfYear = parseInt(asOfStr.slice(0, 4), 10)
 
+  // 주말/휴일대체 누적 합 — 후보 (a) = statutory + weekendSub 에 사용
+  const weekendSubAccrued = useMemo(() =>
+    (ledger?.accruals ?? [])
+      .filter(a => a.type === '주말/휴일대체')
+      .reduce((s, a) => s + a.days, 0),
+  [ledger])
+
   // AL-4/AL-5: 공용 함수 단일 호출 — 정산 요약은 이 result를 그대로 바인딩
   const result = useMemo(() => {
     if (!ledger) return null
     return computeAnnualLeaveSettlement(asOfStr, {
       grants,
       adjustments,
+      weekendSubAccrued,
       teamActualAccrued: ledger.actualAccrued,
       totalPaidUsed:     ledger.actualUsed,
     })
-  }, [ledger, grants, adjustments, asOfStr])
+  }, [ledger, grants, adjustments, weekendSubAccrued, asOfStr])
 
   const workItemById = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
   const accrualById  = useMemo(
@@ -826,14 +855,38 @@ function SettlementTab({ person }: { person: Person }) {
           <section>
             <h3 className="text-xs font-semibold text-gray-700 mb-2">정산 요약</h3>
             <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
-              <div className="px-4 py-3 bg-surface-50 flex items-center justify-between">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-semibold text-gray-700">총 휴가 권리</span>
-                  <span className={`pill text-[10px] ${result.entitlementBasis === 'statutory' ? 'bg-brand-100 text-brand-700' : result.entitlementBasis === 'team' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}`}>
-                    {result.entitlementBasis === 'statutory' ? '① 법정연차 기준' : result.entitlementBasis === 'team' ? '② 팀 적립 기준' : '① = ②'}
+              {/* 두 후보값 비교 — (a) 법정연차+주말/휴일대체 vs (b) 팀 정당 적립 합 */}
+              <div className="px-4 py-3 bg-surface-50 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-xs ${result.entitlementBasis !== 'team' ? 'font-semibold text-brand-700' : 'text-gray-500'}`}>
+                      (a) 법정연차+주말/휴일대체
+                    </span>
+                    <span className="text-[10px] text-muted tabular-nums">({result.statutory}+{result.weekendSub}일)</span>
+                    {result.entitlementBasis !== 'team' && (
+                      <span className="pill bg-brand-100 text-brand-700 text-[10px]">채택</span>
+                    )}
+                  </div>
+                  <span className={`text-sm tabular-nums ${result.entitlementBasis !== 'team' ? 'font-bold text-brand-700' : 'text-gray-400'}`}>
+                    {result.statutoryPlusWeekend}일
                   </span>
-                  <span className="text-[10px] text-muted">max(①{result.statutory}, ②{result.teamAccrued})</span>
                 </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-xs ${result.entitlementBasis === 'team' ? 'font-semibold text-purple-700' : 'text-gray-500'}`}>
+                      (b) 팀 정당 적립 합
+                    </span>
+                    {result.entitlementBasis === 'team' && (
+                      <span className="pill bg-purple-100 text-purple-700 text-[10px]">채택</span>
+                    )}
+                  </div>
+                  <span className={`text-sm tabular-nums ${result.entitlementBasis === 'team' ? 'font-bold text-purple-700' : 'text-gray-400'}`}>
+                    {result.teamAccrued}일
+                  </span>
+                </div>
+              </div>
+              <div className="px-4 py-3 flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-700">총 휴가 권리 <span className="text-muted font-normal text-[10px]">max(a, b)</span></span>
                 <span className="text-base font-bold text-gray-900 tabular-nums">{result.totalEntitlement}일</span>
               </div>
               <div className="px-4 py-3 flex items-center justify-between">

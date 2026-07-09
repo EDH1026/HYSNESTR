@@ -2,7 +2,9 @@
  * §5.13 Annual Leave computation — pure functions, no side effects.
  *
  * computeAnnualLeaveSettlement — 퇴사 정산 (AL-3~AL-5, AL-6 뷰·AL-10 HTML 내보내기 공용)
- *   totalEntitlement = max(statutory, teamAccrued)  ← 두 값을 더하지 않음
+ *   후보 (a) = statutory + weekendSubAccrued
+ *   후보 (b) = teamAccrued
+ *   totalEntitlement = max(a, b)  ← 두 후보를 더하지 않음
  *   excess    = max(0, totalUsed - totalEntitlement)
  *   shortfall = max(0, totalEntitlement - totalUsed)
  *
@@ -26,14 +28,16 @@ function adjContrib(a: Pick<AnnualLeaveAdjustment, 'direction' | 'days'>): numbe
 // ── Output types ──────────────────────────────────────────────
 
 export interface AnnualLeaveSettlementResult {
-  statutory:        number   // 법정연차 누적 = grants(≤asOfYear 합) + adjustments(≤asOf 합)
-  teamAccrued:      number   // 팀 정당 적립 누적 = computeLedger.actualAccrued
-  totalEntitlement: number   // max(statutory, teamAccrued) — 합산 아님
-  entitlementBasis: 'statutory' | 'team' | 'equal'
-  totalUsed:        number   // 총 유급 사용 = computeLedger.actualUsed
-  excess:           number   // 초과 사용분 = max(0, totalUsed − totalEntitlement)
-  shortfall:        number   // 미달 보상분 = max(0, totalEntitlement − totalUsed)
-  netSettlement:    number   // shortfall − excess  (+= 보상 / −= 차감)
+  statutory:            number   // 법정연차 누적 = grants(≤asOfYear 합) + adjustments(≤asOf 합)
+  weekendSub:           number   // 주말/휴일대체 누적 적립 합
+  statutoryPlusWeekend: number   // statutory + weekendSub = 후보 (a)
+  teamAccrued:          number   // 팀 정당 적립 누적 = computeLedger.actualAccrued = 후보 (b)
+  totalEntitlement:     number   // max(a, b) — 두 후보를 더하지 않음
+  entitlementBasis:     'statutory+weekend' | 'team' | 'equal'
+  totalUsed:            number   // 총 유급 사용 = computeLedger.actualUsed
+  excess:               number   // 초과 사용분 = max(0, totalUsed − totalEntitlement)
+  shortfall:            number   // 미달 보상분 = max(0, totalEntitlement − totalUsed)
+  netSettlement:        number   // shortfall − excess  (+= 보상 / −= 차감)
 }
 
 export interface TimesheetFigures {
@@ -49,13 +53,14 @@ export interface TimesheetFigures {
 export function computeAnnualLeaveSettlement(
   asOfDate: string,   // YYYY-MM-DD
   opts: {
-    grants:            Pick<AnnualLeaveGrant, 'year' | 'days'>[]
-    adjustments:       Pick<AnnualLeaveAdjustment, 'date' | 'direction' | 'days'>[]
-    teamActualAccrued: number   // computeLedger(today=asOf).actualAccrued
-    totalPaidUsed:     number   // computeLedger(today=asOf).actualUsed
+    grants:              Pick<AnnualLeaveGrant, 'year' | 'days'>[]
+    adjustments:         Pick<AnnualLeaveAdjustment, 'date' | 'direction' | 'days'>[]
+    weekendSubAccrued?:  number   // 주말/휴일대체 누적 합; 생략 시 0
+    teamActualAccrued:   number   // computeLedger(today=asOf).actualAccrued
+    totalPaidUsed:       number   // computeLedger(today=asOf).actualUsed
   },
 ): AnnualLeaveSettlementResult {
-  const { grants, adjustments, teamActualAccrued, totalPaidUsed } = opts
+  const { grants, adjustments, weekendSubAccrued = 0, teamActualAccrued, totalPaidUsed } = opts
   const asOfYear = parseInt(asOfDate.slice(0, 4), 10)
 
   // 법정연차 누적 = 연도별 grants 합 + 기준일까지 adjustments 합
@@ -68,19 +73,27 @@ export function computeAnnualLeaveSettlement(
         .reduce((s, a) => s + adjContrib(a), 0),
   )
 
-  const teamAccrued = r1(teamActualAccrued)
+  const weekendSub           = r1(weekendSubAccrued)
+  const statutoryPlusWeekend = r1(statutory + weekendSub)    // 후보 (a)
+  const teamAccrued          = r1(teamActualAccrued)         // 후보 (b)
 
-  // AL-3: 총 휴가 권리 = max(법정연차 누적, 팀 정당 적립 누적) — 두 값을 더하지 않음
-  const totalEntitlement = r1(Math.max(statutory, teamAccrued))
+  // AL-3: 총 휴가 권리 = max(a, b) — 두 후보를 더하지 않음
+  const totalEntitlement = r1(Math.max(statutoryPlusWeekend, teamAccrued))
   const entitlementBasis: AnnualLeaveSettlementResult['entitlementBasis'] =
-    statutory > teamAccrued ? 'statutory' : teamAccrued > statutory ? 'team' : 'equal'
+    statutoryPlusWeekend > teamAccrued ? 'statutory+weekend'
+    : teamAccrued > statutoryPlusWeekend ? 'team'
+    : 'equal'
 
   const totalUsed     = r1(totalPaidUsed)
   const excess        = r1(Math.max(0, totalUsed - totalEntitlement))    // AL-4
   const shortfall     = r1(Math.max(0, totalEntitlement - totalUsed))    // AL-5
   const netSettlement = r1(shortfall - excess)
 
-  return { statutory, teamAccrued, totalEntitlement, entitlementBasis, totalUsed, excess, shortfall, netSettlement }
+  return {
+    statutory, weekendSub, statutoryPlusWeekend,
+    teamAccrued, totalEntitlement, entitlementBasis,
+    totalUsed, excess, shortfall, netSettlement,
+  }
 }
 
 // ── computeTimesheetFigures ───────────────────────────────────

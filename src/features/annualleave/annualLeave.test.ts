@@ -3,6 +3,7 @@
  *
  * Coverage:
  *   1. computeAnnualLeaveSettlement — max 기반 권리 (합산 금지 명시 검증 포함)
+ *   1b. computeAnnualLeaveSettlement — weekendSubAccrued (후보 a = statutory + weekendSub)
  *   2. computeAnnualLeaveSettlement — excess / shortfall / boundary
  *   3. computeAnnualLeaveSettlement — adjustments 반영
  *   4. computeTimesheetFigures — ③ FIFO 차감 원천 구분
@@ -65,7 +66,7 @@ describe('computeAnnualLeaveSettlement — AL-3 총 휴가 권리 max 로직', (
     expect(r.teamAccrued).toBe(15)
     expect(r.totalEntitlement).toBe(20)           // max(20,15)
     expect(r.totalEntitlement).not.toBe(35)       // 합산(20+15) 아님
-    expect(r.entitlementBasis).toBe('statutory')
+    expect(r.entitlementBasis).toBe('statutory+weekend')
   })
 
   it('teamAccrued > statutory → totalEntitlement = teamAccrued (NOT sum)', () => {
@@ -100,6 +101,79 @@ describe('computeAnnualLeaveSettlement — AL-3 총 휴가 권리 max 로직', (
     })
     expect(r.totalEntitlement).toBe(20)
     expect(r.totalEntitlement).not.toBe(35)
+  })
+})
+
+// ── 1b. weekendSubAccrued — 후보 (a) = statutory + weekendSub ─
+
+describe('computeAnnualLeaveSettlement — weekendSubAccrued (후보 a)', () => {
+  const asOf = '2024-12-31'
+
+  it('weekendSub 없음(기본값 0) → statutoryPlusWeekend = statutory', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
+      grants: [mkGrant(2024, 15)],
+      adjustments: [],
+      teamActualAccrued: 10,
+      totalPaidUsed: 5,
+    })
+    expect(r.weekendSub).toBe(0)
+    expect(r.statutoryPlusWeekend).toBe(15)
+    expect(r.totalEntitlement).toBe(15)
+    expect(r.entitlementBasis).toBe('statutory+weekend')
+  })
+
+  it('a(statutory+weekendSub) > b(team) → 후보 a 채택', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
+      grants: [mkGrant(2024, 10)],
+      adjustments: [],
+      weekendSubAccrued: 5,
+      teamActualAccrued: 12,
+      totalPaidUsed: 0,
+    })
+    expect(r.statutory).toBe(10)
+    expect(r.weekendSub).toBe(5)
+    expect(r.statutoryPlusWeekend).toBe(15)
+    expect(r.totalEntitlement).toBe(15)   // max(15, 12)
+    expect(r.entitlementBasis).toBe('statutory+weekend')
+  })
+
+  it('b(team) > a(statutory+weekendSub) → 후보 b 채택', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
+      grants: [mkGrant(2024, 10)],
+      adjustments: [],
+      weekendSubAccrued: 2,
+      teamActualAccrued: 15,
+      totalPaidUsed: 0,
+    })
+    expect(r.statutoryPlusWeekend).toBe(12)
+    expect(r.totalEntitlement).toBe(15)   // max(12, 15)
+    expect(r.entitlementBasis).toBe('team')
+  })
+
+  it('a === b → entitlementBasis = equal', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
+      grants: [mkGrant(2024, 10)],
+      adjustments: [],
+      weekendSubAccrued: 3,
+      teamActualAccrued: 13,
+      totalPaidUsed: 0,
+    })
+    expect(r.statutoryPlusWeekend).toBe(13)
+    expect(r.teamAccrued).toBe(13)
+    expect(r.entitlementBasis).toBe('equal')
+  })
+
+  it('weekendSub만으로 권리가 올라가는 케이스 (합산 금지: a+b 아님)', () => {
+    // statutory=10, weekendSub=4, team=12 → a=14 > b=12 → 권리=14, a+b=26 아님
+    const r = computeAnnualLeaveSettlement(asOf, {
+      grants: [mkGrant(2024, 10)],
+      adjustments: [],
+      weekendSubAccrued: 4,
+      teamActualAccrued: 12,
+      totalPaidUsed: 0,
+    })
+    expect(r.totalEntitlement).toBe(14)
+    expect(r.totalEntitlement).not.toBe(26)  // (statutory+weekendSub)+team 합산 아님
   })
 })
 
