@@ -61,7 +61,7 @@ export default function WorkItemsPage() {
   const [showBulk,     setShowBulk]     = useState(false)
   const [nameSearch,   setNameSearch]   = useState('')
   const [typeFilter,   setTypeFilter]   = useState<WorkItemType[]>([])
-  const [statusFilter, setStatusFilter] = useState<string[]>([])
+  const [statusFilter, setStatusFilter] = useState<string[]>(['open'])
   const [clientSearch, setClientSearch] = useState('')
   const [hashSearch,   setHashSearch]   = useState('')
   const [fyFilter,     setFyFilter]     = useState<FYFilter>({ mode: 'all' })
@@ -112,7 +112,10 @@ export default function WorkItemsPage() {
     return out
   }, [workItems, nameSearch, typeFilter, statusFilter, clientSearch, hashSearch, fyFrom, fyTo, sort, sortDir])
 
-  const hasFilter = !!(nameSearch || typeFilter.length || statusFilter.length || clientSearch || hashSearch || fyFilter.mode !== 'all')
+  const hasFilter = !!(
+    nameSearch || typeFilter.length || clientSearch || hashSearch || fyFilter.mode !== 'all' ||
+    statusFilter.length !== 1 || statusFilter[0] !== 'open'
+  )
 
   if (isLoading) return <div className="p-8 text-sm text-muted">Loading…</div>
   if (error)     return <div className="p-8 text-sm text-red-600">{String(error)}</div>
@@ -166,7 +169,7 @@ export default function WorkItemsPage() {
         {hasFilter && (
           <button className="text-xs text-muted hover:text-gray-700"
             onClick={() => {
-              setNameSearch(''); setTypeFilter([]); setStatusFilter([])
+              setNameSearch(''); setTypeFilter([]); setStatusFilter(['open'])
               setClientSearch(''); setHashSearch(''); setFyFilter({ mode: 'all' })
             }}>
             초기화

@@ -47,6 +47,7 @@ import type { HistoryEntry } from '@/lib/history'
 import { useAuth }          from '@/hooks/useAuth'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import AssignmentModal      from './AssignmentModal'
+import { computeSpecialLeaveBalance, hasAssignmentOverlap } from '@/features/leave/validateLeave'
 import WorkItemDetailModal  from '@/features/workitems/WorkItemDetailModal'
 import WorkItemModal        from '@/features/workitems/WorkItemModal'
 
@@ -2108,6 +2109,31 @@ export default function TimelineView() {
         }
       }
       // pushPatches stays empty — no leftward cascade
+    }
+
+    // FIX 1 (E-6): block 특별휴가 resize if new workday count exceeds balance
+    if (moved.kind === 'leave' && moved.leave_type === '특별휴가' &&
+        (dragKind === 'resize-left' || dragKind === 'resize-right')) {
+      const newDays = workdayCount(dateToNum(effectivePatch.start), dateToNum(effectivePatch.end_date), holidaySet)
+      const oldDays = workdayCount(dateToNum(moved.start), dateToNum(moved.end_date), holidaySet)
+      if (newDays > oldDays) {
+        const bal = computeSpecialLeaveBalance(moved.person_id, accruals, assignments, holidaySet, id)
+        if (newDays > bal) {
+          window.alert(`특별휴가 잔여가 부족합니다 (잔여: ${bal}일, 요청: ${newDays}일)`)
+          return
+        }
+      }
+    }
+
+    // FIX 2 (E-3a): block overlap for non-Partner ranks.
+    // Exclude pushPatches IDs — those siblings are being cascaded out of the way.
+    if (movedPerson?.rank !== 'Partner') {
+      const pushedIds = new Set(pushPatches.map(p => p.id))
+      const nonCascaded = assignments.filter(a => !pushedIds.has(a.id))
+      if (hasAssignmentOverlap(moved.person_id, effectivePatch.start, effectivePatch.end_date, nonCascaded, id)) {
+        window.alert(`배정 기간이 겹칩니다. ${movedPerson?.name ?? ''}(${movedPerson?.rank})는 중복 배정이 허용되지 않습니다.`)
+        return
+      }
     }
 
     // Fire moved block first, then cascade patches

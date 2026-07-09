@@ -18,6 +18,7 @@ import { useHistory }  from '@/lib/history'
 import { makeAssignmentCreate, makeAssignmentModalEdit, makeAssignmentDelete, combine } from '@/lib/historyOps'
 import type { HistoryEntry } from '@/lib/history'
 import type { WorkItem, Person, Assignment, Accrual, LeaveType } from '@/types'
+import { computeSpecialLeaveBalance, hasAssignmentOverlap } from '@/features/leave/validateLeave'
 import type { ModalState } from './types'
 
 // ── Leave paid/unpaid metadata (client-side; not stored in DB) ──
@@ -125,37 +126,6 @@ function WeekendPicker({ value, onChange, holidaySet, disabled }: WeekendPickerP
 }
 
 // ── Main modal ────────────────────────────────────────────────
-
-// LV-6: compute special leave balance for a person (accrual total − workdays used)
-function computeSpecialLeaveBalance(
-  personId:    string,
-  accruals:    Accrual[],
-  assignments: Assignment[],
-  holidaySet:  Set<number>,
-  excludeId?:  string,   // assignment id to exclude (for edit mode)
-): number {
-  const accrualBalance = accruals
-    .filter(a => a.person_id === personId && a.type === '특별휴가')
-    .reduce((s, a) => s + (a.direction === 'accrual' ? a.days : -a.days), 0)
-
-  const usedDays = assignments
-    .filter(a =>
-      a.person_id  === personId  &&
-      a.kind       === 'leave'   &&
-      a.leave_type === '특별휴가' &&
-      (!excludeId || a.id !== excludeId),
-    )
-    .reduce((s, a) => {
-      const s0 = dateToNum(a.start), e0 = dateToNum(a.end_date)
-      let d = 0
-      for (let n = s0; n <= e0; n++) {
-        if (!isWeekend(n) && !holidaySet.has(n)) d++
-      }
-      return s + d
-    }, 0)
-
-  return Math.round((accrualBalance - usedDays) * 10) / 10
-}
 
 interface Props {
   state:           ModalState
@@ -318,6 +288,18 @@ export default function AssignmentModal({
       if (reqDays > bal) {
         setErr(`특별휴가 잔여가 부족합니다 (잔여: ${bal}일, 요청: ${reqDays}일)`)
         return
+      }
+    }
+
+    // E-3a: block overlapping assignments for non-Partner ranks
+    if (form.start && form.end) {
+      const person = people.find(p => p.id === form.personId)
+      if (person && person.rank !== 'Partner') {
+        const excludeId = state.mode === 'edit' ? state.editTarget?.id : undefined
+        if (hasAssignmentOverlap(form.personId, form.start, form.end, assignments, excludeId)) {
+          setErr(`배정 기간이 겹칩니다. ${person.name}(${person.rank})는 중복 배정이 허용되지 않습니다.`)
+          return
+        }
       }
     }
 

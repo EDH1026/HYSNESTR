@@ -122,8 +122,11 @@ function AccrualForm({ personId, direction, onDone, specialLeaveBalance }: Accru
           value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
       </div>
       <div>
-        <label className="mb-0.5 block text-xs text-gray-600">비고</label>
-        <input type="text" className="input py-1 text-xs" placeholder="선택"
+        <label className="mb-0.5 block text-xs text-gray-600">
+          비고{!isUsage && <span className="ml-0.5 text-red-500">*</span>}
+        </label>
+        <input required={!isUsage} type="text" className="input py-1 text-xs"
+          placeholder={isUsage ? '선택' : '필수 (적립 원천 표시)'}
           value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
       </div>
       {err && <p className="text-xs text-red-600">{err}</p>}
@@ -411,7 +414,9 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                           <span className="pill bg-brand-100 text-brand-700">{e.type}</span>
                         </td>
                         <td className="px-3 py-2 text-muted">
-                          {e.sourceId ? (wiMap.get(e.sourceId)?.name ?? e.sourceId) : '—'}
+                          {e.sourceId
+                            ? (wiMap.get(e.sourceId)?.name ?? e.sourceId)
+                            : (!e.isAuto && e.note ? e.note : '—')}
                         </td>
                         <td className="px-3 py-2 text-right font-medium">+{e.days}</td>
                         <td className="px-3 py-2 text-right">

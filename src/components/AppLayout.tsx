@@ -44,14 +44,18 @@ const NAV: {
   // ── Viewer-accessible (§6.3) ──────────────────────────────
   { to: '/dashboard',  label: 'Dashboard',       icon: LayoutDashboard },
   { to: '/timeline',   label: 'Timeline',        icon: CalendarDays    },
+  // ── Editor / admin only ───────────────────────────────────
+  { to: '/work-items',   label: 'Work Items',     icon: Briefcase,       editorOnly: true },
+  // ── Viewer-accessible (cont.) ─────────────────────────────
   { to: '/hashtags',   label: 'Engagement 검색', icon: Hash            },
   { to: '/cv',         label: 'CV Generator',    icon: FileText        },
+  // ── Editor / admin only ───────────────────────────────────
+  { to: '/people',       label: 'People',         icon: Users,           editorOnly: true },
+  { to: '/holidays',     label: 'Holidays',       icon: CalendarCheck,   editorOnly: true },
+  // ── Viewer-accessible (cont.) ─────────────────────────────
   { to: '/leave',      label: 'Leave',           icon: Umbrella        },
   // ── Editor / admin only ───────────────────────────────────
-  { to: '/people',     label: 'People',          icon: Users,           editorOnly: true },
-  { to: '/work-items', label: 'Work Items',       icon: Briefcase,       editorOnly: true },
-  { to: '/holidays',     label: 'Holidays',         icon: CalendarCheck,    editorOnly: true },
-  { to: '/annual-leave', label: '연차 관리',        icon: CalendarCheck2,   editorOnly: true },
+  { to: '/annual-leave', label: '연차 관리',      icon: CalendarCheck2,  editorOnly: true },
   // ── Admin only ────────────────────────────────────────────
   { to: '/admin',      label: 'Admin',            icon: Settings,        adminOnly: true  },
 ]

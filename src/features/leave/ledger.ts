@@ -23,6 +23,7 @@ export interface LedgerAccrualEntry {
   sourceId:  string | null // work_item_id origin
   remaining: number        // after FIFO deductions (≥ 0)
   isAuto:    boolean       // true = derived; false = stored in DB
+  note?:     string | null // LV-9: manual accrual note, shown as 원천 fallback
 }
 
 export interface LedgerDeduction {
@@ -249,6 +250,7 @@ export function computeLedger(
     sourceId:  a.source ?? null,
     remaining: a.days,
     isAuto:    false,
+    note:      a.note ?? null,
   }))
 
   const allAccruals: LedgerAccrualEntry[] = [...storedEntries, ...autoAccruals]
