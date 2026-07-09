@@ -3,14 +3,14 @@
  *
  * Features added beyond the draft version:
  *   • kind=work: selecting a work item auto-fills start/end dates (editable)
- *   • Weekend actual-workday picker with Saturday=0.5 / Sunday+Holiday=1.0 validation
+ *   • Weekend actual-workday picker: Sat/Sun -> 0.5, non-weekend holiday -> 1.0 (S7 rule2)
  *   • Leave type dropdown with paid/unpaid label
  *   • Date validation: start ≤ end
  *   • Read-only mode (no save button) when readOnly=true
  */
 import { useState, useEffect, useMemo, type FormEvent } from 'react'
 import { Loader2, Trash2, Plus, X as XIcon } from 'lucide-react'
-import { dateToNum, numToStr, isSaturday, isWeekend, numToDate, nextWorkday } from '@/lib/date'
+import { dateToNum, numToStr, isWeekend, numToDate, nextWorkday, weekendHolidayAccrual } from '@/lib/date'
 import Modal                            from '@/components/Modal'
 import { useAllHolidays, useLeaveTypes }  from '@/features/admin/hooks'
 import { useCreateAssignment, useUpdateAssignment, useDeleteAssignment } from './hooks'
@@ -47,9 +47,8 @@ function WeekendPicker({ value, onChange, holidaySet, disabled }: WeekendPickerP
   const [input, setInput] = useState('')
   const [pickerErr, setPickerErr] = useState<string | null>(null)
 
-  function dayValue(dateStr: string): 0.5 | 1.0 {
-    const n = dateToNum(dateStr)
-    return isSaturday(n) && !holidaySet.has(n) ? 0.5 : 1.0
+  function dayValue(dateStr: string): 0 | 0.5 | 1.0 {
+    return weekendHolidayAccrual(dateToNum(dateStr), n => holidaySet.has(n))
   }
 
   function addDate() {
@@ -119,7 +118,7 @@ function WeekendPicker({ value, onChange, holidaySet, disabled }: WeekendPickerP
         </div>
       )}
       <p className="text-[11px] text-muted">
-        토요일 = +0.5일, 일요일·공휴일 = +1.0일
+        토요일·일요일 = +0.5일, 공휴일(평일) = +1.0일
       </p>
     </div>
   )
@@ -556,3 +555,4 @@ export default function AssignmentModal({
     </Modal>
   )
 }
+

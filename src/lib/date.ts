@@ -79,6 +79,19 @@ export function isWeekend(n: number): boolean {
   return weekday(n) >= 5
 }
 
+/**
+ * §7 규칙2: Sat or Sun → 0.5; non-weekend holiday → 1.0; workday → 0.
+ * holidaySet must contain day-numbers of public holidays.
+ */
+export function weekendHolidayAccrual(
+  dayNum: number,
+  isHoliday: (n: number) => boolean,
+): 0 | 0.5 | 1.0 {
+  if (isWeekend(dayNum))  return 0.5
+  if (isHoliday(dayNum))  return 1.0
+  return 0
+}
+
 // ---------------------------------------------------------------------------
 // Employment status (computed — never stored)
 // ---------------------------------------------------------------------------
