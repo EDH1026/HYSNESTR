@@ -46,10 +46,10 @@ export interface AnnualLeaveSettlementResult {
 }
 
 export interface TimesheetFigures {
-  statutoryThisYear:     number   // ① 해당 역년 법정연차 누적치 (1/1 리셋, 이월 없음)
-  projectLeaveUsed:      number   // ② 프로젝트휴가 기 사용분
-  designatedFromProject: number   // ③ 지정휴가 중 FIFO 차감 원천이 프로젝트휴가인 일수
-  designatedShortfall:   number   // ④ 지정휴가 선사용분 (FIFO shortfall 합)
+  statutoryThisYear:     number   // ① 해당 FY 법정연차 누적치 (7/1 리셋, 이월 없음)
+  projectLeaveUsed:      number   // ② 프로젝트휴가 기 사용분 (기준일까지 누적)
+  designatedFromProject: number   // ③ 지정휴가 중 FIFO 차감 원천이 프로젝트휴가인 일수 (누적)
+  designatedShortfall:   number   // ④ 지정휴가 선사용분 (FIFO shortfall 합, 누적)
 }
 
 // ── computeAnnualLeaveSettlement (AL-3~AL-5) ─────────────────
@@ -137,15 +137,21 @@ export function computeTimesheetFigures(
 ): TimesheetFigures {
   const { grants, adjustments, usages, accruals } = opts
   const asOfYear  = parseInt(asOfDate.slice(0, 4), 10)
-  const yearStart = `${asOfYear}-01-01`
+  const asOfMonth = parseInt(asOfDate.slice(5, 7), 10)
 
-  // ① 해당 역년 법정연차 누적치 (1/1 리셋, 이월 없음)
+  // FY 기준: month>=7 → FY starts this July; month<7 → FY started last July
+  const fyStartYear = asOfMonth >= 7 ? asOfYear : asOfYear - 1
+  const fyStart     = `${fyStartYear}-07-01`
+
+  // ① 해당 FY 법정연차 누적치 (7/1 리셋, 이월 없음)
+  //   annual 타입: {g.year}-07-01 이 fyStart 에 해당 → g.year === fyStartYear
+  //   first_year_monthly: g.year === fyStartYear 로 근사
   const statutoryThisYear = r1(
     grants
-      .filter(g => g.year === asOfYear)
+      .filter(g => g.year === fyStartYear)
       .reduce((s, g) => s + g.days, 0)
     + adjustments
-        .filter(a => a.date >= yearStart && a.date <= asOfDate)
+        .filter(a => a.date >= fyStart && a.date <= asOfDate)
         .reduce((s, a) => s + adjContrib(a), 0),
   )
 

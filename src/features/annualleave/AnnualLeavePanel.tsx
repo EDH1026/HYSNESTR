@@ -1096,7 +1096,10 @@ function TimesheetTab({ person }: { person: Person }) {
     })
   }, [ledger, grants, adjustments, asOfStr])
 
-  const asOfYear = parseInt(asOfStr.slice(0, 4), 10)
+  const asOfYear    = parseInt(asOfStr.slice(0, 4), 10)
+  const asOfMonth   = parseInt(asOfStr.slice(5, 7), 10)
+  const fyLabel     = asOfMonth >= 7 ? asOfYear + 1 : asOfYear
+  const fyStartYear = asOfMonth >= 7 ? asOfYear : asOfYear - 1
 
   return (
     <div className="space-y-5">
@@ -1104,6 +1107,9 @@ function TimesheetTab({ person }: { person: Person }) {
         <label className="text-xs font-medium text-gray-700">기준일</label>
         <input type="date" className="input py-1 text-xs w-36"
           value={asOfStr} onChange={e => setAsOfStr(e.target.value)} />
+        <span className="text-xs text-muted">
+          → FY{fyLabel} ({fyStartYear}.07 ~ {fyLabel}.06)
+        </span>
       </div>
 
       <div className="rounded-md border border-border bg-surface-50 px-4 py-2 text-xs text-muted flex items-start gap-2">
@@ -1122,9 +1128,9 @@ function TimesheetTab({ person }: { person: Person }) {
         <div className="grid grid-cols-2 gap-3">
           <FigureCard
             num="①"
-            label={`${asOfYear}년 법정연차·신입사원 휴가 누적`}
+            label={`FY${fyLabel} 법정연차·신입사원 휴가 누적`}
             value={figures.statutoryThisYear}
-            hint={`${asOfYear}년 grants 합 + 보정 (1/1 리셋, 이월 없음)`}
+            hint={`FY${fyLabel}(${fyStartYear}.07~${fyLabel}.06) grants 합 + 보정 (7/1 리셋, 이월 없음)`}
           />
           <FigureCard
             num="②"
