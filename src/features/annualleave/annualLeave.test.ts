@@ -1,17 +1,17 @@
 /**
- * Unit tests — §5.13 Annual Leave computation
+ * Unit tests — §5.13 Annual Leave computation (AL-3~AL-5)
  *
  * Coverage:
- *   1. computeSettlement — max basis (statutory > team / team > statutory / equal)
- *   2. computeSettlement — excess / shortfall / boundary (used = entitlement)
- *   3. computeSettlement — adjustments contribute correctly
- *   4. computeTimesheetFigures — ③ FIFO source distinction (프로젝트휴가 vs others)
- *   5. computeTimesheetFigures — ④ shortfall aggregation
- *   6. computeTimesheetFigures — ① 1/1 역년 경계 (prior-year adjustments excluded)
+ *   1. computeAnnualLeaveSettlement — max 기반 권리 (합산 금지 명시 검증 포함)
+ *   2. computeAnnualLeaveSettlement — excess / shortfall / boundary
+ *   3. computeAnnualLeaveSettlement — adjustments 반영
+ *   4. computeTimesheetFigures — ③ FIFO 차감 원천 구분
+ *   5. computeTimesheetFigures — ④ shortfall 집계
+ *   6. computeTimesheetFigures — ① 1/1 역년 경계
  */
 
 import { describe, it, expect } from 'vitest'
-import { computeSettlement, computeTimesheetFigures } from './annualLeave'
+import { computeAnnualLeaveSettlement, computeTimesheetFigures } from './annualLeave'
 import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
 import type { AccrualType } from '@/types'
 
@@ -49,13 +49,13 @@ function mkUsage(
   }
 }
 
-// ── 1. computeSettlement — max basis ─────────────────────────
+// ── 1. AL-3: 총 휴가 권리 = max(법정연차, 팀 적립) — 합산 금지 ──
 
-describe('computeSettlement — 총 휴가 권리 max 로직', () => {
+describe('computeAnnualLeaveSettlement — AL-3 총 휴가 권리 max 로직', () => {
   const asOf = '2024-12-31'
 
-  it('statutory > teamAccrued → entitlementBasis = statutory', () => {
-    const r = computeSettlement(asOf, {
+  it('statutory > teamAccrued → totalEntitlement = statutory (NOT sum)', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
       grants: [mkGrant(2024, 20)],
       adjustments: [],
       teamActualAccrued: 15,
@@ -63,23 +63,25 @@ describe('computeSettlement — 총 휴가 권리 max 로직', () => {
     })
     expect(r.statutory).toBe(20)
     expect(r.teamAccrued).toBe(15)
-    expect(r.totalEntitlement).toBe(20)
+    expect(r.totalEntitlement).toBe(20)           // max(20,15)
+    expect(r.totalEntitlement).not.toBe(35)       // 합산(20+15) 아님
     expect(r.entitlementBasis).toBe('statutory')
   })
 
-  it('teamAccrued > statutory → entitlementBasis = team', () => {
-    const r = computeSettlement(asOf, {
+  it('teamAccrued > statutory → totalEntitlement = teamAccrued (NOT sum)', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
       grants: [mkGrant(2024, 10)],
       adjustments: [],
       teamActualAccrued: 18,
       totalPaidUsed: 12,
     })
-    expect(r.totalEntitlement).toBe(18)
+    expect(r.totalEntitlement).toBe(18)           // max(10,18)
+    expect(r.totalEntitlement).not.toBe(28)       // 합산(10+18) 아님
     expect(r.entitlementBasis).toBe('team')
   })
 
   it('statutory === teamAccrued → entitlementBasis = equal', () => {
-    const r = computeSettlement(asOf, {
+    const r = computeAnnualLeaveSettlement(asOf, {
       grants: [mkGrant(2024, 12)],
       adjustments: [],
       teamActualAccrued: 12,
@@ -88,21 +90,32 @@ describe('computeSettlement — 총 휴가 권리 max 로직', () => {
     expect(r.totalEntitlement).toBe(12)
     expect(r.entitlementBasis).toBe('equal')
   })
+
+  it('합산 금지 명시 검증: statutory=15, team=20 → 권리=20, 합(35) 아님', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
+      grants: [mkGrant(2024, 15)],
+      adjustments: [],
+      teamActualAccrued: 20,
+      totalPaidUsed: 0,
+    })
+    expect(r.totalEntitlement).toBe(20)
+    expect(r.totalEntitlement).not.toBe(35)
+  })
 })
 
-// ── 2. computeSettlement — excess / shortfall / boundary ─────
+// ── 2. AL-4/AL-5: excess / shortfall / boundary ──────────────
 
-describe('computeSettlement — 초과·미달·경계', () => {
+describe('computeAnnualLeaveSettlement — AL-4·AL-5 초과·미달·경계', () => {
   const asOf = '2024-12-31'
 
   it('초과 사용 → excess > 0, shortfall = 0', () => {
-    const r = computeSettlement(asOf, {
+    const r = computeAnnualLeaveSettlement(asOf, {
       grants: [mkGrant(2024, 10)],
       adjustments: [],
       teamActualAccrued: 8,
       totalPaidUsed: 15,
     })
-    // entitlement = max(10, 8) = 10, used = 15
+    // totalEntitlement = max(10, 8) = 10, used = 15 → excess = 5
     expect(r.totalEntitlement).toBe(10)
     expect(r.excess).toBe(5)
     expect(r.shortfall).toBe(0)
@@ -110,7 +123,7 @@ describe('computeSettlement — 초과·미달·경계', () => {
   })
 
   it('미달 사용 → shortfall > 0, excess = 0', () => {
-    const r = computeSettlement(asOf, {
+    const r = computeAnnualLeaveSettlement(asOf, {
       grants: [mkGrant(2024, 15)],
       adjustments: [],
       teamActualAccrued: 10,
@@ -122,8 +135,8 @@ describe('computeSettlement — 초과·미달·경계', () => {
     expect(r.netSettlement).toBe(8)
   })
 
-  it('권리 = 사용 → excess = 0, shortfall = 0', () => {
-    const r = computeSettlement(asOf, {
+  it('권리 = 사용 → excess = 0, shortfall = 0, netSettlement = 0', () => {
+    const r = computeAnnualLeaveSettlement(asOf, {
       grants: [mkGrant(2024, 12)],
       adjustments: [],
       teamActualAccrued: 10,
@@ -136,11 +149,11 @@ describe('computeSettlement — 초과·미달·경계', () => {
   })
 })
 
-// ── 3. computeSettlement — adjustments ───────────────────────
+// ── 3. adjustments 반영 ───────────────────────────────────────
 
-describe('computeSettlement — adjustments 반영', () => {
+describe('computeAnnualLeaveSettlement — adjustments 반영', () => {
   it('accrual adjustment adds to statutory', () => {
-    const r = computeSettlement('2024-12-31', {
+    const r = computeAnnualLeaveSettlement('2024-12-31', {
       grants: [mkGrant(2024, 10)],
       adjustments: [mkAdj('2024-06-01', 'accrual', 3)],
       teamActualAccrued: 5,
@@ -150,7 +163,7 @@ describe('computeSettlement — adjustments 반영', () => {
   })
 
   it('usage adjustment subtracts from statutory', () => {
-    const r = computeSettlement('2024-12-31', {
+    const r = computeAnnualLeaveSettlement('2024-12-31', {
       grants: [mkGrant(2024, 10)],
       adjustments: [mkAdj('2024-06-01', 'usage', 2)],
       teamActualAccrued: 5,
@@ -160,27 +173,27 @@ describe('computeSettlement — adjustments 반영', () => {
   })
 
   it('adjustment after asOfDate is excluded', () => {
-    const r = computeSettlement('2024-06-30', {
+    const r = computeAnnualLeaveSettlement('2024-06-30', {
       grants: [mkGrant(2024, 10)],
       adjustments: [mkAdj('2024-07-01', 'accrual', 5)],
       teamActualAccrued: 0,
       totalPaidUsed: 0,
     })
-    expect(r.statutory).toBe(10)  // 5-day July adjustment excluded
+    expect(r.statutory).toBe(10)
   })
 
   it('grants from future year excluded', () => {
-    const r = computeSettlement('2024-12-31', {
+    const r = computeAnnualLeaveSettlement('2024-12-31', {
       grants: [mkGrant(2024, 10), mkGrant(2025, 12)],
       adjustments: [],
       teamActualAccrued: 0,
       totalPaidUsed: 0,
     })
-    expect(r.statutory).toBe(10)  // 2025 grant not counted
+    expect(r.statutory).toBe(10)
   })
 
   it('multi-year grants accumulate', () => {
-    const r = computeSettlement('2025-06-30', {
+    const r = computeAnnualLeaveSettlement('2025-06-30', {
       grants: [mkGrant(2023, 10), mkGrant(2024, 12), mkGrant(2025, 11)],
       adjustments: [],
       teamActualAccrued: 0,
@@ -190,7 +203,7 @@ describe('computeSettlement — adjustments 반영', () => {
   })
 })
 
-// ── 4. computeTimesheetFigures — ③ FIFO source distinction ───
+// ── 4. computeTimesheetFigures — ③ FIFO 차감 원천 구분 ────────
 
 describe('computeTimesheetFigures — ③ 차감 원천 구분', () => {
   const asOf = '2024-12-31'
@@ -198,70 +211,47 @@ describe('computeTimesheetFigures — ③ 차감 원천 구분', () => {
   const adjustments: ReturnType<typeof mkAdj>[] = []
 
   it('지정휴가 deduction from 프로젝트휴가 accrual is counted', () => {
-    const projAcc = mkAccrual('acc-proj', '프로젝트휴가', 5)
-    const bonusAcc = mkAccrual('acc-bonus', '포상휴가', 3)
-    // 지정휴가 usage: 3 days, deducted 2 from projAcc and 1 from bonusAcc
+    const projAcc  = mkAccrual('acc-proj',  '프로젝트휴가', 5)
+    const bonusAcc = mkAccrual('acc-bonus', '포상휴가',     3)
     const usage = mkUsage('지정휴가', 3, 0, [
-      { accrualId: 'acc-proj', days: 2 },
+      { accrualId: 'acc-proj',  days: 2 },
       { accrualId: 'acc-bonus', days: 1 },
     ])
-    const r = computeTimesheetFigures(asOf, {
-      grants, adjustments,
-      usages:   [usage],
-      accruals: [projAcc, bonusAcc],
-    })
-    expect(r.designatedFromProject).toBe(2)  // only proj-sourced
+    const r = computeTimesheetFigures(asOf, { grants, adjustments, usages: [usage], accruals: [projAcc, bonusAcc] })
+    expect(r.designatedFromProject).toBe(2)
   })
 
   it('지정휴가 with no 프로젝트휴가 source → designatedFromProject = 0', () => {
     const bonusAcc = mkAccrual('acc-bonus', '포상휴가', 5)
     const usage = mkUsage('지정휴가', 2, 0, [{ accrualId: 'acc-bonus', days: 2 }])
-    const r = computeTimesheetFigures(asOf, {
-      grants, adjustments,
-      usages:   [usage],
-      accruals: [bonusAcc],
-    })
+    const r = computeTimesheetFigures(asOf, { grants, adjustments, usages: [usage], accruals: [bonusAcc] })
     expect(r.designatedFromProject).toBe(0)
   })
 
-  it('프로젝트휴가 usage does NOT count toward ③ (③ is only via 지정휴가)', () => {
+  it('프로젝트휴가 usage does NOT count toward ③', () => {
     const projAcc = mkAccrual('acc-proj', '프로젝트휴가', 5)
-    const usage = mkUsage('프로젝트휴가', 5, 0, [{ accrualId: 'acc-proj', days: 5 }])
-    const r = computeTimesheetFigures(asOf, {
-      grants, adjustments,
-      usages:   [usage],
-      accruals: [projAcc],
-    })
+    const usage   = mkUsage('프로젝트휴가', 5, 0, [{ accrualId: 'acc-proj', days: 5 }])
+    const r = computeTimesheetFigures(asOf, { grants, adjustments, usages: [usage], accruals: [projAcc] })
     expect(r.designatedFromProject).toBe(0)
     expect(r.projectLeaveUsed).toBe(5)
   })
 })
 
-// ── 5. computeTimesheetFigures — ④ shortfall ─────────────────
+// ── 5. computeTimesheetFigures — ④ 지정휴가 선사용분 ──────────
 
 describe('computeTimesheetFigures — ④ 지정휴가 선사용분', () => {
   const asOf = '2024-12-31'
 
   it('aggregates deficit across multiple 지정휴가 usages', () => {
-    const u1 = mkUsage('지정휴가', 3, 2, [])  // deficit 2
-    const u2 = mkUsage('지정휴가', 2, 1, [])  // deficit 1
-    const r = computeTimesheetFigures(asOf, {
-      grants: [],
-      adjustments: [],
-      usages: [u1, u2],
-      accruals: [],
-    })
+    const u1 = mkUsage('지정휴가', 3, 2, [])
+    const u2 = mkUsage('지정휴가', 2, 1, [])
+    const r = computeTimesheetFigures(asOf, { grants: [], adjustments: [], usages: [u1, u2], accruals: [] })
     expect(r.designatedShortfall).toBe(3)
   })
 
   it('non-지정휴가 deficit is not counted', () => {
     const u = mkUsage('포상휴가', 3, 2, [])
-    const r = computeTimesheetFigures(asOf, {
-      grants: [],
-      adjustments: [],
-      usages: [u],
-      accruals: [],
-    })
+    const r = computeTimesheetFigures(asOf, { grants: [], adjustments: [], usages: [u], accruals: [] })
     expect(r.designatedShortfall).toBe(0)
   })
 })
@@ -272,22 +262,19 @@ describe('computeTimesheetFigures — ① 역년 경계', () => {
   it('grant for prior year is NOT counted in statutoryThisYear', () => {
     const r = computeTimesheetFigures('2025-03-01', {
       grants: [mkGrant(2024, 15), mkGrant(2025, 12)],
-      adjustments: [],
-      usages: [],
-      accruals: [],
+      adjustments: [], usages: [], accruals: [],
     })
-    expect(r.statutoryThisYear).toBe(12)  // only 2025 grant
+    expect(r.statutoryThisYear).toBe(12)
   })
 
   it('adjustment before 1/1 of asOf year is excluded', () => {
     const r = computeTimesheetFigures('2025-06-30', {
       grants: [mkGrant(2025, 10)],
       adjustments: [
-        mkAdj('2024-12-31', 'accrual', 5),  // prior year → excluded
-        mkAdj('2025-03-01', 'accrual', 2),  // same year → included
+        mkAdj('2024-12-31', 'accrual', 5),  // 이전 연도 → 제외
+        mkAdj('2025-03-01', 'accrual', 2),  // 같은 연도 → 포함
       ],
-      usages: [],
-      accruals: [],
+      usages: [], accruals: [],
     })
     expect(r.statutoryThisYear).toBe(12)  // 10 + 2
   })
@@ -295,11 +282,8 @@ describe('computeTimesheetFigures — ① 역년 경계', () => {
   it('adjustment after asOfDate is excluded even if same year', () => {
     const r = computeTimesheetFigures('2025-06-30', {
       grants: [mkGrant(2025, 10)],
-      adjustments: [
-        mkAdj('2025-07-01', 'accrual', 5),  // after asOf → excluded
-      ],
-      usages: [],
-      accruals: [],
+      adjustments: [mkAdj('2025-07-01', 'accrual', 5)],  // 기준일 이후 → 제외
+      usages: [], accruals: [],
     })
     expect(r.statutoryThisYear).toBe(10)
   })

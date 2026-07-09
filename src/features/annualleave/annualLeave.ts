@@ -1,8 +1,12 @@
 /**
  * §5.13 Annual Leave computation — pure functions, no side effects.
  *
- * computeSettlement  — 퇴사 정산 (max-based entitlement vs used)
- * computeTimesheetFigures — 타임시트 판단용 4개 수치
+ * computeAnnualLeaveSettlement — 퇴사 정산 (AL-3~AL-5, AL-6 뷰·AL-10 HTML 내보내기 공용)
+ *   totalEntitlement = max(statutory, teamAccrued)  ← 두 값을 더하지 않음
+ *   excess    = max(0, totalUsed - totalEntitlement)
+ *   shortfall = max(0, totalEntitlement - totalUsed)
+ *
+ * computeTimesheetFigures — 타임시트 판단용 4개 수치 (①~④)
  */
 
 import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
@@ -14,46 +18,47 @@ function r1(n: number): number {
   return Math.round(n * 10) / 10
 }
 
-/** Signed contribution of an adjustment to the statutory total.
- *  direction='accrual' → +days, direction='usage' → -days */
+/** direction='accrual' → +days, direction='usage' → -days */
 function adjContrib(a: Pick<AnnualLeaveAdjustment, 'direction' | 'days'>): number {
   return a.direction === 'accrual' ? a.days : -a.days
 }
 
 // ── Output types ──────────────────────────────────────────────
 
-export interface SettlementResult {
-  statutory:        number                    // 법정연차 누적 (grants up to asOfYear + adjustments up to asOf)
-  teamAccrued:      number                    // 팀 정당 적립 누적 (computeLedger.actualAccrued)
-  totalEntitlement: number                    // max(statutory, teamAccrued)
+export interface AnnualLeaveSettlementResult {
+  statutory:        number   // 법정연차 누적 = grants(≤asOfYear 합) + adjustments(≤asOf 합)
+  teamAccrued:      number   // 팀 정당 적립 누적 = computeLedger.actualAccrued
+  totalEntitlement: number   // max(statutory, teamAccrued) — 합산 아님
   entitlementBasis: 'statutory' | 'team' | 'equal'
-  totalUsed:        number                    // 총 유급 사용 (computeLedger.actualUsed)
-  excess:           number                    // 초과 사용분 = max(0, totalUsed - totalEntitlement)
-  shortfall:        number                    // 미달 보상분 = max(0, totalEntitlement - totalUsed)
-  netSettlement:    number                    // shortfall - excess (+= 보상, -= 차감)
+  totalUsed:        number   // 총 유급 사용 = computeLedger.actualUsed
+  excess:           number   // 초과 사용분 = max(0, totalUsed − totalEntitlement)
+  shortfall:        number   // 미달 보상분 = max(0, totalEntitlement − totalUsed)
+  netSettlement:    number   // shortfall − excess  (+= 보상 / −= 차감)
 }
 
 export interface TimesheetFigures {
-  statutoryThisYear:     number   // ① 해당 역년 법정연차 누적치 (1/1 리셋)
+  statutoryThisYear:     number   // ① 해당 역년 법정연차 누적치 (1/1 리셋, 이월 없음)
   projectLeaveUsed:      number   // ② 프로젝트휴가 기 사용분
   designatedFromProject: number   // ③ 지정휴가 중 FIFO 차감 원천이 프로젝트휴가인 일수
   designatedShortfall:   number   // ④ 지정휴가 선사용분 (FIFO shortfall 합)
 }
 
-// ── computeSettlement ─────────────────────────────────────────
+// ── computeAnnualLeaveSettlement (AL-3~AL-5) ─────────────────
+// 공용 유틸: AL-6 퇴사 정산 뷰와 AL-10 HTML 내보내기가 이 함수를 공유한다.
 
-export function computeSettlement(
+export function computeAnnualLeaveSettlement(
   asOfDate: string,   // YYYY-MM-DD
   opts: {
-    grants:           Pick<AnnualLeaveGrant, 'year' | 'days'>[]
-    adjustments:      Pick<AnnualLeaveAdjustment, 'date' | 'direction' | 'days'>[]
-    teamActualAccrued: number   // from computeLedger(today=asOf).actualAccrued
-    totalPaidUsed:    number    // from computeLedger(today=asOf).actualUsed
+    grants:            Pick<AnnualLeaveGrant, 'year' | 'days'>[]
+    adjustments:       Pick<AnnualLeaveAdjustment, 'date' | 'direction' | 'days'>[]
+    teamActualAccrued: number   // computeLedger(today=asOf).actualAccrued
+    totalPaidUsed:     number   // computeLedger(today=asOf).actualUsed
   },
-): SettlementResult {
+): AnnualLeaveSettlementResult {
   const { grants, adjustments, teamActualAccrued, totalPaidUsed } = opts
   const asOfYear = parseInt(asOfDate.slice(0, 4), 10)
 
+  // 법정연차 누적 = 연도별 grants 합 + 기준일까지 adjustments 합
   const statutory = r1(
     grants
       .filter(g => g.year <= asOfYear)
@@ -63,14 +68,16 @@ export function computeSettlement(
         .reduce((s, a) => s + adjContrib(a), 0),
   )
 
-  const teamAccrued      = r1(teamActualAccrued)
+  const teamAccrued = r1(teamActualAccrued)
+
+  // AL-3: 총 휴가 권리 = max(법정연차 누적, 팀 정당 적립 누적) — 두 값을 더하지 않음
   const totalEntitlement = r1(Math.max(statutory, teamAccrued))
-  const entitlementBasis: SettlementResult['entitlementBasis'] =
+  const entitlementBasis: AnnualLeaveSettlementResult['entitlementBasis'] =
     statutory > teamAccrued ? 'statutory' : teamAccrued > statutory ? 'team' : 'equal'
 
-  const totalUsed    = r1(totalPaidUsed)
-  const excess       = r1(Math.max(0, totalUsed - totalEntitlement))
-  const shortfall    = r1(Math.max(0, totalEntitlement - totalUsed))
+  const totalUsed     = r1(totalPaidUsed)
+  const excess        = r1(Math.max(0, totalUsed - totalEntitlement))    // AL-4
+  const shortfall     = r1(Math.max(0, totalEntitlement - totalUsed))    // AL-5
   const netSettlement = r1(shortfall - excess)
 
   return { statutory, teamAccrued, totalEntitlement, entitlementBasis, totalUsed, excess, shortfall, netSettlement }
@@ -104,7 +111,7 @@ export function computeTimesheetFigures(
   // Accrual lookup by id — needed for ③
   const accrualById = new Map(accruals.map(a => [a.id, a]))
 
-  // Usages on/before asOfDate (non-manual: use start date as proxy)
+  // Usages on/before asOfDate
   const usagesOnOrBefore = usages.filter(u => u.start <= asOfDate)
 
   // ② 프로젝트휴가 기 사용분

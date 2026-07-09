@@ -9,7 +9,7 @@ import { useState, useMemo, useCallback, type FormEvent } from 'react'
 import { Plus, Trash2, Loader2, AlertTriangle, Info, Eye } from 'lucide-react'
 import { useAuthz } from '@/hooks/useAuthz'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
-import { computeSettlement, computeTimesheetFigures } from './annualLeave'
+import { computeAnnualLeaveSettlement, computeTimesheetFigures } from './annualLeave'
 import {
   useGrantsByPerson,
   useUpsertGrant,
@@ -416,7 +416,7 @@ function SettlementTab({ person }: { person: Person }) {
 
   const result = useMemo(() => {
     if (!ledger) return null
-    return computeSettlement(asOfStr, {
+    return computeAnnualLeaveSettlement(asOfStr, {
       grants,
       adjustments,
       teamActualAccrued: ledger.actualAccrued,
