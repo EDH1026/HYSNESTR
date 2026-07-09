@@ -2357,14 +2357,11 @@ export default function TimelineView() {
           {/* divider */}
           <span style={{ width: 1, height: 14, background: '#d1d5db', display: 'inline-block', flexShrink: 0 }} />
 
-          {/* ── Leave 군 ── */}
-          <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wide">Leave</span>
-          {Object.entries(LEAVE_GREEN).map(([type, color]) => (
-            <span key={type} className="flex items-center gap-1 text-[11px] text-muted">
-              <span style={{ display: 'inline-block', width: 14, height: 10, borderRadius: 2, background: color }} />
-              {type}
-            </span>
-          ))}
+          {/* ── Leave — single representative swatch (detail colors on bars only) ── */}
+          <span className="flex items-center gap-1 text-[11px] text-muted">
+            <span style={{ display: 'inline-block', width: 14, height: 10, borderRadius: 2, background: LEAVE_GREEN['지정휴가'] }} />
+            Leave
+          </span>
 
           {/* T-17: virtual leave legend */}
           {showVirtualLeave && viewMode === 'person' && (
