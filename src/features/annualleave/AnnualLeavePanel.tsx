@@ -30,7 +30,7 @@ import FilterChip from '@/components/FilterChip'
 import type { Person, Rank, WorkItem, AnnualLeaveGrant, AnnualLeaveAdjustment } from '@/types'
 
 // 유급 사용에서 제외할 무급 유형
-const UNPAID_LEAVE = new Set(['무급리프레시', '휴직'])
+const UNPAID_LEAVE = new Set(['리프레시', '휴직'])
 
 const RANKS: Rank[] = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern']
 const RANK_ORDER: Record<Rank, number> = { Partner: 0, SM: 1, M: 2, Senior: 3, Staff: 4, Intern: 5 }
@@ -468,7 +468,7 @@ function generateSettlementHtml(
   accrualById:  Map<string, LedgerAccrualEntry>,
 ): string {
   const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
-  const isTeam = result.entitlementBasis === 'team'
+  const isTeam    = result.entitlementBasis === 'team'
 
   const t1 = [
     ...grantRows.map(g => `<tr>
@@ -602,11 +602,11 @@ function generateSettlementHtml(
     <div class="candidates">
       <div class="cand">
         <span class="${!isTeam ? 'chosen-a' : 'unchosen'}">
-          (a) 법정연차+주말/휴일대체
-          <span class="hint">(${result.statutory}+${result.weekendSub}일)</span>
+          (a) 법정연차+주말/휴일대체+특별휴가
+          <span class="hint">(${result.statutory}+${result.weekendSub}+${result.specialLeave}일)</span>
           ${!isTeam ? '<span class="badge badge-a">채택</span>' : ''}
         </span>
-        <span class="sv-sm ${!isTeam ? 'chosen-a' : 'unchosen'}">${result.statutoryPlusWeekend}일</span>
+        <span class="sv-sm ${!isTeam ? 'chosen-a' : 'unchosen'}">${result.candidateA}일</span>
       </div>
       <div class="cand">
         <span class="${isTeam ? 'chosen-b' : 'unchosen'}">
@@ -644,10 +644,15 @@ function SettlementTab({ person }: { person: Person }) {
   const { isLoading, ledger, grants, adjustments, workItems } = usePersonData(person.id, asOfStr)
   const asOfYear = parseInt(asOfStr.slice(0, 4), 10)
 
-  // 주말/휴일대체 누적 합 — 후보 (a) = statutory + weekendSub 에 사용
+  // 후보 (a) 구성 요소 — 주말/휴일대체·특별휴가 누적 합
   const weekendSubAccrued = useMemo(() =>
     (ledger?.accruals ?? [])
       .filter(a => a.type === '주말/휴일대체')
+      .reduce((s, a) => s + a.days, 0),
+  [ledger])
+  const specialLeaveAccrued = useMemo(() =>
+    (ledger?.accruals ?? [])
+      .filter(a => a.type === '특별휴가')
       .reduce((s, a) => s + a.days, 0),
   [ledger])
 
@@ -658,10 +663,11 @@ function SettlementTab({ person }: { person: Person }) {
       grants,
       adjustments,
       weekendSubAccrued,
+      specialLeaveAccrued,
       teamActualAccrued: ledger.actualAccrued,
       totalPaidUsed:     ledger.actualUsed,
     })
-  }, [ledger, grants, adjustments, weekendSubAccrued, asOfStr])
+  }, [ledger, grants, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr])
 
   const workItemById = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
   const accrualById  = useMemo(
@@ -860,15 +866,15 @@ function SettlementTab({ person }: { person: Person }) {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className={`text-xs ${result.entitlementBasis !== 'team' ? 'font-semibold text-brand-700' : 'text-gray-500'}`}>
-                      (a) 법정연차+주말/휴일대체
+                      (a) 법정연차+주말/휴일대체+특별휴가
                     </span>
-                    <span className="text-[10px] text-muted tabular-nums">({result.statutory}+{result.weekendSub}일)</span>
+                    <span className="text-[10px] text-muted tabular-nums">({result.statutory}+{result.weekendSub}+{result.specialLeave}일)</span>
                     {result.entitlementBasis !== 'team' && (
                       <span className="pill bg-brand-100 text-brand-700 text-[10px]">채택</span>
                     )}
                   </div>
                   <span className={`text-sm tabular-nums ${result.entitlementBasis !== 'team' ? 'font-bold text-brand-700' : 'text-gray-400'}`}>
-                    {result.statutoryPlusWeekend}일
+                    {result.candidateA}일
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
