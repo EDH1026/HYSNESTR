@@ -84,6 +84,33 @@ function isPaidLeave(type: LeaveType | null): boolean {
   return type !== null && !UNPAID.has(type)
 }
 
+// ── LV-5: FIFO source type restrictions ──────────────────────
+
+// 지정휴가 사용 시 매칭 가능한 적립 원천 (우선순위 순)
+const JIEONG_PRIORITY: AccrualType[] = ['주말/휴일대체', '프로젝트휴가', '포상휴가', '지연보상']
+const JIEONG_SOURCES  = new Set<AccrualType>(JIEONG_PRIORITY)
+
+/** Return FIFO-eligible accruals for a given usage type (LV-5). */
+function fifoSourceAccruals(
+  type:        LeaveType,
+  allAccruals: LedgerAccrualEntry[],
+): LedgerAccrualEntry[] {
+  if (type === '특별휴가') {
+    return allAccruals.filter(a => a.type === '특별휴가')
+  }
+  if (type === '지정휴가') {
+    return allAccruals
+      .filter(a => JIEONG_SOURCES.has(a.type))
+      .sort((a, b) => {
+        const pa = JIEONG_PRIORITY.indexOf(a.type)
+        const pb = JIEONG_PRIORITY.indexOf(b.type)
+        if (pa !== pb) return pa - pb
+        return a.date.localeCompare(b.date) || a.id.localeCompare(b.id)
+      })
+  }
+  return allAccruals
+}
+
 // ── Delay compensation table ──────────────────────────────────
 
 /** Additional days granted when accrued project leave goes unused ≥ 15 days. */
@@ -273,7 +300,8 @@ export function computeLedger(
     let remaining = days
     const deductions: LedgerDeduction[] = []
 
-    for (const acc of allAccruals) {
+    const sourceAccruals = fifoSourceAccruals(type, allAccruals)
+    for (const acc of sourceAccruals) {
       if (remaining <= 0) break
       if (acc.remaining <= 0) continue
       const take = Math.min(acc.remaining, remaining)

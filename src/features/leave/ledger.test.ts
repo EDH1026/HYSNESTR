@@ -312,9 +312,10 @@ describe('주말/휴일대체 auto-accrual', () => {
 // ── 4. FIFO deduction ─────────────────────────────────────────
 
 describe('FIFO deduction', () => {
-  it('deducts oldest accrual first', () => {
-    // Accrual A: 2 days (Jan), Accrual B: 3 days (Feb)
-    // Usage: 3 days → should deduct 2 from A, 1 from B
+  it('deducts oldest FIFO-eligible accrual first (지정휴가 excludes 특별휴가)', () => {
+    // Accrual A: 포상휴가 2 days (Jan) — eligible for 지정휴가
+    // Accrual B: 특별휴가 3 days (Feb) — NOT eligible for 지정휴가 (LV-5)
+    // Usage: 지정휴가 3 days → deducts 2 from A, deficit=1 (B is excluded)
     const accruals: Accrual[] = [
       { id: 'accA', person_id: 'p1', type: '포상휴가', days: 2, date: '2024-01-10', source: null, note: null },
       { id: 'accB', person_id: 'p1', type: '특별휴가', days: 3, date: '2024-02-01', source: null, note: null },
@@ -330,17 +331,16 @@ describe('FIFO deduction', () => {
     })
     const usage = ledger.usages[0]
     expect(usage.days).toBe(3)
-    expect(usage.deficit).toBe(0)
+    expect(usage.deficit).toBe(1)   // 특별휴가 excluded → 1 day deficit
 
-    // Should deduct 2 from accA first, then 1 from accB
     const deductA = usage.deductions.find(d => d.accrualId === 'accA')
     const deductB = usage.deductions.find(d => d.accrualId === 'accB')
     expect(deductA?.days).toBe(2)
-    expect(deductB?.days).toBe(1)
+    expect(deductB).toBeUndefined()  // 특별휴가 not matched for 지정휴가
 
-    // Remaining: A = 0, B = 2
+    // Remaining: A = 0, B untouched = 3
     expect(ledger.accruals.find(e => e.id === 'accA')?.remaining).toBe(0)
-    expect(ledger.accruals.find(e => e.id === 'accB')?.remaining).toBe(2)
+    expect(ledger.accruals.find(e => e.id === 'accB')?.remaining).toBe(3)
   })
 
   it('records deficit when usage exceeds all accruals', () => {
@@ -377,6 +377,89 @@ describe('FIFO deduction', () => {
     expect(ledger.totalAccrued).toBe(5)
     expect(ledger.totalUsed).toBe(2)
     expect(ledger.remaining).toBe(3)
+  })
+})
+
+// ── 5. LV-5: FIFO source type restrictions ───────────────────
+
+describe('LV-5 FIFO source type restrictions', () => {
+  it('특별휴가 usage only deducts from 특별휴가 accruals', () => {
+    const accruals: Accrual[] = [
+      { id: 'accP', person_id: 'p1', type: '포상휴가',  days: 3, date: '2024-01-01', source: null, note: null },
+      { id: 'accS', person_id: 'p1', type: '특별휴가',  days: 2, date: '2024-01-02', source: null, note: null },
+    ]
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '특별휴가',
+      start: '2024-01-15', end_date: '2024-01-16',  // 2 workdays (Mon–Tue)
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-03-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(2)
+    expect(usage.deficit).toBe(0)
+    expect(usage.deductions.find(d => d.accrualId === 'accP')).toBeUndefined()  // 포상휴가 ignored
+    expect(usage.deductions.find(d => d.accrualId === 'accS')?.days).toBe(2)
+  })
+
+  it('특별휴가 usage records deficit when 특별휴가 balance insufficient (포상휴가 not used)', () => {
+    const accruals: Accrual[] = [
+      { id: 'accP', person_id: 'p1', type: '포상휴가', days: 5, date: '2024-01-01', source: null, note: null },
+      { id: 'accS', person_id: 'p1', type: '특별휴가', days: 1, date: '2024-01-02', source: null, note: null },
+    ]
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '특별휴가',
+      start: '2024-01-15', end_date: '2024-01-16',  // 2 workdays
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-03-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(2)
+    expect(usage.deficit).toBe(1)   // 포상휴가 available but not matched
+    expect(usage.deductions.find(d => d.accrualId === 'accS')?.days).toBe(1)
+    expect(usage.deductions.find(d => d.accrualId === 'accP')).toBeUndefined()
+  })
+
+  it('지정휴가 follows priority: 주말/휴일대체 before 프로젝트휴가 (regardless of date)', () => {
+    const accruals: Accrual[] = [
+      { id: 'accProj', person_id: 'p1', type: '프로젝트휴가',  days: 3, date: '2024-01-01', source: null, note: null },
+      { id: 'accWknd', person_id: 'p1', type: '주말/휴일대체', days: 2, date: '2024-02-01', source: null, note: null },
+    ]
+    // accProj has an earlier date but lower priority
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '지정휴가',
+      start: '2024-03-11', end_date: '2024-03-12',  // 2 workdays (Mon–Tue)
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-04-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(2)
+    expect(usage.deficit).toBe(0)
+    expect(usage.deductions.find(d => d.accrualId === 'accWknd')?.days).toBe(2)
+    expect(usage.deductions.find(d => d.accrualId === 'accProj')).toBeUndefined()
+  })
+
+  it('지정휴가 ignores 특별휴가 accruals and records deficit', () => {
+    const accruals: Accrual[] = [
+      { id: 'accS', person_id: 'p1', type: '특별휴가', days: 5, date: '2024-01-01', source: null, note: null },
+    ]
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '지정휴가',
+      start: '2024-01-15', end_date: '2024-01-15',  // 1 workday (Mon)
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-03-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(1)
+    expect(usage.deficit).toBe(1)   // 특별휴가 ignored → full deficit
+    expect(usage.deductions).toHaveLength(0)
   })
 })
 
