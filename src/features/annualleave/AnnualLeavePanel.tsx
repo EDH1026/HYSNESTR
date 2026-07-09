@@ -707,7 +707,10 @@ function TimesheetTab({ person }: { person: Person }) {
 
       <div className="rounded-md border border-border bg-surface-50 px-4 py-2 text-xs text-muted flex items-start gap-2">
         <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
-        <span>일자별 타임시트 코드 자동 매핑은 미구현(AL-7). 아래 수치를 참고해 담당자가 직접 판단·입력하세요.</span>
+        <span>
+          아래 4개 수치를 참고해 담당자가 직접 타임시트 코드를 판단·입력하세요.
+          시스템은 일자별 코드를 자동 산출하지 않습니다.
+        </span>
       </div>
 
       {(isLoading || !figures) ? (
@@ -718,9 +721,9 @@ function TimesheetTab({ person }: { person: Person }) {
         <div className="grid grid-cols-2 gap-3">
           <FigureCard
             num="①"
-            label={`${asOfYear}년 법정연차 누적`}
+            label={`${asOfYear}년 법정연차·신입사원 휴가 누적`}
             value={figures.statutoryThisYear}
-            hint="해당 역년 grants + 보정 (1/1 리셋, 이월 없음)"
+            hint={`${asOfYear}년 grants 합 + 보정 (1/1 리셋, 이월 없음)`}
           />
           <FigureCard
             num="②"
