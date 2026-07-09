@@ -6,9 +6,10 @@
  * 탭: 적립 관리 | 퇴사 정산 | 수치 안내
  */
 import { useState, useMemo, useCallback, type FormEvent } from 'react'
-import { Plus, Trash2, Loader2, AlertTriangle, Info, Eye } from 'lucide-react'
+import { Plus, Trash2, Loader2, AlertTriangle, Eye } from 'lucide-react'
 import { useAuthz } from '@/hooks/useAuthz'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
+import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
 import { computeAnnualLeaveSettlement, computeTimesheetFigures } from './annualLeave'
 import {
   useGrantsByPerson,
@@ -25,7 +26,10 @@ import { useAllHolidays }         from '@/features/admin/hooks'
 import { useAllPeople }           from '@/features/people/hooks'
 import { dateToNum, numToStr, today } from '@/lib/date'
 import FilterChip from '@/components/FilterChip'
-import type { Person, Rank, AnnualLeaveGrant, AnnualLeaveAdjustment } from '@/types'
+import type { Person, Rank, WorkItem, AnnualLeaveGrant, AnnualLeaveAdjustment } from '@/types'
+
+// 유급 사용에서 제외할 무급 유형
+const UNPAID_LEAVE = new Set(['무급리프레시', '휴직'])
 
 const RANKS: Rank[] = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern']
 const RANK_ORDER: Record<Rank, number> = { Partner: 0, SM: 1, M: 2, Senior: 3, Staff: 4, Intern: 5 }
@@ -403,7 +407,34 @@ function usePersonData(personId: string, asOfStr: string) {
     return computeLedger(personId, { workItems, assignments, accruals, isHoliday, today: asOf })
   }, [personId, workItems, assignments, accruals, isHoliday, asOf, isLoading])
 
-  return { isLoading, ledger, grants, adjustments }
+  return { isLoading, ledger, grants, adjustments, workItems }
+}
+
+// ─────────────────────────────────────────────────────────────
+// FIFO 차감 원천 요약 (Tab 2에서 사용)
+// ─────────────────────────────────────────────────────────────
+
+function deductionSummary(
+  deductions: LedgerUsageEntry['deductions'],
+  accrualById: Map<string, LedgerAccrualEntry>,
+  workItemById: Map<string, WorkItem>,
+): string {
+  if (!deductions.length) return '—'
+  const byType: Record<string, { days: number; proj: string | null }> = {}
+  for (const d of deductions) {
+    const acc = accrualById.get(d.accrualId)
+    if (!acc) continue
+    if (!byType[acc.type]) {
+      byType[acc.type] = {
+        days: 0,
+        proj: acc.sourceId ? (workItemById.get(acc.sourceId)?.name ?? null) : null,
+      }
+    }
+    byType[acc.type].days += d.days
+  }
+  return Object.entries(byType)
+    .map(([t, { days, proj }]) => proj ? `${t} ${days}일 (${proj})` : `${t} ${days}일`)
+    .join(' / ')
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -412,8 +443,10 @@ function usePersonData(personId: string, asOfStr: string) {
 
 function SettlementTab({ person }: { person: Person }) {
   const [asOfStr, setAsOfStr] = useState(numToStr(today()))
-  const { isLoading, ledger, grants, adjustments } = usePersonData(person.id, asOfStr)
+  const { isLoading, ledger, grants, adjustments, workItems } = usePersonData(person.id, asOfStr)
+  const asOfYear = parseInt(asOfStr.slice(0, 4), 10)
 
+  // AL-4/AL-5: 공용 함수 단일 호출 — 정산 요약은 이 result를 그대로 바인딩
   const result = useMemo(() => {
     if (!ledger) return null
     return computeAnnualLeaveSettlement(asOfStr, {
@@ -424,8 +457,34 @@ function SettlementTab({ person }: { person: Person }) {
     })
   }, [ledger, grants, adjustments, asOfStr])
 
+  const workItemById = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
+  const accrualById  = useMemo(
+    () => new Map((ledger?.accruals ?? []).map(a => [a.id, a])),
+    [ledger],
+  )
+
+  // Table 1 rows — grants + adjustments up to asOfStr
+  const grantRows = useMemo(() =>
+    grants.filter(g => g.year <= asOfYear).sort((a, b) => a.year - b.year),
+  [grants, asOfYear])
+  const adjRows = useMemo(() =>
+    adjustments.filter(a => a.date <= asOfStr).sort((a, b) => a.date.localeCompare(b.date)),
+  [adjustments, asOfStr])
+
+  // Table 2 rows — team accruals (all types from computeLedger)
+  const accrualRows = useMemo(() =>
+    [...(ledger?.accruals ?? [])].sort((a, b) => a.date.localeCompare(b.date)),
+  [ledger])
+
+  // Table 3 rows — paid usages only (exclude 무급리프레시, 휴직)
+  const paidUsages = useMemo(() =>
+    (ledger?.usages ?? [])
+      .filter(u => !UNPAID_LEAVE.has(u.type))
+      .sort((a, b) => a.start.localeCompare(b.start)),
+  [ledger])
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <div className="flex items-center gap-3">
         <label className="text-xs font-medium text-gray-700">기준일 (퇴사 예정일)</label>
         <input type="date" className="input py-1 text-xs w-36"
@@ -438,38 +497,180 @@ function SettlementTab({ person }: { person: Person }) {
         </div>
       ) : (
         <>
-          <div className={`rounded-md border px-4 py-2 text-xs flex items-center gap-2 ${result.entitlementBasis === 'statutory' ? 'border-brand-200 bg-brand-50 text-brand-800' : result.entitlementBasis === 'team' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-border bg-surface-50 text-gray-700'}`}>
-            <Info size={13} className="flex-shrink-0" />
-            <span>
-              총 휴가 권리 기준: <strong>{result.entitlementBasis === 'statutory' ? '법정연차 누적' : result.entitlementBasis === 'team' ? '팀 정당 적립' : '법정연차 = 팀 적립 (동일)'}</strong>
-              {' '}({result.totalEntitlement}일)
-            </span>
-          </div>
+          {/* ① 법정연차 적립·보정 내역 */}
+          <section>
+            <h3 className="text-xs font-semibold text-gray-700 mb-2">① 법정연차 적립·보정 내역</h3>
+            <div className="card p-0 overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-50 border-b border-border text-muted">
+                    <th className="px-3 py-2 text-left font-medium">항목</th>
+                    <th className="px-3 py-2 text-left font-medium">날짜/연도</th>
+                    <th className="px-3 py-2 text-left font-medium">사유</th>
+                    <th className="px-3 py-2 text-right font-medium">일수</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {grantRows.map(g => (
+                    <tr key={`g-${g.id}`} className="hover:bg-surface-50">
+                      <td className="px-3 py-2"><span className="pill bg-brand-100 text-brand-700 text-[10px]">법정연차</span></td>
+                      <td className="px-3 py-2 font-medium">{g.year}년</td>
+                      <td className="px-3 py-2 text-muted">{g.note ?? '—'}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-brand-700">+{g.days}</td>
+                    </tr>
+                  ))}
+                  {adjRows.map(a => (
+                    <tr key={`a-${a.id}`} className="hover:bg-surface-50">
+                      <td className="px-3 py-2">
+                        <span className={`pill text-[10px] ${a.direction === 'accrual' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                          {a.direction === 'accrual' ? '보정+' : '보정−'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
+                      <td className="px-3 py-2 text-muted">{a.note ?? '—'}</td>
+                      <td className={`px-3 py-2 text-right font-semibold ${a.direction === 'accrual' ? 'text-emerald-700' : 'text-red-600'}`}>
+                        {a.direction === 'accrual' ? '+' : '−'}{Math.abs(a.days)}
+                      </td>
+                    </tr>
+                  ))}
+                  {grantRows.length === 0 && adjRows.length === 0 && (
+                    <tr><td colSpan={4} className="px-3 py-4 text-center text-muted">내역 없음</td></tr>
+                  )}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-surface-50 border-t-2 border-border">
+                    <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">법정연차 누적 합계</td>
+                    <td className="px-3 py-2 text-right font-bold text-brand-700">{result.statutory}일</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </section>
 
-          <div className="card p-0 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-surface-50 border-b border-border text-muted">
-                  <th className="px-4 py-2 text-left text-xs font-medium w-8">#</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium">항목</th>
-                  <th className="px-4 py-2 text-right text-xs font-medium">값 (일)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border text-sm">
-                <Row n="①" label="법정연차 누적" value={result.statutory} hint="grants 합 + 보정 합 (기준일 역년 이하)" />
-                <Row n="②" label="팀 정당 적립 누적" value={result.teamAccrued} hint="computeLedger actualAccrued (기준일까지)" />
-                <Row n="③" label="총 휴가 권리 (max)" value={result.totalEntitlement} bold hint={`max(①, ②) = ${result.entitlementBasis === 'statutory' ? '법정연차 기준' : result.entitlementBasis === 'team' ? '팀 적립 기준' : '동일'}`} />
-                <Row n="④" label="법정연차 소진 일수" value={'N/A'} hint="타임시트 매핑 미구현 (AL-7)" dim />
-                <Row n="⑤" label="초과 사용분 (차감)" value={result.excess} hint="max(0, 총 사용 − 총 권리)" color={result.excess > 0 ? 'red' : undefined} />
-                <Row n="⑥" label="미달 보상분 (보상)" value={result.shortfall} hint="max(0, 총 권리 − 총 사용)" color={result.shortfall > 0 ? 'green' : undefined} />
-                <Row n="⑦" label="최종 정산" value={result.netSettlement} bold hint="⑥ − ⑤  (+= 보상 / −= 차감)" color={result.netSettlement > 0 ? 'green' : result.netSettlement < 0 ? 'red' : undefined} />
-              </tbody>
-            </table>
-          </div>
+          {/* ② 팀 정당 적립 내역 */}
+          <section>
+            <h3 className="text-xs font-semibold text-gray-700 mb-2">② 팀 정당 적립 내역</h3>
+            <div className="card p-0 overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-50 border-b border-border text-muted">
+                    <th className="px-3 py-2 text-left font-medium">유형</th>
+                    <th className="px-3 py-2 text-left font-medium">날짜</th>
+                    <th className="px-3 py-2 text-left font-medium">원천(프로젝트)</th>
+                    <th className="px-3 py-2 text-right font-medium">일수</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {accrualRows.map(a => (
+                    <tr key={a.id} className="hover:bg-surface-50">
+                      <td className="px-3 py-2"><span className="pill bg-purple-100 text-purple-700 text-[10px]">{a.type}</span></td>
+                      <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
+                      <td className="px-3 py-2 text-muted truncate max-w-[140px]">
+                        {a.sourceId ? (workItemById.get(a.sourceId)?.name ?? '—') : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-right font-semibold text-purple-700">+{a.days}</td>
+                    </tr>
+                  ))}
+                  {accrualRows.length === 0 && (
+                    <tr><td colSpan={4} className="px-3 py-4 text-center text-muted">내역 없음</td></tr>
+                  )}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-surface-50 border-t-2 border-border">
+                    <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">팀 정당 적립 합계</td>
+                    <td className="px-3 py-2 text-right font-bold text-purple-700">{result.teamAccrued}일</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </section>
 
-          <div className="text-xs text-muted">
-            ※ 총 유급 사용(기준일까지) = <strong>{result.totalUsed}일</strong>
-          </div>
+          {/* ③ 휴가 사용 내역 */}
+          <section>
+            <h3 className="text-xs font-semibold text-gray-700 mb-2">③ 휴가 사용 내역 <span className="text-muted font-normal">(유급 — 무급리프레시·휴직 제외)</span></h3>
+            <div className="card p-0 overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-50 border-b border-border text-muted">
+                    <th className="px-3 py-2 text-left font-medium">기간</th>
+                    <th className="px-3 py-2 text-left font-medium">유형</th>
+                    <th className="px-3 py-2 text-left font-medium">FIFO 차감 원천</th>
+                    <th className="px-3 py-2 text-right font-medium">일수</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {paidUsages.map(u => (
+                    <tr key={u.assignmentId} className="hover:bg-surface-50">
+                      <td className="px-3 py-2 font-mono text-[11px] whitespace-nowrap">
+                        {u.start === u.end ? u.start : `${u.start}~${u.end}`}
+                      </td>
+                      <td className="px-3 py-2"><span className="pill bg-amber-100 text-amber-700 text-[10px]">{u.type}</span></td>
+                      <td className="px-3 py-2 text-muted text-[10px] max-w-[160px]">
+                        {deductionSummary(u.deductions, accrualById, workItemById)}
+                        {u.deficit > 0 && (
+                          <span className="ml-1 text-red-500 whitespace-nowrap">(선사용 {u.deficit}일)</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right font-semibold text-gray-800">−{u.days}</td>
+                    </tr>
+                  ))}
+                  {paidUsages.length === 0 && (
+                    <tr><td colSpan={4} className="px-3 py-4 text-center text-muted">내역 없음</td></tr>
+                  )}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-surface-50 border-t-2 border-border">
+                    <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">총 유급 사용 합계</td>
+                    <td className="px-3 py-2 text-right font-bold text-gray-800">{result.totalUsed}일</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </section>
+
+          {/* 정산 요약 — computeAnnualLeaveSettlement 결과를 그대로 바인딩 (재계산 없음) */}
+          <section>
+            <h3 className="text-xs font-semibold text-gray-700 mb-2">정산 요약</h3>
+            <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+              <div className="px-4 py-3 bg-surface-50 flex items-center justify-between">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-semibold text-gray-700">총 휴가 권리</span>
+                  <span className={`pill text-[10px] ${result.entitlementBasis === 'statutory' ? 'bg-brand-100 text-brand-700' : result.entitlementBasis === 'team' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}`}>
+                    {result.entitlementBasis === 'statutory' ? '① 법정연차 기준' : result.entitlementBasis === 'team' ? '② 팀 적립 기준' : '① = ②'}
+                  </span>
+                  <span className="text-[10px] text-muted">max(①{result.statutory}, ②{result.teamAccrued})</span>
+                </div>
+                <span className="text-base font-bold text-gray-900 tabular-nums">{result.totalEntitlement}일</span>
+              </div>
+              <div className="px-4 py-3 flex items-center justify-between">
+                <span className="text-xs text-gray-700">총 유급 사용 ③</span>
+                <span className="text-sm font-semibold text-gray-800 tabular-nums">−{result.totalUsed}일</span>
+              </div>
+              {result.excess > 0 && (
+                <div className="px-4 py-3 flex items-center justify-between bg-red-50">
+                  <span className="text-xs font-medium text-red-700">초과 사용분 (퇴사 시 차감)</span>
+                  <span className="text-sm font-bold text-red-700 tabular-nums">−{result.excess}일</span>
+                </div>
+              )}
+              {result.shortfall > 0 && (
+                <div className="px-4 py-3 flex items-center justify-between bg-emerald-50">
+                  <span className="text-xs font-medium text-emerald-700">미달 보상분 (퇴사 시 보상)</span>
+                  <span className="text-sm font-bold text-emerald-700 tabular-nums">+{result.shortfall}일</span>
+                </div>
+              )}
+              {result.excess === 0 && result.shortfall === 0 && (
+                <div className="px-4 py-3 flex items-center justify-between bg-surface-50">
+                  <span className="text-xs text-muted">초과/미달 없음 (권리 = 사용)</span>
+                </div>
+              )}
+              <div className={`px-4 py-4 flex items-center justify-between ${result.netSettlement > 0 ? 'bg-emerald-100' : result.netSettlement < 0 ? 'bg-red-100' : 'bg-surface-100'}`}>
+                <span className="text-sm font-bold text-gray-900">최종 정산</span>
+                <span className={`text-2xl font-bold tabular-nums ${result.netSettlement > 0 ? 'text-emerald-700' : result.netSettlement < 0 ? 'text-red-700' : 'text-muted'}`}>
+                  {result.netSettlement > 0 ? '+' : ''}{result.netSettlement}<span className="text-sm font-normal ml-0.5">일</span>
+                </span>
+              </div>
+            </div>
+          </section>
         </>
       )}
     </div>
@@ -549,26 +750,6 @@ function TimesheetTab({ person }: { person: Person }) {
 // ─────────────────────────────────────────────────────────────
 // Small UI helpers
 // ─────────────────────────────────────────────────────────────
-
-function Row({
-  n, label, value, hint, bold, dim, color,
-}: {
-  n: string; label: string; value: number | string; hint?: string; bold?: boolean; dim?: boolean; color?: 'red' | 'green'
-}) {
-  const valCls = color === 'red' ? 'text-red-700 font-semibold' : color === 'green' ? 'text-emerald-700 font-semibold' : dim ? 'text-muted' : bold ? 'font-bold text-gray-900' : 'text-gray-800'
-  return (
-    <tr className="hover:bg-surface-50">
-      <td className="px-4 py-2.5 text-muted text-xs">{n}</td>
-      <td className="px-4 py-2.5">
-        <span className={bold ? 'font-semibold text-gray-900' : dim ? 'text-muted' : 'text-gray-800'}>{label}</span>
-        {hint && <span className="block text-[10px] text-muted/70 mt-0.5">{hint}</span>}
-      </td>
-      <td className={`px-4 py-2.5 text-right ${valCls}`}>
-        {typeof value === 'number' ? `${value}일` : value}
-      </td>
-    </tr>
-  )
-}
 
 function FigureCard({ num, label, value, hint, warn }: { num: string; label: string; value: number; hint: string; warn?: boolean }) {
   return (
