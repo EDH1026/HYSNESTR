@@ -117,3 +117,29 @@ export function groupByYear(events: StatutoryLeaveEvent[]): Map<number, number> 
   }
   return map
 }
+
+export interface GrantTypeRow {
+  year:       number
+  grant_type: 'first_year_monthly' | 'annual'
+  days:       number
+  label:      string
+}
+
+/** 이벤트를 (역년, grant_type)별로 집계 — Edge Function·자동계산 버튼 공용 */
+export function groupByYearAndType(events: StatutoryLeaveEvent[]): GrantTypeRow[] {
+  const monthly = new Map<number, { days: number; labels: string[] }>()
+  const annual  = new Map<number, { days: number; labels: string[] }>()
+  for (const e of events) {
+    const y = parseInt(e.date.slice(0, 4), 10)
+    const bucket = e.kind === 'monthly' ? monthly : annual
+    const prev = bucket.get(y)
+    if (prev) { prev.days = r1(prev.days + e.days); prev.labels.push(e.label) }
+    else       { bucket.set(y, { days: e.days, labels: [e.label] }) }
+  }
+  const rows: GrantTypeRow[] = []
+  for (const [year, { days, labels }] of monthly)
+    rows.push({ year, grant_type: 'first_year_monthly', days, label: labels.join(', ') })
+  for (const [year, { days, labels }] of annual)
+    rows.push({ year, grant_type: 'annual', days, label: labels.join(', ') })
+  return rows.sort((a, b) => a.year - b.year || a.grant_type.localeCompare(b.grant_type))
+}

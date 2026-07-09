@@ -12,7 +12,7 @@ import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
 import { computeAnnualLeaveSettlement, computeTimesheetFigures } from './annualLeave'
 import type { AnnualLeaveSettlementResult } from './annualLeave'
-import { computeStatutoryLeave, sumStatutoryLeave, groupByYear } from './computeStatutoryLeave'
+import { computeStatutoryLeave, sumStatutoryLeave, groupByYearAndType } from './computeStatutoryLeave'
 import {
   useGrantsByPerson,
   useUpsertGrant,
@@ -204,28 +204,33 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
   async function handleAutoCalc() {
     if (!person.hire_date) return
     const events = computeStatutoryLeave(person.hire_date, 'calendar', numToStr(today()))
-    const byYear = groupByYear(events)
-    if (byYear.size === 0) {
+    const rows = groupByYearAndType(events)
+    if (rows.length === 0) {
       window.alert('아직 발생한 법정연차가 없습니다.')
       return
     }
-    const lines = Array.from(byYear.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([y, d]) => `  ${y}년: ${d}일`)
-      .join('\n')
-    if (!window.confirm(`다음 연도별 법정연차를 자동 입력합니다 (회계연도 기준):\n${lines}\n\n기존 "근로기준법 자동계산" 비고 항목은 덮어씁니다. 계속할까요?`)) return
+    const lines = rows.map(r =>
+      `  ${r.year}년 (${r.grant_type === 'first_year_monthly' ? '월차' : '연차'}): ${r.days}일`,
+    ).join('\n')
+    if (!window.confirm(
+      `다음 법정연차를 자동 입력합니다 (회계연도 기준):\n${lines}\n\n` +
+      `기존 "근로기준법 자동계산" 비고 항목은 덮어씁니다. 계속할까요?`,
+    )) return
     setAutoCalcPending(true)
     try {
-      for (const [year, days] of Array.from(byYear.entries()).sort(([a], [b]) => a - b)) {
+      for (const row of rows) {
         const existing = grants.find(
-          g => g.year === year && (g.note ?? '').startsWith('근로기준법 자동계산'),
+          g => g.year === row.year &&
+               g.grant_type === row.grant_type &&
+               (g.note ?? '').startsWith('근로기준법 자동계산'),
         )
         await upsertGrant.mutateAsync({
-          id: existing?.id,
-          person_id: person.id,
-          year,
-          days,
-          note: '근로기준법 자동계산 (회계연도)',
+          id:         existing?.id,
+          person_id:  person.id,
+          year:       row.year,
+          days:       row.days,
+          grant_type: row.grant_type,
+          note:       '근로기준법 자동계산 (회계연도)',
         })
       }
     } catch (e) {
@@ -311,7 +316,12 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
               <tbody className="divide-y divide-border">
                 {grants.map(g => (
                   <tr key={g.id} className="hover:bg-surface-50">
-                    <td className="px-3 py-2 font-medium">{g.year}년</td>
+                    <td className="px-3 py-2 font-medium">
+                      {g.year}년
+                      {g.grant_type === 'first_year_monthly' && (
+                        <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">월차</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right font-semibold text-brand-700">{g.days}일</td>
                     <td className="px-3 py-2 text-muted">{g.note ?? '—'}</td>
                     {!readOnly && (

@@ -29,11 +29,12 @@ export function useUpsertGrant() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: {
-      id?: string
-      person_id: string
-      year: number
-      days: number
-      note: string | null
+      id?:        string
+      person_id:  string
+      year:       number
+      days:       number
+      note:       string | null
+      grant_type?: 'first_year_monthly' | 'annual'
     }): Promise<AnnualLeaveGrant> => {
       const { id, ...rest } = input
       let res

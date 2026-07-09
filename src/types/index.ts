@@ -167,6 +167,7 @@ export interface AnnualLeaveGrant {
   id:         string
   person_id:  string
   year:       number          // calendar year (1/1 기준)
+  grant_type: 'first_year_monthly' | 'annual'
   days:       number
   note:       string | null
   created_at: string

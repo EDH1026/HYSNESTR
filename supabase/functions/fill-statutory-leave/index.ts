@@ -1,23 +1,20 @@
 /**
- * Edge Function: fill-statutory-leave  (PRD v2.28 §5.13 AL-2)
+ * Edge Function: fill-statutory-leave  (PRD v2.29 §5.13 AL-9)
  *
  * 근로기준법 제60조 기준 법정연차를 모든 인력(hire_date 존재)에 대해
  * 회계연도(7/1) 기준으로 계산하여 annual_leave_grants 테이블에 반영한다.
  *
- * 규칙:
- *   • note LIKE '근로기준법 자동계산%' 인 기존 행만 삭제 후 재삽입.
- *   • 관리자가 수동으로 추가한 보정 행은 절대 건드리지 않는다.
- *   • 매년 7/1 pg_cron 으로 자동 실행하거나 admin UI 에서 수동 트리거.
+ * 규칙 (v2.29 변경 사항):
+ *   • grant_type 으로 행 유형을 구분한다:
+ *       'first_year_monthly' — 입사 후 11개월 월차(역년별 합산)
+ *       'annual'             — 첫 7/1 비례연차 + 이후 매년 7/1 연차
+ *   • UNIQUE 키가 (person_id, year, grant_type) 으로 변경되었으므로
+ *     INSERT ... ON CONFLICT (person_id, year, grant_type) DO NOTHING 사용.
+ *   • 재실행 시: 자동계산 note 행만 삭제 후 재삽입 — 수동 입력 행은 건드리지 않음.
+ *     수동 행과 (year, grant_type) 충돌 시 에러 없이 건너뜀.
  *
  * Body (JSON, optional):
  *   { anchorDate?: "YYYY-MM-DD" }   ← 기본값: 오늘 (서버 UTC)
- *
- * 스케줄링 (Supabase Dashboard → Database → pg_cron):
- *   cron.schedule(
- *     'fill-statutory-leave-annual',
- *     '0 0 1 7 *',   -- 매년 7월 1일 00:00 UTC (09:00 KST)
- *     $$ SELECT net.http_post(...) $$
- *   );
  *
  * Deploy:
  *   supabase functions deploy fill-statutory-leave
@@ -40,7 +37,7 @@ function json(body: unknown, status = 200) {
   })
 }
 
-// ── 날짜 유틸 (computeStatutoryLeave.ts 와 동일 로직, Deno 재구현) ──
+// ── 날짜 유틸 ────────────────────────────────────────────────
 
 function r1(n: number): number {
   return Math.round(n * 10) / 10
@@ -64,23 +61,27 @@ function addMonths(dateStr: string, months: number): string {
   return `${ty}-${String(tm).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-interface GrantRow { year: number; days: number }
+// ── 법정연차 계산 (grant_type 분리) ─────────────────────────
 
-function computeFiscalGrants(hireDate: string, asOfDate: string): Map<number, number> {
-  const byYear = new Map<number, number>()
-  const add = (dateStr: string, days: number) => {
-    const yr = parseInt(dateStr.slice(0, 4), 10)
-    byYear.set(yr, r1((byYear.get(yr) ?? 0) + days))
-  }
+interface TypedGrantRow {
+  year:       number
+  grant_type: 'first_year_monthly' | 'annual'
+  days:       number
+}
+
+function computeTypedGrants(hireDate: string, asOfDate: string): TypedGrantRow[] {
+  const monthly = new Map<number, number>()  // calendar year → days
+  const annual  = new Map<number, number>()  // calendar year → days
 
   const hireYear  = parseInt(hireDate.slice(0, 4), 10)
   const hireMonth = parseInt(hireDate.slice(5, 7), 10)
 
-  // 첫 11개월 월차
+  // 첫 11개월 월차 (역년별 합산)
   for (let m = 1; m <= 11; m++) {
     const date = addMonths(hireDate, m)
     if (date > asOfDate) break
-    add(date, 1)
+    const yr = parseInt(date.slice(0, 4), 10)
+    monthly.set(yr, r1((monthly.get(yr) ?? 0) + 1))
   }
 
   // 첫 7/1 비례연차
@@ -88,7 +89,8 @@ function computeFiscalGrants(hireDate: string, asOfDate: string): Map<number, nu
   const firstFiscalDate = `${firstFiscalYear}-07-01`
   if (firstFiscalDate <= asOfDate) {
     const daysWorked = daysBetween(hireDate, firstFiscalDate)
-    add(firstFiscalDate, r1(15 * daysWorked / 365))
+    const days = r1(15 * daysWorked / 365)
+    annual.set(firstFiscalYear, r1((annual.get(firstFiscalYear) ?? 0) + days))
   }
 
   // 이후 매년 7/1 연차
@@ -98,12 +100,17 @@ function computeFiscalGrants(hireDate: string, asOfDate: string): Map<number, nu
     const date = `${fiscalYear}-07-01`
     if (date > asOfDate) break
     const elapsed = n + 1
-    add(date, Math.min(25, 15 + Math.floor((elapsed - 1) / 2)))
+    annual.set(fiscalYear, Math.min(25, 15 + Math.floor((elapsed - 1) / 2)))
     fiscalYear++
     n++
   }
 
-  return byYear
+  const rows: TypedGrantRow[] = []
+  for (const [year, days] of monthly)
+    rows.push({ year, grant_type: 'first_year_monthly', days })
+  for (const [year, days] of annual)
+    rows.push({ year, grant_type: 'annual', days: r1(days) })
+  return rows
 }
 
 // ── Handler ───────────────────────────────────────────────────
@@ -143,7 +150,7 @@ serve(async (req: Request) => {
     const raw  = body?.anchorDate
     anchorDate = typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)
       ? raw
-      : new Date().toISOString().slice(0, 10)   // UTC today
+      : new Date().toISOString().slice(0, 10)
   } catch {
     anchorDate = new Date().toISOString().slice(0, 10)
   }
@@ -171,10 +178,10 @@ serve(async (req: Request) => {
   for (const person of (people ?? [])) {
     const hireDate = person.hire_date as string
     try {
-      const byYear = computeFiscalGrants(hireDate, anchorDate)
-      if (byYear.size === 0) continue
+      const rows = computeTypedGrants(hireDate, anchorDate)
+      if (rows.length === 0) continue
 
-      // 1. 기존 자동 계산 행 삭제
+      // 1. 기존 자동계산 행 삭제 (수동 입력 행은 보존)
       const { error: delErr } = await adminClient
         .from('annual_leave_grants')
         .delete()
@@ -182,17 +189,20 @@ serve(async (req: Request) => {
         .like('note', '근로기준법 자동계산%')
       if (delErr) throw new Error(delErr.message)
 
-      // 2. 새 행 삽입
-      const rows: { person_id: string; year: number; days: number; note: string }[] = []
-      for (const [year, days] of byYear.entries()) {
-        rows.push({ person_id: person.id, year, days: r1(days), note: NOTE })
-      }
+      // 2. 새 행 삽입 — 수동 행과 (year, grant_type) 충돌 시 DO NOTHING
+      const insertRows = rows.map(r => ({
+        person_id:  person.id,
+        year:       r.year,
+        grant_type: r.grant_type,
+        days:       r.days,
+        note:       NOTE,
+      }))
       const { error: insErr } = await adminClient
         .from('annual_leave_grants')
-        .insert(rows)
+        .upsert(insertRows, { onConflict: 'person_id,year,grant_type', ignoreDuplicates: true })
       if (insErr) throw new Error(insErr.message)
 
-      totalInserted += rows.length
+      totalInserted += insertRows.length
       totalPeople++
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
