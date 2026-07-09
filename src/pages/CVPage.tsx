@@ -58,11 +58,12 @@ export default function CVPage() {
   const { data: workItems   = [], isLoading: lW } = useAllWorkItems()
   const { data: assignments = [], isLoading: lA } = useAllAssignments()
 
-  const [panel,      setPanel]      = useState<Person | null>(null)
-  const [nameSearch, setNameSearch] = useState('')
-  const [rankFilter, setRankFilter] = useState<Rank[]>([])
-  const [periodFrom, setPeriodFrom] = useState('')
-  const [periodTo,   setPeriodTo]   = useState('')
+  const [panel,        setPanel]        = useState<Person | null>(null)
+  const [nameSearch,   setNameSearch]   = useState('')
+  const [rankFilter,   setRankFilter]   = useState<Rank[]>([])
+  const [statusFilter, setStatusFilter] = useState<string[]>(['active'])
+  const [periodFrom,   setPeriodFrom]   = useState('')
+  const [periodTo,     setPeriodTo]     = useState('')
 
   const isLoading = lP || lW || lA
 
@@ -88,7 +89,8 @@ export default function CVPage() {
       const q = nameSearch.toLowerCase()
       out = out.filter(p => p.name.toLowerCase().includes(q))
     }
-    if (rankFilter.length) out = out.filter(p => rankFilter.includes(p.rank))
+    if (rankFilter.length)   out = out.filter(p => rankFilter.includes(p.rank))
+    if (statusFilter.length) out = out.filter(p => statusFilter.includes(p.status))
 
     if (periodFrom || periodTo) {
       out = out.filter(p => {
@@ -110,7 +112,8 @@ export default function CVPage() {
     })
   })()
 
-  const hasFilter = !!(nameSearch || rankFilter.length || periodFrom || periodTo)
+  const hasFilter = !!(nameSearch || rankFilter.length || periodFrom || periodTo ||
+    statusFilter.length !== 1 || !statusFilter.includes('active'))
 
   return (
     <div className="flex flex-col h-full">
@@ -141,6 +144,16 @@ export default function CVPage() {
           ))}
         </div>
 
+        <div className="flex gap-1 items-center">
+          <span className="text-xs text-muted">상태</span>
+          <FilterChip label="재직"     active={statusFilter.includes('active')}
+            onClick={() => setStatusFilter(p => p.includes('active')   ? p.filter(x => x !== 'active')   : [...p, 'active'])} />
+          <FilterChip label="입사예정" active={statusFilter.includes('upcoming')}
+            onClick={() => setStatusFilter(p => p.includes('upcoming') ? p.filter(x => x !== 'upcoming') : [...p, 'upcoming'])} />
+          <FilterChip label="퇴직"     active={statusFilter.includes('resigned')}
+            onClick={() => setStatusFilter(p => p.includes('resigned') ? p.filter(x => x !== 'resigned') : [...p, 'resigned'])} />
+        </div>
+
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-muted">기간</span>
           <input type="date" className="input py-0.5 text-xs w-36"
@@ -152,7 +165,7 @@ export default function CVPage() {
 
         {hasFilter && (
           <button className="text-xs text-muted hover:text-gray-700"
-            onClick={() => { setNameSearch(''); setRankFilter([]); setPeriodFrom(''); setPeriodTo('') }}>
+            onClick={() => { setNameSearch(''); setRankFilter([]); setStatusFilter(['active']); setPeriodFrom(''); setPeriodTo('') }}>
             초기화
           </button>
         )}

@@ -94,10 +94,11 @@ function PersonSelector({
           </div>
         </div>
         <div>
-          <p className="text-[10px] text-muted mb-1">재직</p>
-          <div className="flex gap-1">
-            <FilterChip label="재직" active={statusFilter.includes('active')}   onClick={() => toggleStatus('active')} />
-            <FilterChip label="퇴직" active={statusFilter.includes('resigned')} onClick={() => toggleStatus('resigned')} />
+          <p className="text-[10px] text-muted mb-1">상태</p>
+          <div className="flex flex-wrap gap-1">
+            <FilterChip label="재직"     active={statusFilter.includes('active')}   onClick={() => toggleStatus('active')} />
+            <FilterChip label="입사예정" active={statusFilter.includes('upcoming')} onClick={() => toggleStatus('upcoming')} />
+            <FilterChip label="퇴직"     active={statusFilter.includes('resigned')} onClick={() => toggleStatus('resigned')} />
           </div>
         </div>
         {hasFilter && (
@@ -130,6 +131,7 @@ function PersonSelector({
                 <span className="block text-[11px] text-muted">
                   {p.rank}
                   {p.status === 'resigned' && <span className="ml-1 text-red-500">(퇴사)</span>}
+                  {p.status === 'upcoming' && <span className="ml-1 text-blue-500">(입사예정)</span>}
                 </span>
               </button>
             </li>

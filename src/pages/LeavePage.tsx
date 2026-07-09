@@ -167,9 +167,10 @@ export default function LeavePage() {
         </div>
 
         <div className="flex gap-1 items-center">
-          <span className="text-xs text-muted">재직</span>
-          <FilterChip label="재직" active={statusFilter.includes('active')}   onClick={() => toggleStatus('active')} />
-          <FilterChip label="퇴직" active={statusFilter.includes('resigned')} onClick={() => toggleStatus('resigned')} />
+          <span className="text-xs text-muted">상태</span>
+          <FilterChip label="재직"     active={statusFilter.includes('active')}   onClick={() => toggleStatus('active')} />
+          <FilterChip label="입사예정" active={statusFilter.includes('upcoming')} onClick={() => toggleStatus('upcoming')} />
+          <FilterChip label="퇴직"     active={statusFilter.includes('resigned')} onClick={() => toggleStatus('resigned')} />
         </div>
 
         {hasFilter && (
@@ -210,8 +211,8 @@ export default function LeavePage() {
                       <span className="pill bg-brand-100 text-brand-700">{p.rank}</span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`pill text-xs ${(p.status ?? 'active') === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-                        {(p.status ?? 'active') === 'active' ? '재직' : '퇴직'}
+                      <span className={`pill text-xs ${p.status === 'active' ? 'bg-emerald-100 text-emerald-700' : p.status === 'upcoming' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {p.status === 'active' ? '재직' : p.status === 'upcoming' ? '입사예정' : '퇴직'}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">{l.totalAccrued}</td>

@@ -1098,12 +1098,12 @@ interface PersonChipStripProps {
 }
 
 function PersonChipStrip({ people, highlightedPersonIds, onToggleHighlight, onClearAll }: PersonChipStripProps) {
-  // §5.2 T-7: group active people by rank order, name-sorted within each group
+  // §5.2 T-7: active + upcoming people by rank; resigned excluded
   const groups = RANKS
     .map(rank => ({
       rank,
       people: people
-        .filter(p => p.status === 'active' && p.rank === rank)
+        .filter(p => p.status !== 'resigned' && p.rank === rank)
         .sort((a, b) => a.name.localeCompare(b.name, 'ko')),
     }))
     .filter(g => g.people.length > 0)

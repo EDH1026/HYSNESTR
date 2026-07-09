@@ -246,17 +246,17 @@ export default function AssignmentModal({
     return true
   })
 
-  // Only active people appear in the dropdown for new assignments.
-  // Non-active (resigned / upcoming) people are kept if already selected (edit fidelity).
+  // Active + upcoming people selectable; resigned excluded.
+  // Resigned people are kept if already assigned (edit fidelity).
   const selectablePeople = (() => {
-    const active = people.filter(p => p.status === 'active')
+    const nonResigned = people.filter(p => p.status !== 'resigned')
     if (form.personId) {
       const sel = people.find(p => p.id === form.personId)
-      if (sel && sel.status !== 'active' && !active.find(p => p.id === sel.id)) {
-        return [...active, sel]
+      if (sel && sel.status === 'resigned' && !nonResigned.find(p => p.id === sel.id)) {
+        return [...nonResigned, sel]
       }
     }
-    return active
+    return nonResigned
   })()
 
   function validateDates(): string | null {

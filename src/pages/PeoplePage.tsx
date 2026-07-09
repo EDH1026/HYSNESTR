@@ -121,8 +121,9 @@ export default function PeoplePage() {
         </div>
         <div className="flex gap-1 items-center">
           <span className="text-xs text-muted">상태</span>
-          <Chip label="재직" active={statusFilter.includes('active')}   onClick={() => toggleStatus('active')} />
-          <Chip label="퇴직" active={statusFilter.includes('resigned')} onClick={() => toggleStatus('resigned')} />
+          <Chip label="재직"     active={statusFilter.includes('active')}   onClick={() => toggleStatus('active')} />
+          <Chip label="입사예정" active={statusFilter.includes('upcoming')} onClick={() => toggleStatus('upcoming')} />
+          <Chip label="퇴직"     active={statusFilter.includes('resigned')} onClick={() => toggleStatus('resigned')} />
         </div>
         {hasFilter && (
           <button className="text-xs text-muted hover:text-gray-700"
@@ -159,8 +160,8 @@ export default function PeoplePage() {
                       </td>
                       <td className="px-4 py-3 text-muted">{p.role || '—'}</td>
                       <td className="px-4 py-3">
-                        <span className={`pill text-xs ${p.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-                          {p.status === 'active' ? '재직' : '퇴직'}
+                        <span className={`pill text-xs ${p.status === 'active' ? 'bg-emerald-100 text-emerald-700' : p.status === 'upcoming' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                          {p.status === 'active' ? '재직' : p.status === 'upcoming' ? '입사예정' : '퇴직'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
