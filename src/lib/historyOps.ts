@@ -228,7 +228,7 @@ type PersonFields = {
   lpn:              string | null
   hire_date:        string | null
   termination_date: string | null
-  status:           string
+  // status is not persisted — computed at read time from hire_date/termination_date
 }
 
 function toPersonFields(p: Person): PersonFields {
@@ -239,7 +239,6 @@ function toPersonFields(p: Person): PersonFields {
     lpn:              p.lpn,
     hire_date:        p.hire_date,
     termination_date: p.termination_date,
-    status:           p.status,
   }
 }
 

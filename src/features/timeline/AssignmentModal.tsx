@@ -1,4 +1,4 @@
-/**
+﻿/**
  * AssignmentModal — create / edit / view an Assignment.
  *
  * Features added beyond the draft version:
@@ -246,14 +246,13 @@ export default function AssignmentModal({
     return true
   })
 
-  // Exclude resigned people from person dropdown (they can still appear in edit
-  // if they were previously assigned, but hide from new-assignment selection).
+  // Only active people appear in the dropdown for new assignments.
+  // Non-active (resigned / upcoming) people are kept if already selected (edit fidelity).
   const selectablePeople = (() => {
-    const active = people.filter(p => p.status !== 'resigned')
-    // Keep the currently-selected person even if resigned (preserves edit fidelity)
+    const active = people.filter(p => p.status === 'active')
     if (form.personId) {
       const sel = people.find(p => p.id === form.personId)
-      if (sel && sel.status === 'resigned' && !active.find(p => p.id === sel.id)) {
+      if (sel && sel.status !== 'active' && !active.find(p => p.id === sel.id)) {
         return [...active, sel]
       }
     }
@@ -341,7 +340,7 @@ export default function AssignmentModal({
             <option value="">— select person —</option>
             {selectablePeople.map(p => (
               <option key={p.id} value={p.id}>
-                {p.name} ({p.rank}){p.status === 'resigned' ? ' — 퇴직' : ''}
+                {p.name} ({p.rank}){p.status !== 'active' ? ` — ${p.status === 'resigned' ? '퇴직' : '입사예정'}` : ''}
               </option>
             ))}
           </select>

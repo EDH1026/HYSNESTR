@@ -42,7 +42,7 @@ export interface Profile {
   status: 'active' | 'inactive'
 }
 
-export type PersonStatus = 'active' | 'resigned'
+export type PersonStatus = 'active' | 'resigned' | 'upcoming'
 
 /** A team member (人力). Separate from auth account. */
 export interface Person {

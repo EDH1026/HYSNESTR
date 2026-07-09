@@ -26,8 +26,6 @@ export function computeUtil(
 
   for (const p of people) {
     if (p.rank === 'Partner') continue
-    if (p.status === 'resigned' && !p.termination_date) continue  // resigned with no termination date → skip entirely
-
     // Employment window clipped to period
     const empStart = p.hire_date         ? dateToNum(p.hire_date)         : periodStart
     const empEnd   = p.termination_date  ? dateToNum(p.termination_date)  : periodEnd

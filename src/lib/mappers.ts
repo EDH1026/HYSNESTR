@@ -9,8 +9,9 @@
  *    so callers only pass the fields they own.
  */
 
-import type { Person, WorkItem, Assignment, Accrual, Holiday, Rank, PersonStatus } from '@/types'
+import type { Person, WorkItem, Assignment, Accrual, Holiday, Rank } from '@/types'
 import type { Database } from '@/types/database'
+import { getEmploymentStatus } from '@/lib/date'
 
 // ── 1. Key-case converters ────────────────────────────────────
 
@@ -61,17 +62,19 @@ export function toPerson(row: Database['public']['Tables']['people']['Row']): Pe
     lpn?: string | null
     hire_date?: string | null
     termination_date?: string | null
-    status?: string | null
   }
+  const hireDate        = r.hire_date        ?? null
+  const terminationDate = r.termination_date ?? null
   return {
     id:               r.id,
     name:             r.name,
     rank:             r.rank as Person['rank'],
     role:             r.role ?? '',
     lpn:              r.lpn ?? null,
-    hire_date:        r.hire_date ?? null,
-    termination_date: r.termination_date ?? null,
-    status:           (r.status ?? 'active') as Person['status'],
+    hire_date:        hireDate,
+    termination_date: terminationDate,
+    // Status is always computed at read time — the DB column is ignored.
+    status:           getEmploymentStatus(hireDate, terminationDate),
   }
 }
 

@@ -80,6 +80,32 @@ export function isWeekend(n: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Employment status (computed — never stored)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a person's employment status from their hire / termination dates
+ * relative to a reference date (defaults to today).
+ *
+ * Priority:
+ *   hire_date > today           → 'upcoming'  (not yet started)
+ *   termination_date <= today   → 'resigned'  (has left)
+ *   otherwise                   → 'active'
+ *
+ * Uses string comparison (YYYY-MM-DD lexical order == chronological order).
+ */
+export function getEmploymentStatus(
+  hireDate:        string | null | undefined,
+  terminationDate: string | null | undefined,
+  refDate?:        number,   // UTC day number; defaults to today()
+): 'upcoming' | 'active' | 'resigned' {
+  const ref = numToStr(refDate ?? today())
+  if (hireDate && hireDate > ref) return 'upcoming'
+  if (terminationDate && terminationDate <= ref) return 'resigned'
+  return 'active'
+}
+
+// ---------------------------------------------------------------------------
 // Week boundaries (ISO weeks start on Monday)
 // ---------------------------------------------------------------------------
 

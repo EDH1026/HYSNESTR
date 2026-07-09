@@ -5,7 +5,7 @@ import { useCreatePerson, useUpdatePerson, useDeletePerson } from './hooks'
 import { useHistory } from '@/lib/history'
 import { makePersonCreate, makePersonUpdate, makePersonDelete } from '@/lib/historyOps'
 import { today, numToStr } from '@/lib/date'
-import type { Person, Rank, PersonStatus } from '@/types'
+import type { Person, Rank } from '@/types'
 
 const RANKS: Rank[] = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern']
 
@@ -58,7 +58,6 @@ export default function PersonModal({ person, readOnly, onClose }: Props) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setErr(null)
-    const dbStatus: PersonStatus = derivedStatus === '입사예정' ? 'active' : derivedStatus
     const payload = {
       name:             form.name,
       rank:             form.rank,
@@ -66,7 +65,7 @@ export default function PersonModal({ person, readOnly, onClose }: Props) {
       lpn:              form.lpn.trim() || null,
       hire_date:        form.hire_date        || null,
       termination_date: form.termination_date || null,
-      status:           dbStatus,
+      // status is not written to DB — computed at read time from hire_date/termination_date
     }
     try {
       if (isEdit) {

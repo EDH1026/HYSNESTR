@@ -131,7 +131,7 @@ async function commitPeople(rows: PersonRow[], upsertOnLPN: boolean): Promise<Co
       lpn:              r.lpn   || null,
       hire_date:        r.hire_date        || null,
       termination_date: r.termination_date || null,
-      status:           'active',
+      // status is not written — computed at read time from hire_date/termination_date
     }
     const existingId = r.lpn ? lpnMap.get(r.lpn) : undefined
     if (existingId && upsertOnLPN) {
