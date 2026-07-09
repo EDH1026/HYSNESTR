@@ -1,27 +1,21 @@
 /**
- * §5.13 AL-2, AL-2b — 근로기준법 법정연차 자동 계산 (pure, no side effects)
+ * §5.13 AL-2, AL-2b, AL-2d — 근로기준법 법정연차 자동 계산 (pure, no side effects)
  *
  * 근로기준법 제60조 기준:
- * - 첫 해: 매월 만근 시 1일 (최대 11개월 = 11일)
- * - 회계연도(calendar) 기준 — 회사 회계연도 7월 1일 기준 (PRD v2.28):
- *     다음 회계연도 7월 1일: 15 × (입사일~해당 7/1 재직일수 / 365)
- *     이후 매년 7월 1일: min(25, 15 + floor((만근속연수 - 1) / 2))
- * - 입사일(anniversary) 기준:
- *     N번째 주년일: min(25, 15 + floor((N - 1) / 2))
+ * - 신입사원 휴가: 첫 11개월 매월 개근 시 1일 (단일 항목, FY 분리 없음)
+ * - 법정연차 (fiscal 기준): 첫 회계연도 7/1 비례연차, 이후 매년 7/1 가산 연차
+ * - 법정연차 (anniversary 기준): 입사일 주년일마다 가산 연차
+ *
+ * FY 라벨 규칙 (§8): month >= 7 ? year + 1 : year
+ *   예) 2022-07-01 → FY23, 2023-01-01 → FY23
  */
 
-export interface StatutoryLeaveEvent {
-  date:  string   // YYYY-MM-DD — 권리 발생일
-  days:  number
-  kind:  'monthly' | 'annual'
-  label: string
-}
+// ── 공용 날짜 헬퍼 ────────────────────────────────────────────
 
 function r1(n: number): number {
   return Math.round(n * 10) / 10
 }
 
-/** 두 YYYY-MM-DD 사이 일 수 (end 미포함) */
 function daysBetween(startStr: string, endStr: string): number {
   const [sy, sm, sd] = startStr.split('-').map(Number)
   const [ey, em, ed] = endStr.split('-').map(Number)
@@ -30,7 +24,6 @@ function daysBetween(startStr: string, endStr: string): number {
   )
 }
 
-/** YYYY-MM-DD + months 개월 (말일 클램핑) */
 function addMonths(dateStr: string, months: number): string {
   const [y, m, d] = dateStr.split('-').map(Number)
   const totalMonths = (m - 1) + months
@@ -41,15 +34,16 @@ function addMonths(dateStr: string, months: number): string {
   return `${ty}-${String(tm).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
-/** YYYY-MM-DD + years 년 (윤년 클램핑) */
 function addYears(dateStr: string, years: number): string {
   return addMonths(dateStr, years * 12)
 }
 
-/**
- * 입사일~기준일 사이 만 근속연수.
- * 주년일(月·日)이 기준일보다 늦으면 아직 해당 연도 미충족.
- */
+function fyLabelOf(dateStr: string): number {
+  const y = parseInt(dateStr.slice(0, 4), 10)
+  const m = parseInt(dateStr.slice(5, 7), 10)
+  return m >= 7 ? y + 1 : y
+}
+
 function yearsOfEmployment(hireDate: string, grantDate: string): number {
   const hy = parseInt(hireDate.slice(0, 4), 10)
   const hm = parseInt(hireDate.slice(5, 7), 10)
@@ -62,40 +56,79 @@ function yearsOfEmployment(hireDate: string, grantDate: string): number {
   return Math.max(0, years)
 }
 
-// ── Public API ────────────────────────────────────────────────
+// ── 공개 타입 ─────────────────────────────────────────────────
 
+/** 신입사원 휴가: hire_date 이후 첫 11개월 매월 개근 (단일 항목, FY 분리 없음) */
+export interface ProbationItem {
+  kind:  'probation'
+  from:  string   // 첫 번째 월차 발생일 (hireDate + 1개월)
+  to:    string   // 마지막 월차 발생일 (최대 hireDate + 11개월)
+  days:  number   // 개월 수 = 일수
+}
+
+/** 법정연차: 첫 비례연차 또는 매년 가산 연차 */
+export interface AnnualItem {
+  kind:    'annual'
+  date:    string   // 권리 발생일 (YYYY-MM-DD)
+  fyLabel: number   // FY 라벨 (§8: month>=7 ? year+1 : year)
+  days:    number
+  formula: string   // 산출 근거 (예: "기본15일+가산2일=17일 (근속5년)")
+}
+
+export type StatutoryLeaveItem = ProbationItem | AnnualItem
+
+// ── 핵심 함수 ─────────────────────────────────────────────────
+
+/**
+ * 근로기준법 법정연차 항목 목록 반환 (asOfDate 이하 발생분만)
+ *
+ * - anchorType = 'fiscal'      → 회계연도(7/1) 기준
+ * - anchorType = 'anniversary' → 입사일 주년일 기준
+ */
 export function computeStatutoryLeave(
-  hireDate:   string,                         // YYYY-MM-DD
-  anchorType: 'calendar' | 'anniversary',
-  asOfDate:   string,                         // YYYY-MM-DD (이 날짜 이하만)
-): StatutoryLeaveEvent[] {
-  const events: StatutoryLeaveEvent[] = []
-  const hireYear = parseInt(hireDate.slice(0, 4), 10)
+  hireDate:   string,
+  anchorType: 'fiscal' | 'anniversary',
+  asOfDate:   string,
+): StatutoryLeaveItem[] {
+  const items: StatutoryLeaveItem[] = []
 
-  // 첫 11개월 월차 (공통)
+  // 신입사원 휴가: 입사 후 첫 11개월
+  const monthDates: string[] = []
   for (let m = 1; m <= 11; m++) {
     const date = addMonths(hireDate, m)
     if (date > asOfDate) break
-    events.push({ date, days: 1, kind: 'monthly', label: `${m}개월차 월차` })
+    monthDates.push(date)
+  }
+  if (monthDates.length > 0) {
+    items.push({
+      kind: 'probation',
+      from: monthDates[0],
+      to:   monthDates[monthDates.length - 1],
+      days: monthDates.length,
+    })
   }
 
-  if (anchorType === 'calendar') {
-    const hireMonth = parseInt(hireDate.slice(5, 7), 10)
-    const firstFiscalYear = hireMonth < 7 ? hireYear : hireYear + 1
-    const firstFiscalDate = `${firstFiscalYear}-07-01`
+  const hireYear  = parseInt(hireDate.slice(0, 4), 10)
+  const hireMonth = parseInt(hireDate.slice(5, 7), 10)
 
-    if (firstFiscalDate <= asOfDate) {
-      const daysWorked = daysBetween(hireDate, firstFiscalDate)
+  if (anchorType === 'fiscal') {
+    const firstFiscalYear = hireMonth < 7 ? hireYear : hireYear + 1
+
+    // 첫 회계연도 비례연차
+    const firstDate = `${firstFiscalYear}-07-01`
+    if (firstDate <= asOfDate) {
+      const daysWorked = daysBetween(hireDate, firstDate)
       const days = r1(15 * daysWorked / 365)
-      events.push({
-        date: firstFiscalDate,
+      items.push({
+        kind:    'annual',
+        date:    firstDate,
+        fyLabel: fyLabelOf(firstDate),   // Jul → year+1
         days,
-        kind: 'annual',
-        label: `비례연차: 15일×${daysWorked}일/365≈${days}일`,
+        formula: `비례연차: 15일×${daysWorked}일/365≈${days}일`,
       })
     }
 
-    // 이후 매년 7월 1일 — 가산: floor((만근속연수 - 1) / 2)
+    // 이후 매년 7/1 가산 연차
     let fiscalYear = firstFiscalYear + 1
     while (true) {
       const date = `${fiscalYear}-07-01`
@@ -103,29 +136,31 @@ export function computeStatutoryLeave(
       const ye    = yearsOfEmployment(hireDate, date)
       const bonus = Math.min(10, Math.floor((ye - 1) / 2))
       const days  = 15 + bonus
-      events.push({
+      items.push({
+        kind:    'annual',
         date,
+        fyLabel: fyLabelOf(date),        // Jul → year+1
         days,
-        kind: 'annual',
-        label: bonus > 0
+        formula: bonus > 0
           ? `기본15일+가산${bonus}일=${days}일 (근속${ye}년)`
           : `기본15일 (근속${ye}년)`,
       })
       fiscalYear++
     }
   } else {
-    // 입사일 기준: N번째 주년일
+    // 입사일 주년일 기준
     let n = 1
     while (true) {
       const date = addYears(hireDate, n)
       if (date > asOfDate) break
       const bonus = Math.min(10, Math.floor((n - 1) / 2))
       const days  = 15 + bonus
-      events.push({
+      items.push({
+        kind:    'annual',
         date,
+        fyLabel: fyLabelOf(date),
         days,
-        kind: 'annual',
-        label: bonus > 0
+        formula: bonus > 0
           ? `${n}주년: 기본15일+가산${bonus}일=${days}일`
           : `${n}주년: 기본15일`,
       })
@@ -133,61 +168,44 @@ export function computeStatutoryLeave(
     }
   }
 
-  return events
+  return items
 }
 
-export function sumStatutoryLeave(events: StatutoryLeaveEvent[]): number {
-  return r1(events.reduce((s, e) => s + e.days, 0))
+/** 항목 배열 합계 */
+export function sumStatutoryLeave(items: StatutoryLeaveItem[]): number {
+  return r1(items.reduce((s, e) => s + e.days, 0))
 }
 
-/** 이벤트를 역년별로 집계 (자동 입력 버튼용) */
-export function groupByYear(events: StatutoryLeaveEvent[]): Map<number, number> {
-  const map = new Map<number, number>()
-  for (const e of events) {
-    const y = parseInt(e.date.slice(0, 4), 10)
-    map.set(y, r1((map.get(y) ?? 0) + e.days))
-  }
-  return map
-}
+/**
+ * 해당 FY 법정연차 누적치 (TimesheetTab ①용)
+ *
+ * - fiscal basis의 annual 항목 중 fyLabel === currentFyLabel
+ * - 신입사원 월차 중 발생일 >= fyStart 인 개월 수
+ */
+export function sumStatutoryLeaveFY(hireDate: string, asOfDate: string): number {
+  const asOfYear  = parseInt(asOfDate.slice(0, 4), 10)
+  const asOfMonth = parseInt(asOfDate.slice(5, 7), 10)
+  const curFyLabel = asOfMonth >= 7 ? asOfYear + 1 : asOfYear
+  const fyStart    = `${curFyLabel - 1}-07-01`
 
-export interface GrantTypeRow {
-  year:       number
-  grant_type: 'first_year_monthly' | 'annual'
-  days:       number
-  label:      string
-  grantDate?: string  // 'annual' 타입: 적립 기준일 (YYYY-MM-DD = {year}-07-01)
-}
-
-/** 이벤트를 (역년, grant_type)별로 집계 + 산출 라벨 생성 */
-export function groupByYearAndType(events: StatutoryLeaveEvent[]): GrantTypeRow[] {
-  const monthlyMap = new Map<number, { days: number; first: string; last: string }>()
-  const annualMap  = new Map<number, { days: number; label: string; date: string }>()
-
-  for (const e of events) {
-    const y = parseInt(e.date.slice(0, 4), 10)
-    if (e.kind === 'monthly') {
-      const prev = monthlyMap.get(y)
-      if (prev) { prev.days = r1(prev.days + e.days); prev.last = e.date }
-      else       { monthlyMap.set(y, { days: e.days, first: e.date, last: e.date }) }
-    } else {
-      annualMap.set(y, { days: e.days, label: e.label, date: e.date })
-    }
+  // 신입사원 월차 중 FY 이후 발생분
+  let probationDays = 0
+  for (let m = 1; m <= 11; m++) {
+    const date = addMonths(hireDate, m)
+    if (date > asOfDate) break
+    if (date >= fyStart) probationDays++
   }
 
-  const rows: GrantTypeRow[] = []
-  for (const [year, { days, first, last }] of monthlyMap) {
-    const range = first.slice(0, 7) === last.slice(0, 7)
-      ? first.slice(0, 7)
-      : `${first.slice(0, 7)}~${last.slice(0, 7)}`
-    rows.push({
-      year,
-      grant_type: 'first_year_monthly',
-      days,
-      label: `매월개근 ${range} 합계 ${days}일`,
-    })
-  }
-  for (const [year, { days, label, date }] of annualMap)
-    rows.push({ year, grant_type: 'annual', days, label, grantDate: date })
+  // fiscal annual 항목 중 현재 FY 것
+  const items = computeStatutoryLeave(hireDate, 'fiscal', asOfDate)
+  const annualDays = items
+    .filter((i): i is AnnualItem => i.kind === 'annual' && i.fyLabel === curFyLabel)
+    .reduce((s, i) => s + i.days, 0)
 
-  return rows.sort((a, b) => a.year - b.year || a.grant_type.localeCompare(b.grant_type))
+  return r1(probationDays + annualDays)
+}
+
+/** FY 기간 문자열 표시용: fyLabel → "fyLabel-1.07~fyLabel.06" */
+export function fyPeriodStr(fyLabel: number): string {
+  return `${fyLabel - 1}.07~${fyLabel}.06`
 }

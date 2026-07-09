@@ -4,6 +4,8 @@
  * - assistant: 조회 전용 (편집 컨트롤 숨김, RLS로도 차단)
  *
  * 탭: 적립 관리 | 퇴사 정산 | 수치 안내
+ *
+ * v2.33: annual_leave_grants 테이블 폐지 → computeStatutoryLeave 순수 함수로 전환
  */
 import { useState, useMemo, useCallback, type FormEvent } from 'react'
 import { Plus, Trash2, Loader2, AlertTriangle, Eye, Download } from 'lucide-react'
@@ -12,11 +14,13 @@ import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
 import { computeAnnualLeaveSettlement, computeTimesheetFigures } from './annualLeave'
 import type { AnnualLeaveSettlementResult } from './annualLeave'
-import { computeStatutoryLeave, sumStatutoryLeave, groupByYearAndType } from './computeStatutoryLeave'
 import {
-  useGrantsByPerson,
-  useUpsertGrant,
-  useDeleteGrant,
+  computeStatutoryLeave,
+  sumStatutoryLeave,
+  fyPeriodStr,
+} from './computeStatutoryLeave'
+import type { StatutoryLeaveItem } from './computeStatutoryLeave'
+import {
   useAdjustmentsByPerson,
   useCreateAdjustment,
   useDeleteAdjustment,
@@ -28,7 +32,7 @@ import { useAllHolidays }         from '@/features/admin/hooks'
 import { useAllPeople }           from '@/features/people/hooks'
 import { dateToNum, numToStr, today } from '@/lib/date'
 import FilterChip from '@/components/FilterChip'
-import type { Person, Rank, WorkItem, AnnualLeaveGrant, AnnualLeaveAdjustment } from '@/types'
+import type { Person, Rank, WorkItem, AnnualLeaveAdjustment } from '@/types'
 
 // 유급 사용에서 제외할 무급 유형
 const UNPAID_LEAVE = new Set(['리프레시', '휴직'])
@@ -49,7 +53,6 @@ function PersonSelector({
 }) {
   const { data: people = [], isLoading } = useAllPeople()
 
-  // LeavePage(LV-2)와 동일한 필터 상태 — 기본값: 재직만
   const [nameSearch,   setNameSearch]   = useState('')
   const [rankFilter,   setRankFilter]   = useState<Rank[]>([])
   const [statusFilter, setStatusFilter] = useState<string[]>(['active'])
@@ -78,7 +81,6 @@ function PersonSelector({
 
   return (
     <div className="w-60 flex-shrink-0 border-r border-border flex flex-col h-full">
-      {/* 필터 영역 — LeavePage(LV-2)와 동일한 FilterChip 사용 */}
       <div className="px-3 pt-3 pb-2 border-b border-border space-y-2">
         <input
           className="input py-1 text-xs w-full"
@@ -147,47 +149,49 @@ function PersonSelector({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Tab 1: 적립 관리
+// Statutory leave item badge
 // ─────────────────────────────────────────────────────────────
 
-function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) {
-  const { data: grants = [],      isLoading: lgA } = useGrantsByPerson(person.id)
-  const { data: adjustments = [], isLoading: lgB } = useAdjustmentsByPerson(person.id)
-  const upsertGrant     = useUpsertGrant()
-  const deleteGrant     = useDeleteGrant()
-  const createAdj       = useCreateAdjustment()
-  const deleteAdj       = useDeleteAdjustment()
+function ItemBadge({ kind }: { kind: 'probation' | 'annual' }) {
+  if (kind === 'probation') {
+    return (
+      <span className="inline-block rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+        신입사원 휴가
+      </span>
+    )
+  }
+  return (
+    <span className="inline-block rounded-full bg-brand-100 px-1.5 py-0.5 text-[10px] font-medium text-brand-700">
+      법정연차
+    </span>
+  )
+}
 
-  const [editGrant, setEditGrant] = useState<AnnualLeaveGrant | null>(null)
-  const [grantForm, setGrantForm] = useState({ year: String(new Date().getFullYear()), days: '', note: '' })
-  const [grantErr,  setGrantErr]  = useState<string | null>(null)
-  const [showAddGrant, setShowAddGrant] = useState(false)
-  const [autoCalcPending, setAutoCalcPending] = useState(false)
+// ─────────────────────────────────────────────────────────────
+// Tab 1: 적립 관리 (수동 보정 전용 — 자동계산은 읽기 전용 표시)
+// ─────────────────────────────────────────────────────────────
 
-  const [adjForm, setAdjForm] = useState({ direction: 'accrual' as 'accrual' | 'usage', days: '', date: numToStr(today()), note: '' })
-  const [adjErr,  setAdjErr]  = useState<string | null>(null)
+function AdjustmentsTab({ person, readOnly }: { person: Person; readOnly: boolean }) {
+  const { data: adjustments = [], isLoading } = useAdjustmentsByPerson(person.id)
+  const createAdj = useCreateAdjustment()
+  const deleteAdj = useDeleteAdjustment()
+
+  const [adjForm, setAdjForm] = useState({
+    direction: 'accrual' as 'accrual' | 'usage',
+    days: '',
+    date: numToStr(today()),
+    note: '',
+  })
+  const [adjErr,    setAdjErr]    = useState<string | null>(null)
   const [showAddAdj, setShowAddAdj] = useState(false)
 
-  const isLoading = lgA || lgB
-
-  async function handleGrantSubmit(e: FormEvent) {
-    e.preventDefault()
-    const year = parseInt(grantForm.year, 10)
-    const days = parseFloat(grantForm.days)
-    if (isNaN(year) || year < 2000) { setGrantErr('연도를 입력하세요 (예: 2024)'); return }
-    if (isNaN(days) || days < 0) { setGrantErr('0 이상의 일수를 입력하세요'); return }
-    setGrantErr(null)
-    try {
-      await upsertGrant.mutateAsync({ id: editGrant?.id, person_id: person.id, year, days, note: grantForm.note || null })
-      setShowAddGrant(false); setEditGrant(null); setGrantForm({ year: String(new Date().getFullYear()), days: '', note: '' })
-    } catch (e) { setGrantErr(e instanceof Error ? e.message : '저장 실패') }
-  }
-
-  function startEditGrant(g: AnnualLeaveGrant) {
-    setEditGrant(g)
-    setGrantForm({ year: String(g.year), days: String(g.days), note: g.note ?? '' })
-    setShowAddGrant(true)
-  }
+  // 법정연차 자동 계산 (읽기 전용 표시, 오늘 기준)
+  const todayStr = numToStr(today())
+  const statutoryItems = useMemo(() =>
+    person.hire_date
+      ? computeStatutoryLeave(person.hire_date, 'fiscal', todayStr)
+      : [],
+  [person.hire_date, todayStr])
 
   async function handleAdjSubmit(e: FormEvent) {
     e.preventDefault()
@@ -196,47 +200,17 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
     if (!adjForm.date) { setAdjErr('날짜를 선택하세요'); return }
     setAdjErr(null)
     try {
-      await createAdj.mutateAsync({ person_id: person.id, direction: adjForm.direction, days, date: adjForm.date, note: adjForm.note || null })
-      setShowAddAdj(false); setAdjForm({ direction: 'accrual', days: '', date: numToStr(today()), note: '' })
-    } catch (e) { setAdjErr(e instanceof Error ? e.message : '저장 실패') }
-  }
-
-  async function handleAutoCalc() {
-    if (!person.hire_date) return
-    const events = computeStatutoryLeave(person.hire_date, 'calendar', numToStr(today()))
-    const rows = groupByYearAndType(events)
-    if (rows.length === 0) {
-      window.alert('아직 발생한 법정연차가 없습니다.')
-      return
-    }
-    const lines = rows.map(r =>
-      `  ${r.year}년 (${r.grant_type === 'first_year_monthly' ? '월차' : '연차'}): ${r.days}일`,
-    ).join('\n')
-    if (!window.confirm(
-      `다음 법정연차를 자동 입력합니다 (회계연도 기준):\n${lines}\n\n` +
-      `기존 "근로기준법 자동계산" 비고 항목은 덮어씁니다. 계속할까요?`,
-    )) return
-    setAutoCalcPending(true)
-    try {
-      for (const row of rows) {
-        const existing = grants.find(
-          g => g.year === row.year &&
-               g.grant_type === row.grant_type &&
-               (g.note ?? '').startsWith('근로기준법 자동계산'),
-        )
-        await upsertGrant.mutateAsync({
-          id:         existing?.id,
-          person_id:  person.id,
-          year:       row.year,
-          days:       row.days,
-          grant_type: row.grant_type,
-          note:       `근로기준법 자동계산 (회계연도) | ${row.label}`,
-        })
-      }
+      await createAdj.mutateAsync({
+        person_id: person.id,
+        direction: adjForm.direction,
+        days,
+        date:      adjForm.date,
+        note:      adjForm.note || null,
+      })
+      setShowAddAdj(false)
+      setAdjForm({ direction: 'accrual', days: '', date: numToStr(today()), note: '' })
     } catch (e) {
-      window.alert('저장 중 오류: ' + (e instanceof Error ? e.message : String(e)))
-    } finally {
-      setAutoCalcPending(false)
+      setAdjErr(e instanceof Error ? e.message : '저장 실패')
     }
   }
 
@@ -244,128 +218,67 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
 
   return (
     <div className="space-y-8">
-      {/* Grants section */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-800">법정연차 적립</h3>
-            <p className="text-xs text-muted">회계연도(7월 1일) 기준, 이월 없음</p>
+      {/* 법정연차 자동 계산 (읽기 전용) */}
+      {person.hire_date && (
+        <section>
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-gray-800">법정연차 자동 계산</h3>
+            <p className="text-xs text-muted">회계연도(7월 1일) 기준 — 근로기준법 제60조, 오늘({todayStr}) 기준</p>
           </div>
-          {!readOnly && !showAddGrant && (
-            <div className="flex gap-2">
-              {person.hire_date && (
-                <button
-                  onClick={handleAutoCalc}
-                  disabled={autoCalcPending}
-                  className="btn-secondary text-xs py-0.5 gap-1 disabled:opacity-40"
-                >
-                  {autoCalcPending ? <Loader2 size={11} className="animate-spin" /> : null}
-                  법정연차 자동 계산
-                </button>
-              )}
-              <button onClick={() => { setShowAddGrant(true); setEditGrant(null); setGrantForm({ year: String(new Date().getFullYear()), days: '', note: '' }) }}
-                className="btn-secondary text-xs py-0.5 gap-1"><Plus size={11} /> 연도 추가</button>
+          {statutoryItems.length === 0 ? (
+            <p className="text-xs text-muted text-center py-4">아직 발생한 법정연차·신입사원 휴가 없음</p>
+          ) : (
+            <div className="card p-0 overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-50 border-b border-border text-muted">
+                    <th className="px-3 py-2 text-left font-medium">유형</th>
+                    <th className="px-3 py-2 text-left font-medium">FY / 기준일</th>
+                    <th className="px-3 py-2 text-left font-medium">산출 근거</th>
+                    <th className="px-3 py-2 text-right font-medium">일수</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {statutoryItems.map((item, i) => {
+                    if (item.kind === 'probation') {
+                      return (
+                        <tr key={`p-${i}`} className="hover:bg-surface-50">
+                          <td className="px-3 py-2"><ItemBadge kind="probation" /></td>
+                          <td className="px-3 py-2 text-muted font-mono text-[11px]">{item.from}~{item.to}</td>
+                          <td className="px-3 py-2 text-muted">매월 개근 {item.days}개월</td>
+                          <td className="px-3 py-2 text-right font-semibold text-gray-700">{item.days}일</td>
+                        </tr>
+                      )
+                    }
+                    return (
+                      <tr key={`a-${i}`} className="hover:bg-surface-50">
+                        <td className="px-3 py-2"><ItemBadge kind="annual" /></td>
+                        <td className="px-3 py-2">
+                          <span className="font-medium text-brand-700">FY{item.fyLabel}</span>
+                          <span className="ml-1 text-muted text-[10px]">({fyPeriodStr(item.fyLabel)})</span>
+                          <div className="font-mono text-[10px] text-muted">{item.date}</div>
+                        </td>
+                        <td className="px-3 py-2 text-muted">{item.formula}</td>
+                        <td className="px-3 py-2 text-right font-semibold text-brand-700">{item.days}일</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-surface-50 border-t-2 border-border">
+                    <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">합계 (오늘 기준 누적)</td>
+                    <td className="px-3 py-2 text-right font-bold text-brand-700">
+                      {sumStatutoryLeave(statutoryItems)}일
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
           )}
-        </div>
+        </section>
+      )}
 
-        {!readOnly && showAddGrant && (
-          <form onSubmit={handleGrantSubmit} className="rounded-md border border-brand-200 bg-brand-50 p-3 space-y-3 mb-3">
-            <p className="text-xs font-semibold text-brand-800">{editGrant ? '적립 수정' : '연도별 적립 추가'}</p>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <label className="mb-0.5 block text-xs text-gray-600">연도</label>
-                <input required type="number" min="2000" max="2100" className="input py-1 text-xs"
-                  value={grantForm.year} onChange={e => setGrantForm(f => ({ ...f, year: e.target.value }))} />
-              </div>
-              <div>
-                <label className="mb-0.5 block text-xs text-gray-600">일수</label>
-                <input required type="number" step="0.5" min="0" className="input py-1 text-xs"
-                  placeholder="예: 15"
-                  value={grantForm.days} onChange={e => setGrantForm(f => ({ ...f, days: e.target.value }))} />
-              </div>
-              <div>
-                <label className="mb-0.5 block text-xs text-gray-600">비고</label>
-                <input type="text" className="input py-1 text-xs" placeholder="선택"
-                  value={grantForm.note} onChange={e => setGrantForm(f => ({ ...f, note: e.target.value }))} />
-              </div>
-            </div>
-            {grantErr && <p className="text-xs text-red-600">{grantErr}</p>}
-            <div className="flex gap-2">
-              <button type="submit" disabled={upsertGrant.isPending} className="btn-primary text-xs py-1 flex-1">
-                {upsertGrant.isPending ? <Loader2 size={11} className="animate-spin" /> : '저장'}
-              </button>
-              <button type="button" onClick={() => { setShowAddGrant(false); setEditGrant(null) }} className="btn-secondary text-xs py-1">취소</button>
-            </div>
-          </form>
-        )}
-
-        {grants.length === 0 ? (
-          <p className="text-xs text-muted text-center py-4">적립 내역 없음</p>
-        ) : (
-          <div className="card p-0 overflow-hidden">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="bg-surface-50 border-b border-border text-muted">
-                  <th className="px-3 py-2 text-left font-medium">연도</th>
-                  <th className="px-3 py-2 text-left font-medium">기준일</th>
-                  <th className="px-3 py-2 text-right font-medium">일수</th>
-                  <th className="px-3 py-2 text-left font-medium">비고 (산출 근거)</th>
-                  {!readOnly && <th className="px-2 py-2 w-16 text-center font-medium">작업</th>}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {grants.map(g => {
-                  const grantDateStr = g.grant_type === 'annual' ? `${g.year}-07-01` : '—'
-                  const noteDetail = (() => {
-                    if (!g.note) return '—'
-                    const pipe = g.note.indexOf(' | ')
-                    return pipe >= 0 ? g.note.slice(pipe + 3) : g.note
-                  })()
-                  return (
-                    <tr key={g.id} className="hover:bg-surface-50">
-                      <td className="px-3 py-2 font-medium">
-                        {g.year}년
-                        {g.grant_type === 'first_year_monthly' && (
-                          <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">월차</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-muted font-mono">{grantDateStr}</td>
-                      <td className="px-3 py-2 text-right font-semibold text-brand-700">{g.days}일</td>
-                      <td className="px-3 py-2 text-muted max-w-[220px] truncate" title={g.note ?? undefined}>{noteDetail}</td>
-                      {!readOnly && (
-                        <td className="px-2 py-2 text-center">
-                          <button onClick={() => startEditGrant(g)} className="rounded px-1.5 py-0.5 text-[10px] text-brand-600 hover:bg-brand-50 mr-1">수정</button>
-                          <button onClick={() => { if (confirm('삭제할까요?')) deleteGrant.mutate({ id: g.id, personId: person.id }) }}
-                            className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
-                            <Trash2 size={11} />
-                          </button>
-                        </td>
-                      )}
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* 입사일 기준 참고값 (AL-2c: 비교·검증용, 항상 표시) */}
-        {person.hire_date && (() => {
-          const annivTotal = sumStatutoryLeave(
-            computeStatutoryLeave(person.hire_date, 'anniversary', numToStr(today())),
-          )
-          return (
-            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted border-t border-border pt-2">
-              <span>입사일 기준 참고:</span>
-              <span className="font-semibold text-gray-700">{annivTotal}일</span>
-              <span className="text-[10px]">(주년일 기준 합산, 재직 여부 무관)</span>
-            </div>
-          )
-        })()}
-      </section>
-
-      {/* Adjustments section */}
+      {/* 수동 보정 */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <div>
@@ -373,7 +286,9 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
             <p className="text-xs text-muted">특이사항에 따른 +/- 조정 (사유 기재 권장)</p>
           </div>
           {!readOnly && !showAddAdj && (
-            <button onClick={() => setShowAddAdj(true)} className="btn-secondary text-xs py-0.5 gap-1"><Plus size={11} /> 보정 추가</button>
+            <button onClick={() => setShowAddAdj(true)} className="btn-secondary text-xs py-0.5 gap-1">
+              <Plus size={11} /> 보정 추가
+            </button>
           )}
         </div>
 
@@ -447,8 +362,10 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
                     <td className="px-3 py-2 text-muted">{a.note ?? '—'}</td>
                     {!readOnly && (
                       <td className="px-2 py-2">
-                        <button onClick={() => { if (confirm('삭제할까요?')) deleteAdj.mutate({ id: a.id, personId: person.id }) }}
-                          className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
+                        <button
+                          onClick={() => { if (confirm('삭제할까요?')) deleteAdj.mutate({ id: a.id, personId: person.id }) }}
+                          className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
+                        >
                           <Trash2 size={11} />
                         </button>
                       </td>
@@ -473,10 +390,9 @@ function usePersonData(personId: string, asOfStr: string) {
   const { data: accruals   = [], isLoading: lb } = useAccrualsByPerson(personId)
   const { data: workItems  = [], isLoading: lw } = useAllWorkItems()
   const { data: holidays   = [], isLoading: lh } = useAllHolidays()
-  const { data: grants     = [], isLoading: lg } = useGrantsByPerson(personId)
   const { data: adjustments= [], isLoading: lj } = useAdjustmentsByPerson(personId)
 
-  const isLoading = la || lb || lw || lh || lg || lj
+  const isLoading = la || lb || lw || lh || lj
 
   const holidaySet = useMemo(() => {
     const yr = new Date().getFullYear()
@@ -492,7 +408,7 @@ function usePersonData(personId: string, asOfStr: string) {
     return computeLedger(personId, { workItems, assignments, accruals, isHoliday, today: asOf })
   }, [personId, workItems, assignments, accruals, isHoliday, asOf, isLoading])
 
-  return { isLoading, ledger, grants, adjustments, workItems }
+  return { isLoading, ledger, adjustments, workItems }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -538,33 +454,74 @@ function triggerDownload(content: string, filename: string) {
   URL.revokeObjectURL(url)
 }
 
+function renderStatutoryItemsHtml(
+  items: StatutoryLeaveItem[],
+  adjRows: AnnualLeaveAdjustment[],
+  subtotal: number,
+  adjustmentsTotal: number,
+  isAdopted: boolean,
+): string {
+  const adoptedClass = isAdopted ? 'chosen-a' : 'unchosen'
+  const adoptedBadge = isAdopted ? '<span class="badge badge-a">채택</span>' : ''
+
+  const itemRows = items.map(item => {
+    if (item.kind === 'probation') {
+      return `<tr>
+        <td><span class="pill pill-gray">신입사원 휴가</span></td>
+        <td class="mono">${escHtml(item.from)}~${escHtml(item.to)}</td>
+        <td>매월 개근 ${escHtml(item.days)}개월</td>
+        <td class="num pos">+${escHtml(item.days)}</td></tr>`
+    }
+    return `<tr>
+      <td><span class="pill pill-blue">법정연차</span></td>
+      <td><strong>FY${escHtml(item.fyLabel)}</strong> <span class="mono" style="font-size:11px">${escHtml(item.date)}</span></td>
+      <td>${escHtml(item.formula)}</td>
+      <td class="num pos">+${escHtml(item.days)}</td></tr>`
+  })
+
+  const adjHtml = adjRows.map(a => `<tr>
+    <td><span class="pill ${a.direction === 'accrual' ? 'pill-green' : 'pill-red'}">${a.direction === 'accrual' ? '보정+' : '보정−'}</span></td>
+    <td class="mono">${escHtml(a.date)}</td>
+    <td>${escHtml(a.note ?? '—')}</td>
+    <td class="num ${a.direction === 'accrual' ? 'pos' : 'neg'}">${a.direction === 'accrual' ? '+' : '−'}${escHtml(Math.abs(a.days))}</td></tr>`)
+
+  const totalSign  = adjustmentsTotal >= 0 ? '+' : ''
+  const grandTotal = Math.round((subtotal + adjustmentsTotal) * 10) / 10
+
+  return `
+    <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px">
+      <span class="${adoptedClass}" style="font-size:12px;font-weight:600">소계 ${grandTotal}일</span>
+      ${adoptedBadge}
+    </div>
+    <table>
+      <thead><tr><th>유형</th><th>FY / 기준일</th><th>산출 근거</th><th>일수</th></tr></thead>
+      <tbody>
+        ${itemRows.join('')}
+        ${adjHtml.join('')}
+        ${items.length === 0 && adjRows.length === 0 ? '<tr><td colspan="4" class="empty">내역 없음</td></tr>' : ''}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="3">순수 법정연차 소계 / 수동 보정 ${totalSign}${adjustmentsTotal}일</td>
+          <td class="num">${subtotal}일 / ${totalSign}${adjustmentsTotal}일</td>
+        </tr>
+      </tfoot>
+    </table>`
+}
+
 function generateSettlementHtml(
-  person:       Person,
-  asOfStr:      string,
-  grantRows:    AnnualLeaveGrant[],
-  adjRows:      AnnualLeaveAdjustment[],
-  accrualRows:  LedgerAccrualEntry[],
-  paidUsages:   LedgerUsageEntry[],
-  result:       AnnualLeaveSettlementResult,
-  workItemById: Map<string, WorkItem>,
-  accrualById:  Map<string, LedgerAccrualEntry>,
+  person:          Person,
+  asOfStr:         string,
+  adjRows:         AnnualLeaveAdjustment[],
+  accrualRows:     LedgerAccrualEntry[],
+  paidUsages:      LedgerUsageEntry[],
+  result:          AnnualLeaveSettlementResult,
+  workItemById:    Map<string, WorkItem>,
+  accrualById:     Map<string, LedgerAccrualEntry>,
 ): string {
   const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
   const isTeam    = result.entitlementBasis === 'team'
-
-  const t1 = [
-    ...grantRows.map(g => `<tr>
-      <td><span class="pill pill-blue">법정연차</span></td>
-      <td>${escHtml(g.year)}년</td>
-      <td>${escHtml(g.note ?? '—')}</td>
-      <td class="num pos">+${escHtml(g.days)}</td></tr>`),
-    ...adjRows.map(a => `<tr>
-      <td><span class="pill ${a.direction === 'accrual' ? 'pill-green' : 'pill-red'}">${a.direction === 'accrual' ? '보정+' : '보정−'}</span></td>
-      <td class="mono">${escHtml(a.date)}</td>
-      <td>${escHtml(a.note ?? '—')}</td>
-      <td class="num ${a.direction === 'accrual' ? 'pos' : 'neg'}">${a.direction === 'accrual' ? '+' : '−'}${escHtml(Math.abs(a.days))}</td></tr>`),
-  ]
-  if (!t1.length) t1.push('<tr><td colspan="4" class="empty">내역 없음</td></tr>')
+  const isFiscal  = result.adoptedBasis === 'fiscal' || result.adoptedBasis === 'equal'
 
   const t2 = accrualRows.length
     ? accrualRows.map(a => `<tr>
@@ -587,39 +544,24 @@ function generateSettlementHtml(
       })
     : ['<tr><td colspan="4" class="empty">내역 없음</td></tr>']
 
-  const netSign = result.netSettlement > 0 ? '+' : ''
-  const excessRow   = result.excess    > 0 ? `<div class="summary-row err"><span>초과 사용분 (퇴사 시 차감)</span><span class="sv">−${result.excess}일</span></div>` : ''
-  const shortfallRow= result.shortfall > 0 ? `<div class="summary-row ok"><span>미달 보상분 (퇴사 시 보상)</span><span class="sv">+${result.shortfall}일</span></div>` : ''
-  const evenRow     = (result.excess === 0 && result.shortfall === 0) ? `<div class="summary-row muted"><span>초과/미달 없음 (권리 = 사용)</span></div>` : ''
-
-  // AL-3a: 법정연차 산정 기준 비교 (hire_date 있을 때만)
-  const statutoryCompareHtml = result.adoptedBasis !== 'stored' ? `
-    <div class="summary-row" style="flex-direction:column;align-items:flex-start;gap:6px;background:#eff6ff">
-      <span style="font-size:11px;color:#2563eb;font-weight:600">법정연차 산정 기준 (근로기준법 자동계산)</span>
-      <div class="cand">
-        <span class="${result.adoptedBasis !== 'anniversary' ? 'chosen-a' : 'unchosen'}">
-          회계연도 기준${result.adoptedBasis !== 'anniversary' ? '<span class="badge badge-a">채택</span>' : ''}
-        </span>
-        <span class="sv-sm ${result.adoptedBasis !== 'anniversary' ? 'chosen-a' : 'unchosen'}">${result.statutoryCalendar}일</span>
-      </div>
-      <div class="cand">
-        <span class="${result.adoptedBasis === 'anniversary' ? 'chosen-b' : 'unchosen'}">
-          입사일 기준${result.adoptedBasis === 'anniversary' ? '<span class="badge badge-b">채택</span>' : ''}
-        </span>
-        <span class="sv-sm ${result.adoptedBasis === 'anniversary' ? 'chosen-b' : 'unchosen'}">${result.statutoryAnniversary}일</span>
-      </div>
-    </div>` : ''
+  const netSign      = result.netSettlement > 0 ? '+' : ''
+  const excessRow    = result.excess    > 0 ? `<div class="summary-row err"><span>초과 사용분 (퇴사 시 차감)</span><span class="sv">−${result.excess}일</span></div>` : ''
+  const shortfallRow = result.shortfall > 0 ? `<div class="summary-row ok"><span>미달 보상분 (퇴사 시 보상)</span><span class="sv">+${result.shortfall}일</span></div>` : ''
+  const evenRow      = (result.excess === 0 && result.shortfall === 0) ? `<div class="summary-row muted"><span>초과/미달 없음 (권리 = 사용)</span></div>` : ''
 
   const css = `
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
-      font-size:13px;line-height:1.6;color:#111827;max-width:880px;margin:0 auto;padding:48px 40px}
+      font-size:13px;line-height:1.6;color:#111827;max-width:920px;margin:0 auto;padding:48px 40px}
     header{border-bottom:2px solid #2563eb;padding-bottom:18px;margin-bottom:32px}
     h1{font-size:22px;font-weight:700;color:#111827}
     .pi{margin-top:6px;color:#374151;font-size:14px;font-weight:500}
     .meta{margin-top:3px;color:#6b7280;font-size:12px}
     section{margin-bottom:28px}
     h2{font-size:13px;font-weight:600;color:#1e40af;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #e5e7eb}
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .col-box{border:1px solid #e5e7eb;border-radius:8px;padding:12px}
+    .col-title{font-size:12px;font-weight:600;margin-bottom:8px}
     table{width:100%;border-collapse:collapse;font-size:12px}
     th{background:#f9fafb;text-align:left;padding:7px 10px;font-weight:500;color:#6b7280;border:1px solid #e5e7eb;white-space:nowrap}
     td{padding:6px 10px;border:1px solid #e5e7eb;color:#374151;vertical-align:top}
@@ -630,6 +572,7 @@ function generateSettlementHtml(
     .pos{color:#065f46}.neg{color:#b91c1c}
     .pill{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:500}
     .pill-blue{background:#eef2ff;color:#4338ca}
+    .pill-gray{background:#f3f4f6;color:#374151}
     .pill-green{background:#ecfdf5;color:#065f46}
     .pill-red{background:#fef2f2;color:#b91c1c}
     .pill-purple{background:#f5f3ff;color:#7c3aed}
@@ -645,11 +588,11 @@ function generateSettlementHtml(
     .sv{font-variant-numeric:tabular-nums;font-size:15px;font-weight:700}
     .sv-sm{font-variant-numeric:tabular-nums;font-size:13px;font-weight:700}
     .chosen-a{color:#1d4ed8}.chosen-b{color:#7c3aed}.unchosen{color:#9ca3af}
-    .candidates{padding:10px 14px;border-bottom:1px solid #e5e7eb;background:#f9fafb;display:grid;gap:6px}
-    .cand{display:flex;align-items:center;justify-content:space-between;font-size:12px}
+    .cand{display:flex;align-items:center;justify-content:space-between;font-size:12px;padding:8px 14px;border-bottom:1px solid #e5e7eb}
     .badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:500;margin-left:5px}
     .badge-a{background:#dbeafe;color:#1e40af}.badge-b{background:#ede9fe;color:#6d28d9}
     .hint{font-size:11px;color:#9ca3af;margin-left:5px}
+    .mono{font-family:ui-monospace,monospace;font-size:11px}
     @media print{body{padding:20px;max-width:none}@page{margin:20mm;size:A4}section{break-inside:avoid}}
   `
 
@@ -671,11 +614,17 @@ function generateSettlementHtml(
 
 <section>
   <h2>① 법정연차 적립·보정 내역</h2>
-  <table>
-    <thead><tr><th>항목</th><th>날짜/연도</th><th>사유</th><th>일수</th></tr></thead>
-    <tbody>${t1.join('')}</tbody>
-    <tfoot><tr><td colspan="3">법정연차 누적 합계</td><td class="num">${result.statutory}일</td></tr></tfoot>
-  </table>
+  <div class="two-col">
+    <div class="col-box">
+      <div class="col-title" style="color:#1d4ed8">회계연도(FY) 기준</div>
+      ${renderStatutoryItemsHtml(result.fiscalItems, adjRows, result.fiscalSubtotal, result.adjustmentsTotal, isFiscal)}
+    </div>
+    <div class="col-box">
+      <div class="col-title" style="color:#7c3aed">입사일 기준</div>
+      ${renderStatutoryItemsHtml(result.anniversaryItems, adjRows, result.anniversarySubtotal, result.adjustmentsTotal, !isFiscal && result.adoptedBasis !== 'none')}
+    </div>
+  </div>
+  <p style="margin-top:8px;font-size:12px;color:#6b7280">채택된 법정연차 = <strong>${result.statutory}일</strong> (수동 보정 포함)</p>
 </section>
 
 <section>
@@ -699,23 +648,20 @@ function generateSettlementHtml(
 <section>
   <h2>정산 요약</h2>
   <div class="sb">
-    ${statutoryCompareHtml}
-    <div class="candidates">
-      <div class="cand">
-        <span class="${!isTeam ? 'chosen-a' : 'unchosen'}">
-          (a) 법정연차+주말/휴일대체+특별휴가
-          <span class="hint">(${result.statutory}+${result.weekendSub}+${result.specialLeave}일)</span>
-          ${!isTeam ? '<span class="badge badge-a">채택</span>' : ''}
-        </span>
-        <span class="sv-sm ${!isTeam ? 'chosen-a' : 'unchosen'}">${result.candidateA}일</span>
-      </div>
-      <div class="cand">
-        <span class="${isTeam ? 'chosen-b' : 'unchosen'}">
-          (b) 팀 정당 적립 합
-          ${isTeam ? '<span class="badge badge-b">채택</span>' : ''}
-        </span>
-        <span class="sv-sm ${isTeam ? 'chosen-b' : 'unchosen'}">${result.teamAccrued}일</span>
-      </div>
+    <div class="cand">
+      <span class="${!isTeam ? 'chosen-a' : 'unchosen'}">
+        (a) 법정연차+주말/휴일대체+특별휴가
+        <span class="hint">(${result.statutory}+${result.weekendSub}+${result.specialLeave}일)</span>
+        ${!isTeam ? '<span class="badge badge-a">채택</span>' : ''}
+      </span>
+      <span class="sv-sm ${!isTeam ? 'chosen-a' : 'unchosen'}">${result.candidateA}일</span>
+    </div>
+    <div class="cand">
+      <span class="${isTeam ? 'chosen-b' : 'unchosen'}">
+        (b) 팀 정당 적립 합
+        ${isTeam ? '<span class="badge badge-b">채택</span>' : ''}
+      </span>
+      <span class="sv-sm ${isTeam ? 'chosen-b' : 'unchosen'}">${result.teamAccrued}일</span>
     </div>
     <div class="summary-row">
       <span>총 휴가 권리 <span class="hint">max(a, b)</span></span>
@@ -740,12 +686,99 @@ function generateSettlementHtml(
 // Tab 2: 퇴사 정산
 // ─────────────────────────────────────────────────────────────
 
+/** 법정연차 항목 목록 렌더 (FY 또는 입사일 기준) */
+function StatutorySection({
+  title,
+  titleColor,
+  items,
+  adjRows,
+  subtotal,
+  adjustmentsTotal,
+  isAdopted,
+}: {
+  title:            string
+  titleColor:       string
+  items:            StatutoryLeaveItem[]
+  adjRows:          AnnualLeaveAdjustment[]
+  subtotal:         number
+  adjustmentsTotal: number
+  isAdopted:        boolean
+}) {
+  const grandTotal = Math.round((subtotal + adjustmentsTotal) * 10) / 10
+  return (
+    <div className={`rounded-lg border ${isAdopted ? 'border-brand-300 bg-blue-50/50' : 'border-border bg-surface-50'} overflow-hidden`}>
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+        <span className={`text-xs font-semibold ${titleColor}`}>{title}</span>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs tabular-nums font-bold ${isAdopted ? 'text-brand-700' : 'text-gray-500'}`}>
+            {grandTotal}일
+          </span>
+          {isAdopted && <span className="pill bg-brand-100 text-brand-700 text-[10px]">채택</span>}
+        </div>
+      </div>
+      <table className="w-full text-xs">
+        <tbody className="divide-y divide-border">
+          {items.map((item, i) => {
+            if (item.kind === 'probation') {
+              return (
+                <tr key={`p-${i}`} className="hover:bg-white/60">
+                  <td className="px-3 py-1.5"><ItemBadge kind="probation" /></td>
+                  <td className="px-3 py-1.5 font-mono text-[10px] text-muted whitespace-nowrap">{item.from}~{item.to}</td>
+                  <td className="px-3 py-1.5 text-muted">매월 개근 {item.days}개월</td>
+                  <td className="px-3 py-1.5 text-right font-semibold text-gray-700">+{item.days}</td>
+                </tr>
+              )
+            }
+            return (
+              <tr key={`a-${i}`} className="hover:bg-white/60">
+                <td className="px-3 py-1.5"><ItemBadge kind="annual" /></td>
+                <td className="px-3 py-1.5">
+                  <span className="font-semibold text-brand-700">FY{item.fyLabel}</span>
+                  <span className="ml-1 text-[10px] text-muted">({fyPeriodStr(item.fyLabel)})</span>
+                  <div className="font-mono text-[10px] text-muted">{item.date}</div>
+                </td>
+                <td className="px-3 py-1.5 text-muted">{item.formula}</td>
+                <td className="px-3 py-1.5 text-right font-semibold text-brand-700">+{item.days}</td>
+              </tr>
+            )
+          })}
+          {adjRows.map(a => (
+            <tr key={`adj-${a.id}`} className="hover:bg-white/60">
+              <td className="px-3 py-1.5">
+                <span className={`pill text-[10px] ${a.direction === 'accrual' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                  {a.direction === 'accrual' ? '보정+' : '보정−'}
+                </span>
+              </td>
+              <td className="px-3 py-1.5 font-mono text-[10px] text-muted">{a.date}</td>
+              <td className="px-3 py-1.5 text-muted">{a.note ?? '—'}</td>
+              <td className={`px-3 py-1.5 text-right font-semibold ${a.direction === 'accrual' ? 'text-emerald-700' : 'text-red-600'}`}>
+                {a.direction === 'accrual' ? '+' : '−'}{Math.abs(a.days)}
+              </td>
+            </tr>
+          ))}
+          {items.length === 0 && adjRows.length === 0 && (
+            <tr><td colSpan={4} className="px-3 py-3 text-center text-muted">내역 없음</td></tr>
+          )}
+        </tbody>
+        <tfoot>
+          <tr className="bg-surface-50/60 border-t-2 border-border">
+            <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">
+              법정연차 소계 + 수동 보정 {adjustmentsTotal >= 0 ? '+' : ''}{adjustmentsTotal}일
+            </td>
+            <td className={`px-3 py-2 text-right font-bold ${isAdopted ? 'text-brand-700' : 'text-gray-600'}`}>
+              {grandTotal}일
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  )
+}
+
 function SettlementTab({ person }: { person: Person }) {
   const [asOfStr, setAsOfStr] = useState(numToStr(today()))
-  const { isLoading, ledger, grants, adjustments, workItems } = usePersonData(person.id, asOfStr)
-  const asOfYear = parseInt(asOfStr.slice(0, 4), 10)
+  const { isLoading, ledger, adjustments, workItems } = usePersonData(person.id, asOfStr)
 
-  // 후보 (a) 구성 요소 — 주말/휴일대체·특별휴가 누적 합
   const weekendSubAccrued = useMemo(() =>
     (ledger?.accruals ?? [])
       .filter(a => a.type === '주말/휴일대체')
@@ -757,31 +790,17 @@ function SettlementTab({ person }: { person: Person }) {
       .reduce((s, a) => s + a.days, 0),
   [ledger])
 
-  // AL-2/AL-2b: hire_date 있을 때 두 기준 자동계산
-  const { statutoryCalendar, statutoryAnniversary } = useMemo(() => {
-    if (!person.hire_date) return { statutoryCalendar: undefined, statutoryAnniversary: undefined }
-    const cal = computeStatutoryLeave(person.hire_date, 'calendar', asOfStr)
-    const ann = computeStatutoryLeave(person.hire_date, 'anniversary', asOfStr)
-    return {
-      statutoryCalendar:    sumStatutoryLeave(cal),
-      statutoryAnniversary: sumStatutoryLeave(ann),
-    }
-  }, [person.hire_date, asOfStr])
-
-  // AL-4/AL-5: 공용 함수 단일 호출 — 정산 요약은 이 result를 그대로 바인딩
   const result = useMemo(() => {
     if (!ledger) return null
     return computeAnnualLeaveSettlement(asOfStr, {
-      grants,
+      hireDate:           person.hire_date ?? undefined,
       adjustments,
       weekendSubAccrued,
       specialLeaveAccrued,
-      teamActualAccrued:    ledger.actualAccrued,
-      totalPaidUsed:        ledger.actualUsed,
-      statutoryCalendar,
-      statutoryAnniversary,
+      teamActualAccrued:  ledger.actualAccrued,
+      totalPaidUsed:      ledger.actualUsed,
     })
-  }, [ledger, grants, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr, statutoryCalendar, statutoryAnniversary])
+  }, [ledger, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr, person.hire_date])
 
   const workItemById = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
   const accrualById  = useMemo(
@@ -789,20 +808,14 @@ function SettlementTab({ person }: { person: Person }) {
     [ledger],
   )
 
-  // Table 1 rows — grants + adjustments up to asOfStr
-  const grantRows = useMemo(() =>
-    grants.filter(g => g.year <= asOfYear).sort((a, b) => a.year - b.year),
-  [grants, asOfYear])
   const adjRows = useMemo(() =>
     adjustments.filter(a => a.date <= asOfStr).sort((a, b) => a.date.localeCompare(b.date)),
   [adjustments, asOfStr])
 
-  // Table 2 rows — team accruals (all types from computeLedger)
   const accrualRows = useMemo(() =>
     [...(ledger?.accruals ?? [])].sort((a, b) => a.date.localeCompare(b.date)),
   [ledger])
 
-  // Table 3 rows — paid usages only (exclude 무급리프레시, 휴직)
   const paidUsages = useMemo(() =>
     (ledger?.usages ?? [])
       .filter(u => !UNPAID_LEAVE.has(u.type))
@@ -813,10 +826,10 @@ function SettlementTab({ person }: { person: Person }) {
     if (!result) return
     const safeName = person.name.replace(/\s+/g, '_')
     triggerDownload(
-      generateSettlementHtml(person, asOfStr, grantRows, adjRows, accrualRows, paidUsages, result, workItemById, accrualById),
+      generateSettlementHtml(person, asOfStr, adjRows, accrualRows, paidUsages, result, workItemById, accrualById),
       `퇴사정산_${safeName}_${asOfStr}.html`,
     )
-  }, [person, asOfStr, grantRows, adjRows, accrualRows, paidUsages, result, workItemById, accrualById])
+  }, [person, asOfStr, adjRows, accrualRows, paidUsages, result, workItemById, accrualById])
 
   return (
     <div className="space-y-6">
@@ -843,50 +856,33 @@ function SettlementTab({ person }: { person: Person }) {
           {/* ① 법정연차 적립·보정 내역 */}
           <section>
             <h3 className="text-xs font-semibold text-gray-700 mb-2">① 법정연차 적립·보정 내역</h3>
-            <div className="card p-0 overflow-hidden">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-surface-50 border-b border-border text-muted">
-                    <th className="px-3 py-2 text-left font-medium">항목</th>
-                    <th className="px-3 py-2 text-left font-medium">날짜/연도</th>
-                    <th className="px-3 py-2 text-left font-medium">사유</th>
-                    <th className="px-3 py-2 text-right font-medium">일수</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {grantRows.map(g => (
-                    <tr key={`g-${g.id}`} className="hover:bg-surface-50">
-                      <td className="px-3 py-2"><span className="pill bg-brand-100 text-brand-700 text-[10px]">법정연차</span></td>
-                      <td className="px-3 py-2 font-medium">{g.year}년</td>
-                      <td className="px-3 py-2 text-muted">{g.note ?? '—'}</td>
-                      <td className="px-3 py-2 text-right font-semibold text-brand-700">+{g.days}</td>
-                    </tr>
-                  ))}
-                  {adjRows.map(a => (
-                    <tr key={`a-${a.id}`} className="hover:bg-surface-50">
-                      <td className="px-3 py-2">
-                        <span className={`pill text-[10px] ${a.direction === 'accrual' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                          {a.direction === 'accrual' ? '보정+' : '보정−'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
-                      <td className="px-3 py-2 text-muted">{a.note ?? '—'}</td>
-                      <td className={`px-3 py-2 text-right font-semibold ${a.direction === 'accrual' ? 'text-emerald-700' : 'text-red-600'}`}>
-                        {a.direction === 'accrual' ? '+' : '−'}{Math.abs(a.days)}
-                      </td>
-                    </tr>
-                  ))}
-                  {grantRows.length === 0 && adjRows.length === 0 && (
-                    <tr><td colSpan={4} className="px-3 py-4 text-center text-muted">내역 없음</td></tr>
-                  )}
-                </tbody>
-                <tfoot>
-                  <tr className="bg-surface-50 border-t-2 border-border">
-                    <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">법정연차 누적 합계</td>
-                    <td className="px-3 py-2 text-right font-bold text-brand-700">{result.statutory}일</td>
-                  </tr>
-                </tfoot>
-              </table>
+            {!person.hire_date ? (
+              <p className="text-xs text-muted py-3 text-center">입사일 미입력 — 수동 보정만 반영됨 ({result.statutory}일)</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <StatutorySection
+                  title="회계연도(FY) 기준"
+                  titleColor="text-brand-700"
+                  items={result.fiscalItems}
+                  adjRows={adjRows}
+                  subtotal={result.fiscalSubtotal}
+                  adjustmentsTotal={result.adjustmentsTotal}
+                  isAdopted={result.adoptedBasis === 'fiscal' || result.adoptedBasis === 'equal'}
+                />
+                <StatutorySection
+                  title="입사일 기준"
+                  titleColor="text-purple-700"
+                  items={result.anniversaryItems}
+                  adjRows={adjRows}
+                  subtotal={result.anniversarySubtotal}
+                  adjustmentsTotal={result.adjustmentsTotal}
+                  isAdopted={result.adoptedBasis === 'anniversary'}
+                />
+              </div>
+            )}
+            <div className="mt-2 px-3 py-2 bg-surface-50 border border-border rounded text-xs text-gray-700">
+              채택된 법정연차 누적 합계: <span className="font-bold text-brand-700">{result.statutory}일</span>
+              <span className="text-muted ml-1">(수동 보정 {result.adjustmentsTotal >= 0 ? '+' : ''}{result.adjustmentsTotal}일 포함)</span>
             </div>
           </section>
 
@@ -973,43 +969,10 @@ function SettlementTab({ person }: { person: Person }) {
             </div>
           </section>
 
-          {/* 정산 요약 — computeAnnualLeaveSettlement 결과를 그대로 바인딩 (재계산 없음) */}
+          {/* 정산 요약 */}
           <section>
             <h3 className="text-xs font-semibold text-gray-700 mb-2">정산 요약</h3>
             <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
-              {/* AL-3a: 법정연차 산정 기준 비교 (hire_date 있을 때만) */}
-              {result.adoptedBasis !== 'stored' && (
-                <div className="px-4 py-3 bg-blue-50 space-y-1.5">
-                  <p className="text-[10px] font-semibold text-blue-600 mb-1.5">법정연차 산정 기준 (근로기준법 자동계산)</p>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`text-xs ${result.adoptedBasis !== 'anniversary' ? 'font-semibold text-brand-700' : 'text-gray-500'}`}>
-                        회계연도 기준
-                      </span>
-                      {result.adoptedBasis !== 'anniversary' && (
-                        <span className="pill bg-brand-100 text-brand-700 text-[10px]">채택</span>
-                      )}
-                    </div>
-                    <span className={`text-xs tabular-nums ${result.adoptedBasis !== 'anniversary' ? 'font-bold text-brand-700' : 'text-gray-400'}`}>
-                      {result.statutoryCalendar}일
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`text-xs ${result.adoptedBasis === 'anniversary' ? 'font-semibold text-purple-700' : 'text-gray-500'}`}>
-                        입사일 기준
-                      </span>
-                      {result.adoptedBasis === 'anniversary' && (
-                        <span className="pill bg-purple-100 text-purple-700 text-[10px]">채택</span>
-                      )}
-                    </div>
-                    <span className={`text-xs tabular-nums ${result.adoptedBasis === 'anniversary' ? 'font-bold text-purple-700' : 'text-gray-400'}`}>
-                      {result.statutoryAnniversary}일
-                    </span>
-                  </div>
-                </div>
-              )}
-              {/* 두 후보값 비교 — (a) 법정연차+주말/휴일대체 vs (b) 팀 정당 적립 합 */}
               <div className="px-4 py-3 bg-surface-50 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -1084,17 +1047,17 @@ function SettlementTab({ person }: { person: Person }) {
 
 function TimesheetTab({ person }: { person: Person }) {
   const [asOfStr, setAsOfStr] = useState(numToStr(today()))
-  const { isLoading, ledger, grants, adjustments } = usePersonData(person.id, asOfStr)
+  const { isLoading, ledger, adjustments } = usePersonData(person.id, asOfStr)
 
   const figures = useMemo(() => {
     if (!ledger) return null
     return computeTimesheetFigures(asOfStr, {
-      grants,
+      hireDate:    person.hire_date ?? undefined,
       adjustments,
-      usages:   ledger.usages,
-      accruals: ledger.accruals,
+      usages:      ledger.usages,
+      accruals:    ledger.accruals,
     })
-  }, [ledger, grants, adjustments, asOfStr])
+  }, [ledger, adjustments, asOfStr, person.hire_date])
 
   const asOfYear    = parseInt(asOfStr.slice(0, 4), 10)
   const asOfMonth   = parseInt(asOfStr.slice(5, 7), 10)
@@ -1130,7 +1093,7 @@ function TimesheetTab({ person }: { person: Person }) {
             num="①"
             label={`FY${fyLabel} 법정연차·신입사원 휴가 누적`}
             value={figures.statutoryThisYear}
-            hint={`FY${fyLabel}(${fyStartYear}.07~${fyLabel}.06) grants 합 + 보정 (7/1 리셋, 이월 없음)`}
+            hint={`FY${fyLabel}(${fyStartYear}.07~${fyLabel}.06) 발생분 합 + 보정 (7/1 리셋, 이월 없음)`}
           />
           <FigureCard
             num="②"
@@ -1178,17 +1141,17 @@ function FigureCard({ num, label, value, hint, warn }: { num: string; label: str
 // Main export
 // ─────────────────────────────────────────────────────────────
 
-type SubTab = 'grants' | 'settlement' | 'timesheetfigs'
+type SubTab = 'adjustments' | 'settlement' | 'timesheetfigs'
 
 const SUB_TABS: { id: SubTab; label: string }[] = [
-  { id: 'grants',      label: '적립 관리' },
-  { id: 'settlement',  label: '퇴사 정산' },
+  { id: 'adjustments',   label: '적립 관리' },
+  { id: 'settlement',    label: '퇴사 정산' },
   { id: 'timesheetfigs', label: '수치 안내' },
 ]
 
 export default function AnnualLeavePanel() {
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null)
-  const [subTab, setSubTab] = useState<SubTab>('grants')
+  const [subTab, setSubTab] = useState<SubTab>('adjustments')
   const { isAssistant } = useAuthz()
   const readOnly = isAssistant()
 
@@ -1201,54 +1164,54 @@ export default function AnnualLeavePanel() {
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
-        <PersonSelector selected={selectedPerson} onSelect={p => { setSelectedPerson(p); setSubTab('grants') }} />
+        <PersonSelector selected={selectedPerson} onSelect={p => { setSelectedPerson(p); setSubTab('adjustments') }} />
 
         <div className="flex-1 flex flex-col overflow-hidden">
-        {!selectedPerson ? (
-          <div className="flex items-center justify-center h-full text-muted text-sm">
-            왼쪽에서 인력을 선택하세요.
-          </div>
-        ) : (
-          <>
-            {/* Person header */}
-            <div className="border-b border-border px-6 py-3 flex items-center gap-3">
-              <div>
-                <p className="text-sm font-semibold text-gray-900">{selectedPerson.name}</p>
-                <p className="text-xs text-muted">
-                  {selectedPerson.rank}
-                  {selectedPerson.status === 'resigned' && <span className="ml-1 text-red-500">(퇴사)</span>}
-                </p>
+          {!selectedPerson ? (
+            <div className="flex items-center justify-center h-full text-muted text-sm">
+              왼쪽에서 인력을 선택하세요.
+            </div>
+          ) : (
+            <>
+              {/* Person header */}
+              <div className="border-b border-border px-6 py-3 flex items-center gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">{selectedPerson.name}</p>
+                  <p className="text-xs text-muted">
+                    {selectedPerson.rank}
+                    {selectedPerson.status === 'resigned' && <span className="ml-1 text-red-500">(퇴사)</span>}
+                  </p>
+                </div>
+                {selectedPerson.status === 'resigned' ? (
+                  <span className="pill bg-red-100 text-red-700 text-[10px] ml-auto">퇴사자</span>
+                ) : (
+                  <span className="pill bg-emerald-100 text-emerald-700 text-[10px] ml-auto">재직 중</span>
+                )}
               </div>
-              {selectedPerson.status === 'resigned' ? (
-                <span className="pill bg-red-100 text-red-700 text-[10px] ml-auto">퇴사자</span>
-              ) : (
-                <span className="pill bg-emerald-100 text-emerald-700 text-[10px] ml-auto">재직 중</span>
-              )}
-            </div>
 
-            {/* Sub-tab bar */}
-            <div className="flex gap-0 border-b border-border px-6 pt-2">
-              {SUB_TABS.map(t => (
-                <button key={t.id} onClick={() => setSubTab(t.id)}
-                  className={[
-                    'px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors',
-                    subTab === t.id
-                      ? 'border-b-2 border-brand-600 text-brand-700'
-                      : 'text-muted hover:text-gray-900',
-                  ].join(' ')}>
-                  {t.label}
-                </button>
-              ))}
-            </div>
+              {/* Sub-tab bar */}
+              <div className="flex gap-0 border-b border-border px-6 pt-2">
+                {SUB_TABS.map(t => (
+                  <button key={t.id} onClick={() => setSubTab(t.id)}
+                    className={[
+                      'px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors',
+                      subTab === t.id
+                        ? 'border-b-2 border-brand-600 text-brand-700'
+                        : 'text-muted hover:text-gray-900',
+                    ].join(' ')}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
 
-            {/* Tab content */}
-            <div className="flex-1 overflow-auto p-6 max-w-3xl">
-              {subTab === 'grants'        && <GrantsTab person={selectedPerson} readOnly={readOnly} />}
-              {subTab === 'settlement'    && <SettlementTab person={selectedPerson} />}
-              {subTab === 'timesheetfigs' && <TimesheetTab person={selectedPerson} />}
-            </div>
-          </>
-        )}
+              {/* Tab content */}
+              <div className="flex-1 overflow-auto p-6 max-w-3xl">
+                {subTab === 'adjustments'   && <AdjustmentsTab person={selectedPerson} readOnly={readOnly} />}
+                {subTab === 'settlement'    && <SettlementTab person={selectedPerson} />}
+                {subTab === 'timesheetfigs' && <TimesheetTab person={selectedPerson} />}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

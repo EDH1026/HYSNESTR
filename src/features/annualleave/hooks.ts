@@ -1,83 +1,14 @@
 /**
  * Data-access hooks for §5.13 annual leave tables.
  * RLS: editor/admin only (viewer is fully blocked at DB level).
+ *
+ * annual_leave_grants 테이블은 v2.33에서 폐지됨.
+ * 수동 보정(annual_leave_adjustments)만 유지.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase }   from '@/lib/supabase'
 import { queryKeys }  from '@/lib/queryKeys'
-import type { AnnualLeaveGrant, AnnualLeaveAdjustment } from '@/types'
-
-// ── annual_leave_grants ───────────────────────────────────────
-
-export function useGrantsByPerson(personId: string | null) {
-  return useQuery({
-    queryKey:  queryKeys.annualLeave.grants(personId ?? ''),
-    enabled:   !!personId,
-    queryFn: async (): Promise<AnnualLeaveGrant[]> => {
-      const { data, error } = await (supabase as any)
-        .from('annual_leave_grants')
-        .select('*')
-        .eq('person_id', personId!)
-        .order('year', { ascending: true })
-      if (error) throw error
-      return data ?? []
-    },
-  })
-}
-
-export function useUpsertGrant() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async (input: {
-      id?:        string
-      person_id:  string
-      year:       number
-      days:       number
-      note:       string | null
-      grant_type?: 'first_year_monthly' | 'annual'
-    }): Promise<AnnualLeaveGrant> => {
-      const { id, ...rest } = input
-      let res
-      if (id) {
-        res = await (supabase as any)
-          .from('annual_leave_grants')
-          .update(rest)
-          .eq('id', id)
-          .select()
-          .single()
-      } else {
-        res = await (supabase as any)
-          .from('annual_leave_grants')
-          .insert(rest)
-          .select()
-          .single()
-      }
-      if (res.error) throw res.error
-      return res.data
-    },
-    onSuccess: (_data, vars) => {
-      qc.invalidateQueries({ queryKey: queryKeys.annualLeave.grants(vars.person_id) })
-      logAudit('upsert', 'annual_leave_grants', vars.id ?? 'new')
-    },
-  })
-}
-
-export function useDeleteGrant() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async ({ id, personId }: { id: string; personId: string }) => {
-      const { error } = await (supabase as any)
-        .from('annual_leave_grants')
-        .delete()
-        .eq('id', id)
-      if (error) throw error
-      return { id, personId }
-    },
-    onSuccess: ({ personId }) => {
-      qc.invalidateQueries({ queryKey: queryKeys.annualLeave.grants(personId) })
-    },
-  })
-}
+import type { AnnualLeaveAdjustment } from '@/types'
 
 // ── annual_leave_adjustments ──────────────────────────────────
 
