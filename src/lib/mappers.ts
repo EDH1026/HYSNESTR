@@ -155,7 +155,7 @@ export type CreatePersonInput = {
   lpn?:              string | null
   hire_date?:        string | null
   termination_date?: string | null
-  status?:           PersonStatus
+  // status is not persisted — computed at read time
 }
 export type UpdatePersonInput = Partial<CreatePersonInput>
 
