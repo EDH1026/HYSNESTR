@@ -24,7 +24,11 @@ import { useAllWorkItems }        from '@/features/workitems/hooks'
 import { useAllHolidays }         from '@/features/admin/hooks'
 import { useAllPeople }           from '@/features/people/hooks'
 import { dateToNum, numToStr, today } from '@/lib/date'
-import type { Person, AnnualLeaveGrant, AnnualLeaveAdjustment } from '@/types'
+import FilterChip from '@/components/FilterChip'
+import type { Person, Rank, AnnualLeaveGrant, AnnualLeaveAdjustment } from '@/types'
+
+const RANKS: Rank[] = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern']
+const RANK_ORDER: Record<Rank, number> = { Partner: 0, SM: 1, M: 2, Senior: 3, Staff: 4, Intern: 5 }
 
 // ─────────────────────────────────────────────────────────────
 // Person selector
@@ -38,26 +42,70 @@ function PersonSelector({
   onSelect: (p: Person) => void
 }) {
   const { data: people = [], isLoading } = useAllPeople()
-  const [query, setQuery] = useState('')
+
+  // LeavePage(LV-2)와 동일한 필터 상태 — 기본값: 재직만
+  const [nameSearch,   setNameSearch]   = useState('')
+  const [rankFilter,   setRankFilter]   = useState<Rank[]>([])
+  const [statusFilter, setStatusFilter] = useState<string[]>(['active'])
+
+  function toggleRank(r: Rank) {
+    setRankFilter(prev => prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r])
+  }
+  function toggleStatus(s: string) {
+    setStatusFilter(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])
+  }
+  const hasFilter = !!(nameSearch || rankFilter.length || statusFilter.length !== 1 || !statusFilter.includes('active'))
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    // include all people (active + resigned), sorted by name
-    return people
-      .filter(p => !q || p.name.toLowerCase().includes(q) || (p.rank ?? '').toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
-  }, [people, query])
+    let out = [...people]
+    if (nameSearch.trim()) {
+      const q = nameSearch.toLowerCase()
+      out = out.filter(p => p.name.toLowerCase().includes(q))
+    }
+    if (rankFilter.length)   out = out.filter(p => rankFilter.includes(p.rank))
+    if (statusFilter.length) out = out.filter(p => statusFilter.includes(p.status ?? 'active'))
+    return out.sort((a, b) => {
+      const rc = (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99)
+      return rc !== 0 ? rc : a.name.localeCompare(b.name, 'ko')
+    })
+  }, [people, nameSearch, rankFilter, statusFilter])
 
   return (
-    <div className="w-56 flex-shrink-0 border-r border-border flex flex-col h-full">
-      <div className="px-3 pt-4 pb-2 border-b border-border">
+    <div className="w-60 flex-shrink-0 border-r border-border flex flex-col h-full">
+      {/* 필터 영역 — LeavePage(LV-2)와 동일한 FilterChip 사용 */}
+      <div className="px-3 pt-3 pb-2 border-b border-border space-y-2">
         <input
           className="input py-1 text-xs w-full"
           placeholder="이름 검색…"
-          value={query}
-          onChange={e => setQuery(e.target.value)}
+          value={nameSearch}
+          onChange={e => setNameSearch(e.target.value)}
         />
+        <div>
+          <p className="text-[10px] text-muted mb-1">직급</p>
+          <div className="flex flex-wrap gap-1">
+            {RANKS.map(r => (
+              <FilterChip key={r} label={r} active={rankFilter.includes(r)} onClick={() => toggleRank(r)} />
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="text-[10px] text-muted mb-1">재직</p>
+          <div className="flex gap-1">
+            <FilterChip label="재직" active={statusFilter.includes('active')}   onClick={() => toggleStatus('active')} />
+            <FilterChip label="퇴직" active={statusFilter.includes('resigned')} onClick={() => toggleStatus('resigned')} />
+          </div>
+        </div>
+        {hasFilter && (
+          <button className="text-[10px] text-muted hover:text-gray-700"
+            onClick={() => { setNameSearch(''); setRankFilter([]); setStatusFilter(['active']) }}>
+            초기화
+          </button>
+        )}
+        <p className="text-[10px] text-muted">
+          {filtered.length} / {people.length} 명
+        </p>
       </div>
+
       {isLoading ? (
         <div className="flex justify-center py-8"><Loader2 size={16} className="animate-spin text-muted" /></div>
       ) : (
