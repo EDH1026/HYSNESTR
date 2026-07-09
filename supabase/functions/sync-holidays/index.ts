@@ -1,13 +1,10 @@
 /**
- * Edge Function: sync-holidays  (PRD v2.19 §5.13 HOL-1~4)
+ * Edge Function: sync-holidays  (PRD v2.40 §3)
  *
  * Fetches Korean public holidays from 한국천문연구원 특일 정보 API
- * (data.go.kr / SpcdeInfoService / getRestDeInfo) for the current year
- * and the following year, then upserts them into the holidays table.
- *
- * Key rules (HOL-4):
- *   • Only rows with source = 'auto' are touched.
- *   • Rows with source = 'manual' are never modified or deleted.
+ * (data.go.kr / SpcdeInfoService / getRestDeInfo) for 2022 through
+ * (currentYear + 1), then upserts them into the holidays table.
+ * All existing rows (including manual) are overwritten by API results.
  *
  * Required Supabase secrets (set via `supabase secrets set`):
  *   SUPABASE_URL              (auto-injected in hosted env)
@@ -119,22 +116,12 @@ serve(async (req: Request) => {
   }
 
   // ── 2. Fetch holidays — all months in parallel ─────────────
-  // Optional request body: { years?: number[] } — if omitted, default to current+next year
-  let bodyYears: number[] | undefined
-  try {
-    const body = await req.clone().json()
-    if (Array.isArray(body?.years) && body.years.length > 0) {
-      bodyYears = (body.years as number[]).map(Number).filter(y => y >= 2000 && y <= 2100)
-    }
-  } catch { /* no body or non-JSON — use default */ }
-
+  // Always sync 2022 through currentYear+1 (dynamic, no request body needed)
   const now         = new Date()
   const currentYear = now.getFullYear()
-  const years       = bodyYears ?? [currentYear, currentYear + 1]
-  years.sort((a, b) => a - b)
-  const yearRange   = years.length === 1
-    ? String(years[0])
-    : `${years[0]}~${years[years.length - 1]}`
+  const years: number[] = []
+  for (let y = 2022; y <= currentYear + 1; y++) years.push(y)
+  const yearRange = `${years[0]}~${years[years.length - 1]}`
 
   // Build a flat list of (year, month) pairs and fetch all concurrently
   const tasks: Array<{ year: number; month: number }> = []
@@ -177,7 +164,7 @@ serve(async (req: Request) => {
     return json({ error: `All API calls failed: ${fetchErrors.join('; ')}` }, 502)
   }
 
-  // ── 3. Upsert auto holidays (HOL-4: never touch source='manual') ──
+  // ── 3. Upsert holidays (overwrite all existing rows including manual) ──
   const adminClient = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false },
   })
@@ -211,7 +198,6 @@ serve(async (req: Request) => {
   for (const h of apiHolidays) {
     const ex = existingMap.get(h.date)
     if (ex) {
-      if (ex.source === 'manual') continue   // HOL-4: never overwrite manual
       if (ex.name !== h.name) toUpdate.push({ id: ex.id, name: h.name })
     } else {
       toInsert.push({ name: h.name, date: h.date, recurring: false, source: 'auto' })
@@ -259,8 +245,9 @@ serve(async (req: Request) => {
   return json({
     added,
     updated,
-    total:    apiHolidays.length,
-    years:    yearRange,
+    total:     apiHolidays.length,
+    years:     yearRange,
+    yearCount: years.length,
     ...(fetchErrors.length > 0 ? { errors: fetchErrors } : {}),
   })
 })

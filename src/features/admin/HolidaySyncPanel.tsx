@@ -1,13 +1,13 @@
 /**
- * HolidaySyncPanel — admin 공휴일 자동 동기화 탭 (PRD v2.19 §5.13 HOL-1~5)
+ * HolidaySyncPanel — admin 공휴일 자동 동기화 탭 (PRD v2.40 §3)
  *
- * - "지금 동기화" 버튼 → sync-holidays Edge Function 호출
+ * - "동기화" 버튼 → sync-holidays Edge Function 호출 (2022 ~ 현재연도+1)
  * - 동기화 이력 표시 (holiday_sync_log 테이블)
  * - 공휴일 목록 (source 구분 표시 + 수동 추가/편집)
  */
 
 import { useState }     from 'react'
-import { RefreshCw, Plus, CheckCircle2, AlertTriangle, Info, History } from 'lucide-react'
+import { RefreshCw, Plus, CheckCircle2, AlertTriangle, Info } from 'lucide-react'
 import {
   useSyncHolidays, useHolidaySyncLog,
   type SyncHolidaysResult, type HolidaySyncLogRow,
@@ -21,27 +21,14 @@ export default function HolidaySyncPanel() {
   const { data: syncLog = [], isLoading: logLoading } = useHolidaySyncLog()
   const { data: holidays = [], isLoading: holLoading } = useAllHolidays()
 
-  const [lastResult,    setLastResult]    = useState<SyncHolidaysResult | null>(null)
-  const [backfillMode, setBackfillMode] = useState(false)
+  const [lastResult, setLastResult] = useState<SyncHolidaysResult | null>(null)
   // undefined = modal closed; null = create mode; Holiday = edit mode
   const [editing, setEditing] = useState<Holiday | null | undefined>(undefined)
 
   async function handleSync() {
     setLastResult(null)
-    setBackfillMode(false)
     try {
-      const r = await sync.mutateAsync({})
-      setLastResult(r)
-    } catch {
-      // error surfaced via sync.error
-    }
-  }
-
-  async function handleBackfill() {
-    setLastResult(null)
-    setBackfillMode(true)
-    try {
-      const r = await sync.mutateAsync({ years: [2022, 2023, 2024] })
+      const r = await sync.mutateAsync()
       setLastResult(r)
     } catch {
       // error surfaced via sync.error
@@ -88,9 +75,8 @@ export default function HolidaySyncPanel() {
       <section>
         <h2 className="text-sm font-semibold text-gray-800 mb-1">공휴일 자동 동기화</h2>
         <p className="text-xs text-muted mb-3">
-          현재 연도 + 차년도의 공휴일을 API에서 가져와 holidays 테이블에 반영합니다.
+          2022년부터 (현재연도+1)까지 모든 공휴일을 API에서 가져와 holidays 테이블에 반영합니다.
           음력 공휴일·대체공휴일·선거일·임시공휴일이 포함됩니다.
-          수동 추가 공휴일은 덮어쓰지 않습니다.
         </p>
 
         {lastSync && !sync.isPending && !lastResult && (
@@ -107,26 +93,16 @@ export default function HolidaySyncPanel() {
             disabled={sync.isPending}
             className="btn-primary gap-2"
           >
-            <RefreshCw size={14} className={sync.isPending && !backfillMode ? 'animate-spin' : ''} />
-            {sync.isPending && !backfillMode ? '동기화 중…' : '지금 동기화'}
-          </button>
-
-          <button
-            onClick={() => void handleBackfill()}
-            disabled={sync.isPending}
-            className="btn-secondary gap-2"
-            title="2022~2024년 공휴일을 API에서 가져와 과거 데이터를 채웁니다"
-          >
-            <History size={14} className={sync.isPending && backfillMode ? 'animate-spin' : ''} />
-            {sync.isPending && backfillMode ? '채우는 중…' : '과거 데이터 채우기 (2022~2024)'}
+            <RefreshCw size={14} className={sync.isPending ? 'animate-spin' : ''} />
+            {sync.isPending ? '동기화 중…' : '동기화'}
           </button>
 
           {lastResult && (
             <span className="flex items-center gap-1.5 text-xs text-emerald-700">
               <CheckCircle2 size={13} />
-              {backfillMode ? '[2022~2024] ' : ''}
-              추가 {lastResult.added}건 · 수정 {lastResult.updated}건
-              (API 응답 총 {lastResult.total}건)
+              {lastResult.yearCount ?? lastResult.years}개 연도,
+              {' '}{lastResult.added + lastResult.updated}건 동기화됨
+              (추가 {lastResult.added} · 수정 {lastResult.updated} · API 총 {lastResult.total}건)
               {lastResult.errors && lastResult.errors.length > 0 && (
                 <span className="text-amber-600 ml-1">
                   · 일부 월 오류 {lastResult.errors.length}건

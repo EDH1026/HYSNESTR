@@ -180,11 +180,12 @@ export function useDeleteHoliday() {
 // ── HOL-5: Holiday sync (HOL-1~4) ────────────────────────────
 
 export interface SyncHolidaysResult {
-  added:   number
-  updated: number
-  total:   number
-  years:   string
-  errors?: string[]
+  added:      number
+  updated:    number
+  total:      number
+  years:      string
+  yearCount?: number
+  errors?:    string[]
 }
 
 export interface HolidaySyncLogRow {
@@ -201,10 +202,10 @@ export interface HolidaySyncLogRow {
 export function useSyncHolidays() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (vars?: { years?: number[] }): Promise<SyncHolidaysResult> => {
+    mutationFn: async (): Promise<SyncHolidaysResult> => {
       const { data, error } = await supabase.functions.invoke('sync-holidays', {
         method: 'POST',
-        body:   vars ?? {},
+        body:   {},
       })
       if (error) throw new Error(error.message ?? 'Sync failed')
       if (data?.error) throw new Error(data.error)
