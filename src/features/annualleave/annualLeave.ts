@@ -28,7 +28,7 @@ function adjContrib(a: Pick<AnnualLeaveAdjustment, 'direction' | 'days'>): numbe
 // ── Output types ──────────────────────────────────────────────
 
 export interface AnnualLeaveSettlementResult {
-  statutory:    number   // 법정연차 누적 = grants(≤asOfYear 합) + adjustments(≤asOf 합)
+  statutory:    number   // 법정연차 누적 (hire_date 있을 때: max(calendar,anniversary); 없을 때: stored grants)
   weekendSub:   number   // 주말/휴일대체 누적 적립 합
   specialLeave: number   // 특별휴가 누적 적립 합
   candidateA:   number   // statutory + weekendSub + specialLeave = 후보 (a)
@@ -39,6 +39,10 @@ export interface AnnualLeaveSettlementResult {
   excess:       number   // 초과 사용분 = max(0, totalUsed − totalEntitlement)
   shortfall:    number   // 미달 보상분 = max(0, totalEntitlement − totalUsed)
   netSettlement: number  // shortfall − excess  (+= 보상 / −= 차감)
+  // AL-2/AL-2b: 법정연차 산정 비교 (hire_date 없을 때 null)
+  statutoryCalendar:    number | null   // 회계연도 기준 자동계산 합계
+  statutoryAnniversary: number | null   // 입사일 기준 자동계산 합계
+  adoptedBasis: 'calendar' | 'anniversary' | 'equal' | 'stored'
 }
 
 export interface TimesheetFigures {
@@ -60,24 +64,40 @@ export function computeAnnualLeaveSettlement(
     specialLeaveAccrued?: number   // 특별휴가 누적 합; 생략 시 0
     teamActualAccrued:    number   // computeLedger(today=asOf).actualAccrued
     totalPaidUsed:        number   // computeLedger(today=asOf).actualUsed (유급만, 무급 제외)
+    // AL-2/AL-2b: 두 값이 모두 제공되면 max를 statutory로, 없으면 stored grants 합
+    statutoryCalendar?:    number
+    statutoryAnniversary?: number
   },
 ): AnnualLeaveSettlementResult {
   const {
     grants, adjustments,
     weekendSubAccrued = 0, specialLeaveAccrued = 0,
     teamActualAccrued, totalPaidUsed,
+    statutoryCalendar, statutoryAnniversary,
   } = opts
   const asOfYear = parseInt(asOfDate.slice(0, 4), 10)
 
-  // 법정연차 누적 = 연도별 grants 합 + 기준일까지 adjustments 합
-  const statutory = r1(
-    grants
-      .filter(g => g.year <= asOfYear)
-      .reduce((s, g) => s + g.days, 0)
-    + adjustments
-        .filter(a => a.date <= asOfDate)
-        .reduce((s, a) => s + adjContrib(a), 0),
-  )
+  // 법정연차: hire_date로 계산된 값이 있으면 max(cal, ann) 채택; 없으면 stored grants
+  let statutory: number
+  let statCal: number | null = null
+  let statAnn: number | null = null
+  let adoptedBasis: AnnualLeaveSettlementResult['adoptedBasis'] = 'stored'
+
+  if (statutoryCalendar !== undefined && statutoryAnniversary !== undefined) {
+    statCal = r1(statutoryCalendar)
+    statAnn = r1(statutoryAnniversary)
+    statutory = r1(Math.max(statCal, statAnn))
+    adoptedBasis = statCal > statAnn ? 'calendar' : statAnn > statCal ? 'anniversary' : 'equal'
+  } else {
+    statutory = r1(
+      grants
+        .filter(g => g.year <= asOfYear)
+        .reduce((s, g) => s + g.days, 0)
+      + adjustments
+          .filter(a => a.date <= asOfDate)
+          .reduce((s, a) => s + adjContrib(a), 0),
+    )
+  }
 
   const weekendSub  = r1(weekendSubAccrued)
   const specialLeave = r1(specialLeaveAccrued)
@@ -100,6 +120,7 @@ export function computeAnnualLeaveSettlement(
     statutory, weekendSub, specialLeave, candidateA,
     teamAccrued, totalEntitlement, entitlementBasis,
     totalUsed, excess, shortfall, netSettlement,
+    statutoryCalendar: statCal, statutoryAnniversary: statAnn, adoptedBasis,
   }
 }
 

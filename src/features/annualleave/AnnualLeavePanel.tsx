@@ -12,6 +12,7 @@ import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
 import { computeAnnualLeaveSettlement, computeTimesheetFigures } from './annualLeave'
 import type { AnnualLeaveSettlementResult } from './annualLeave'
+import { computeStatutoryLeave, sumStatutoryLeave, groupByYear } from './computeStatutoryLeave'
 import {
   useGrantsByPerson,
   useUpsertGrant,
@@ -161,6 +162,7 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
   const [grantForm, setGrantForm] = useState({ year: String(new Date().getFullYear()), days: '', note: '' })
   const [grantErr,  setGrantErr]  = useState<string | null>(null)
   const [showAddGrant, setShowAddGrant] = useState(false)
+  const [autoCalcPending, setAutoCalcPending] = useState(false)
 
   const [adjForm, setAdjForm] = useState({ direction: 'accrual' as 'accrual' | 'usage', days: '', date: numToStr(today()), note: '' })
   const [adjErr,  setAdjErr]  = useState<string | null>(null)
@@ -199,6 +201,40 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
     } catch (e) { setAdjErr(e instanceof Error ? e.message : '저장 실패') }
   }
 
+  async function handleAutoCalc() {
+    if (!person.hire_date) return
+    const events = computeStatutoryLeave(person.hire_date, 'calendar', numToStr(today()))
+    const byYear = groupByYear(events)
+    if (byYear.size === 0) {
+      window.alert('아직 발생한 법정연차가 없습니다.')
+      return
+    }
+    const lines = Array.from(byYear.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([y, d]) => `  ${y}년: ${d}일`)
+      .join('\n')
+    if (!window.confirm(`다음 연도별 법정연차를 자동 입력합니다 (회계연도 기준):\n${lines}\n\n기존 "근로기준법 자동계산" 비고 항목은 덮어씁니다. 계속할까요?`)) return
+    setAutoCalcPending(true)
+    try {
+      for (const [year, days] of Array.from(byYear.entries()).sort(([a], [b]) => a - b)) {
+        const existing = grants.find(
+          g => g.year === year && (g.note ?? '').startsWith('근로기준법 자동계산'),
+        )
+        await upsertGrant.mutateAsync({
+          id: existing?.id,
+          person_id: person.id,
+          year,
+          days,
+          note: '근로기준법 자동계산 (회계연도)',
+        })
+      }
+    } catch (e) {
+      window.alert('저장 중 오류: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setAutoCalcPending(false)
+    }
+  }
+
   if (isLoading) return <div className="flex justify-center py-12"><Loader2 size={20} className="animate-spin text-muted" /></div>
 
   return (
@@ -211,8 +247,20 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
             <p className="text-xs text-muted">역년(1월 1일) 기준, 이월 없음</p>
           </div>
           {!readOnly && !showAddGrant && (
-            <button onClick={() => { setShowAddGrant(true); setEditGrant(null); setGrantForm({ year: String(new Date().getFullYear()), days: '', note: '' }) }}
-              className="btn-secondary text-xs py-0.5 gap-1"><Plus size={11} /> 연도 추가</button>
+            <div className="flex gap-2">
+              {person.hire_date && (
+                <button
+                  onClick={handleAutoCalc}
+                  disabled={autoCalcPending}
+                  className="btn-secondary text-xs py-0.5 gap-1 disabled:opacity-40"
+                >
+                  {autoCalcPending ? <Loader2 size={11} className="animate-spin" /> : null}
+                  법정연차 자동 계산
+                </button>
+              )}
+              <button onClick={() => { setShowAddGrant(true); setEditGrant(null); setGrantForm({ year: String(new Date().getFullYear()), days: '', note: '' }) }}
+                className="btn-secondary text-xs py-0.5 gap-1"><Plus size={11} /> 연도 추가</button>
+            </div>
           )}
         </div>
 
@@ -510,6 +558,24 @@ function generateSettlementHtml(
   const shortfallRow= result.shortfall > 0 ? `<div class="summary-row ok"><span>미달 보상분 (퇴사 시 보상)</span><span class="sv">+${result.shortfall}일</span></div>` : ''
   const evenRow     = (result.excess === 0 && result.shortfall === 0) ? `<div class="summary-row muted"><span>초과/미달 없음 (권리 = 사용)</span></div>` : ''
 
+  // AL-3a: 법정연차 산정 기준 비교 (hire_date 있을 때만)
+  const statutoryCompareHtml = result.adoptedBasis !== 'stored' ? `
+    <div class="summary-row" style="flex-direction:column;align-items:flex-start;gap:6px;background:#eff6ff">
+      <span style="font-size:11px;color:#2563eb;font-weight:600">법정연차 산정 기준 (근로기준법 자동계산)</span>
+      <div class="cand">
+        <span class="${result.adoptedBasis !== 'anniversary' ? 'chosen-a' : 'unchosen'}">
+          회계연도 기준${result.adoptedBasis !== 'anniversary' ? '<span class="badge badge-a">채택</span>' : ''}
+        </span>
+        <span class="sv-sm ${result.adoptedBasis !== 'anniversary' ? 'chosen-a' : 'unchosen'}">${result.statutoryCalendar}일</span>
+      </div>
+      <div class="cand">
+        <span class="${result.adoptedBasis === 'anniversary' ? 'chosen-b' : 'unchosen'}">
+          입사일 기준${result.adoptedBasis === 'anniversary' ? '<span class="badge badge-b">채택</span>' : ''}
+        </span>
+        <span class="sv-sm ${result.adoptedBasis === 'anniversary' ? 'chosen-b' : 'unchosen'}">${result.statutoryAnniversary}일</span>
+      </div>
+    </div>` : ''
+
   const css = `
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
@@ -599,6 +665,7 @@ function generateSettlementHtml(
 <section>
   <h2>정산 요약</h2>
   <div class="sb">
+    ${statutoryCompareHtml}
     <div class="candidates">
       <div class="cand">
         <span class="${!isTeam ? 'chosen-a' : 'unchosen'}">
@@ -656,6 +723,17 @@ function SettlementTab({ person }: { person: Person }) {
       .reduce((s, a) => s + a.days, 0),
   [ledger])
 
+  // AL-2/AL-2b: hire_date 있을 때 두 기준 자동계산
+  const { statutoryCalendar, statutoryAnniversary } = useMemo(() => {
+    if (!person.hire_date) return { statutoryCalendar: undefined, statutoryAnniversary: undefined }
+    const cal = computeStatutoryLeave(person.hire_date, 'calendar', asOfStr)
+    const ann = computeStatutoryLeave(person.hire_date, 'anniversary', asOfStr)
+    return {
+      statutoryCalendar:    sumStatutoryLeave(cal),
+      statutoryAnniversary: sumStatutoryLeave(ann),
+    }
+  }, [person.hire_date, asOfStr])
+
   // AL-4/AL-5: 공용 함수 단일 호출 — 정산 요약은 이 result를 그대로 바인딩
   const result = useMemo(() => {
     if (!ledger) return null
@@ -664,10 +742,12 @@ function SettlementTab({ person }: { person: Person }) {
       adjustments,
       weekendSubAccrued,
       specialLeaveAccrued,
-      teamActualAccrued: ledger.actualAccrued,
-      totalPaidUsed:     ledger.actualUsed,
+      teamActualAccrued:    ledger.actualAccrued,
+      totalPaidUsed:        ledger.actualUsed,
+      statutoryCalendar,
+      statutoryAnniversary,
     })
-  }, [ledger, grants, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr])
+  }, [ledger, grants, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr, statutoryCalendar, statutoryAnniversary])
 
   const workItemById = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
   const accrualById  = useMemo(
@@ -863,6 +943,38 @@ function SettlementTab({ person }: { person: Person }) {
           <section>
             <h3 className="text-xs font-semibold text-gray-700 mb-2">정산 요약</h3>
             <div className="rounded-lg border border-border overflow-hidden divide-y divide-border">
+              {/* AL-3a: 법정연차 산정 기준 비교 (hire_date 있을 때만) */}
+              {result.adoptedBasis !== 'stored' && (
+                <div className="px-4 py-3 bg-blue-50 space-y-1.5">
+                  <p className="text-[10px] font-semibold text-blue-600 mb-1.5">법정연차 산정 기준 (근로기준법 자동계산)</p>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-xs ${result.adoptedBasis !== 'anniversary' ? 'font-semibold text-brand-700' : 'text-gray-500'}`}>
+                        회계연도 기준
+                      </span>
+                      {result.adoptedBasis !== 'anniversary' && (
+                        <span className="pill bg-brand-100 text-brand-700 text-[10px]">채택</span>
+                      )}
+                    </div>
+                    <span className={`text-xs tabular-nums ${result.adoptedBasis !== 'anniversary' ? 'font-bold text-brand-700' : 'text-gray-400'}`}>
+                      {result.statutoryCalendar}일
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-xs ${result.adoptedBasis === 'anniversary' ? 'font-semibold text-purple-700' : 'text-gray-500'}`}>
+                        입사일 기준
+                      </span>
+                      {result.adoptedBasis === 'anniversary' && (
+                        <span className="pill bg-purple-100 text-purple-700 text-[10px]">채택</span>
+                      )}
+                    </div>
+                    <span className={`text-xs tabular-nums ${result.adoptedBasis === 'anniversary' ? 'font-bold text-purple-700' : 'text-gray-400'}`}>
+                      {result.statutoryAnniversary}일
+                    </span>
+                  </div>
+                </div>
+              )}
               {/* 두 후보값 비교 — (a) 법정연차+주말/휴일대체 vs (b) 팀 정당 적립 합 */}
               <div className="px-4 py-3 bg-surface-50 space-y-1.5">
                 <div className="flex items-center justify-between">
