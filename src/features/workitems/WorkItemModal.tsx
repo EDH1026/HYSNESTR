@@ -55,7 +55,7 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
 
   const engWarn = useMemo(() => {
     const v = form.engagement_number.trim()
-    return v && !/^E-\d{8}$/.test(v) ? '형식 권장: E-00000000 (E- 다음 숫자 8자리)' : null
+    return v && !/^(?:E-\d{8}|C\d{6}[A-Z]{2})$/.test(v) ? '형식 권장: E-00000000 또는 C000000AA' : null
   }, [form.engagement_number])
 
   // ── Hashtag helpers ────────────────────────────────────────
@@ -282,7 +282,7 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
               value={form.engagement_number}
               onChange={e => setForm(f => ({ ...f, engagement_number: e.target.value }))}
               disabled={readOnly}
-              placeholder="E-00000000"
+              placeholder="E-00000000 / C000000AA"
             />
             {engWarn && !readOnly && (
               <p className="mt-1 text-[11px] text-amber-600">{engWarn}</p>
