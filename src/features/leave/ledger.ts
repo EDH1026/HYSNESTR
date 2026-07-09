@@ -220,8 +220,8 @@ export function computeLedger(
         merged.push({ ...sorted[i] })
       }
     }
-    const totalCalDays = merged.reduce((sum, iv) => sum + (iv.e - iv.s + 1), 0)
-    const days = Math.round(totalCalDays / 10)
+    const totalWorkDays = merged.reduce((sum, iv) => sum + countWorkdays(iv.s, iv.e, isHoliday), 0)
+    const days = Math.round(totalWorkDays / 10)
     if (days > 0) {
       autoAccruals.push({
         id:        `auto-proj-${wiId}`,

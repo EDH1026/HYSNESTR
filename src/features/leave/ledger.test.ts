@@ -1,8 +1,8 @@
-/**
+﻿/**
  * Unit tests for computeLedger (PRD §7 leave engine)
  *
  * Coverage:
- *   1. Project leave (프로젝트휴가): round(calDays / 10), intersection with main phase
+ *   1. Project leave (프로젝트휴가): round(workDays / 10), intersection with main phase
  *   2. Weekend sub (주말/휴일대체): Sat=0.5, Sun=0.5; weekday holiday=1.0; weekend overrides holiday (PRD §7-2 v2.13)
  *   3. FIFO deduction order and remainder tracking
  *   4. Unpaid leave (no balance effect)
@@ -87,8 +87,8 @@ describe('프로젝트휴가 auto-accrual', () => {
     end_date:   '2024-03-31',
   })
 
-  it('accrues round(calDays / 10) for full overlap with main phase', () => {
-    // main phase = Feb 1 → Mar 31 = 60 days → round(60/10) = 6
+  it('accrues round(workDays / 10) for full overlap with main phase', () => {
+    // main phase = Feb 1 ~ Mar 31 = 42 workdays (no holidays) -> round(42/10) = 4
     const a = mkAssignment({
       person_id:   'p1',
       work_item_id: 'wi1',
@@ -103,11 +103,11 @@ describe('프로젝트휴가 auto-accrual', () => {
       today:       dateToNum('2024-04-01'),
     })
     const projEntry = ledger.accruals.find(e => e.type === '프로젝트휴가')
-    expect(projEntry?.days).toBe(6)
+    expect(projEntry?.days).toBe(4)
   })
 
   it('intersects assignment dates with main phase (partial overlap)', () => {
-    // assignment Feb 15 → Mar 31 = 46 days → round(46/10) = 5
+    // assignment Feb 15 ~ Mar 31 = 32 workdays (no holidays) -> round(32/10) = 3
     const a = mkAssignment({
       person_id:   'p1',
       work_item_id: 'wi1',
@@ -119,7 +119,7 @@ describe('프로젝트휴가 auto-accrual', () => {
       isHoliday: NO_HOLIDAY, today: dateToNum('2024-04-01'),
     })
     const days = ledger.accruals.find(e => e.type === '프로젝트휴가')?.days
-    expect(days).toBe(5)
+    expect(days).toBe(3)
   })
 
   it('rounds 0.5 to 1 (5 intersection days)', () => {
@@ -150,6 +150,22 @@ describe('프로젝트휴가 auto-accrual', () => {
       isHoliday: NO_HOLIDAY, today: dateToNum('2024-04-01'),
     })
     expect(ledger.accruals.find(e => e.type === '프로젝트휴가')).toBeUndefined()
+  })
+
+  it('PRD v2.37 acceptance: 2024-04-22~2024-06-28 → 50 workdays → round(50/10)=5', () => {
+    const wi2 = mkWi({
+      id: 'wi-v237', type: 'project',
+      start: '2024-04-01', main_start: '2024-04-22', end_date: '2024-06-28',
+    })
+    const a = mkAssignment({
+      person_id: 'p1', work_item_id: 'wi-v237',
+      start: '2024-04-22', end_date: '2024-06-28',
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [wi2], assignments: [a], accruals: [],
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-07-01'),
+    })
+    expect(ledger.accruals.find(e => e.type === '프로젝트휴가')?.days).toBe(5)
   })
 
   it('gives no accrual for proposals', () => {
@@ -618,3 +634,4 @@ describe('buildHolidaySet', () => {
     expect(s.has(dateToNum('2025-01-01'))).toBe(true)
   })
 })
+
