@@ -1,10 +1,13 @@
 /**
- * AnnualLeavePanel — §5.13 연차 관리 (editor/admin 전용)
+ * AnnualLeavePanel — §5.13 연차 관리
+ * - editor/admin: 전체 편집 가능
+ * - assistant: 조회 전용 (편집 컨트롤 숨김, RLS로도 차단)
  *
  * 탭: 적립 관리 | 퇴사 정산 | 수치 안내
  */
 import { useState, useMemo, useCallback, type FormEvent } from 'react'
-import { Plus, Trash2, Loader2, AlertTriangle, Info } from 'lucide-react'
+import { Plus, Trash2, Loader2, AlertTriangle, Info, Eye } from 'lucide-react'
+import { useAuthz } from '@/hooks/useAuthz'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import { computeSettlement, computeTimesheetFigures } from './annualLeave'
 import {
@@ -91,7 +94,7 @@ function PersonSelector({
 // Tab 1: 적립 관리
 // ─────────────────────────────────────────────────────────────
 
-function GrantsTab({ person }: { person: Person }) {
+function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) {
   const { data: grants = [],      isLoading: lgA } = useGrantsByPerson(person.id)
   const { data: adjustments = [], isLoading: lgB } = useAdjustmentsByPerson(person.id)
   const upsertGrant     = useUpsertGrant()
@@ -152,13 +155,13 @@ function GrantsTab({ person }: { person: Person }) {
             <h3 className="text-sm font-semibold text-gray-800">법정연차 적립</h3>
             <p className="text-xs text-muted">역년(1월 1일) 기준, 이월 없음</p>
           </div>
-          {!showAddGrant && (
+          {!readOnly && !showAddGrant && (
             <button onClick={() => { setShowAddGrant(true); setEditGrant(null); setGrantForm({ year: String(new Date().getFullYear()), days: '', note: '' }) }}
               className="btn-secondary text-xs py-0.5 gap-1"><Plus size={11} /> 연도 추가</button>
           )}
         </div>
 
-        {showAddGrant && (
+        {!readOnly && showAddGrant && (
           <form onSubmit={handleGrantSubmit} className="rounded-md border border-brand-200 bg-brand-50 p-3 space-y-3 mb-3">
             <p className="text-xs font-semibold text-brand-800">{editGrant ? '적립 수정' : '연도별 적립 추가'}</p>
             <div className="grid grid-cols-3 gap-2">
@@ -199,7 +202,7 @@ function GrantsTab({ person }: { person: Person }) {
                   <th className="px-3 py-2 text-left font-medium">연도</th>
                   <th className="px-3 py-2 text-right font-medium">일수</th>
                   <th className="px-3 py-2 text-left font-medium">비고</th>
-                  <th className="px-2 py-2 w-16 text-center font-medium">작업</th>
+                  {!readOnly && <th className="px-2 py-2 w-16 text-center font-medium">작업</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -208,13 +211,15 @@ function GrantsTab({ person }: { person: Person }) {
                     <td className="px-3 py-2 font-medium">{g.year}년</td>
                     <td className="px-3 py-2 text-right font-semibold text-brand-700">{g.days}일</td>
                     <td className="px-3 py-2 text-muted">{g.note ?? '—'}</td>
-                    <td className="px-2 py-2 text-center">
-                      <button onClick={() => startEditGrant(g)} className="rounded px-1.5 py-0.5 text-[10px] text-brand-600 hover:bg-brand-50 mr-1">수정</button>
-                      <button onClick={() => { if (confirm('삭제할까요?')) deleteGrant.mutate({ id: g.id, personId: person.id }) }}
-                        className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
-                        <Trash2 size={11} />
-                      </button>
-                    </td>
+                    {!readOnly && (
+                      <td className="px-2 py-2 text-center">
+                        <button onClick={() => startEditGrant(g)} className="rounded px-1.5 py-0.5 text-[10px] text-brand-600 hover:bg-brand-50 mr-1">수정</button>
+                        <button onClick={() => { if (confirm('삭제할까요?')) deleteGrant.mutate({ id: g.id, personId: person.id }) }}
+                          className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
+                          <Trash2 size={11} />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -230,12 +235,12 @@ function GrantsTab({ person }: { person: Person }) {
             <h3 className="text-sm font-semibold text-gray-800">수동 보정</h3>
             <p className="text-xs text-muted">특이사항에 따른 +/- 조정 (사유 기재 권장)</p>
           </div>
-          {!showAddAdj && (
+          {!readOnly && !showAddAdj && (
             <button onClick={() => setShowAddAdj(true)} className="btn-secondary text-xs py-0.5 gap-1"><Plus size={11} /> 보정 추가</button>
           )}
         </div>
 
-        {showAddAdj && (
+        {!readOnly && showAddAdj && (
           <form onSubmit={handleAdjSubmit} className="rounded-md border border-amber-200 bg-amber-50 p-3 space-y-3 mb-3">
             <p className="text-xs font-semibold text-amber-800">수동 보정 추가</p>
             <div className="grid grid-cols-2 gap-2">
@@ -287,7 +292,7 @@ function GrantsTab({ person }: { person: Person }) {
                   <th className="px-3 py-2 text-left font-medium">유형</th>
                   <th className="px-3 py-2 text-right font-medium">일수</th>
                   <th className="px-3 py-2 text-left font-medium">사유</th>
-                  <th className="px-2 py-2 w-8" />
+                  {!readOnly && <th className="px-2 py-2 w-8" />}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -303,12 +308,14 @@ function GrantsTab({ person }: { person: Person }) {
                       {a.days >= 0 ? '+' : ''}{a.days}일
                     </td>
                     <td className="px-3 py-2 text-muted">{a.note ?? '—'}</td>
-                    <td className="px-2 py-2">
-                      <button onClick={() => { if (confirm('삭제할까요?')) deleteAdj.mutate({ id: a.id, personId: person.id }) }}
-                        className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
-                        <Trash2 size={11} />
-                      </button>
-                    </td>
+                    {!readOnly && (
+                      <td className="px-2 py-2">
+                        <button onClick={() => { if (confirm('삭제할까요?')) deleteAdj.mutate({ id: a.id, personId: person.id }) }}
+                          className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
+                          <Trash2 size={11} />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -543,12 +550,21 @@ const SUB_TABS: { id: SubTab; label: string }[] = [
 export default function AnnualLeavePanel() {
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null)
   const [subTab, setSubTab] = useState<SubTab>('grants')
+  const { isAssistant } = useAuthz()
+  const readOnly = isAssistant()
 
   return (
-    <div className="flex h-full">
-      <PersonSelector selected={selectedPerson} onSelect={p => { setSelectedPerson(p); setSubTab('grants') }} />
+    <div className="flex h-full flex-col">
+      {readOnly && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-purple-50 border-b border-purple-200 text-xs text-purple-700 flex-shrink-0">
+          <Eye size={12} className="flex-shrink-0" />
+          <span>조회 전용 — assistant 계정은 편집 기능을 사용할 수 없습니다.</span>
+        </div>
+      )}
+      <div className="flex flex-1 overflow-hidden">
+        <PersonSelector selected={selectedPerson} onSelect={p => { setSelectedPerson(p); setSubTab('grants') }} />
 
-      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden">
         {!selectedPerson ? (
           <div className="flex items-center justify-center h-full text-muted text-sm">
             왼쪽에서 인력을 선택하세요.
@@ -588,12 +604,13 @@ export default function AnnualLeavePanel() {
 
             {/* Tab content */}
             <div className="flex-1 overflow-auto p-6 max-w-3xl">
-              {subTab === 'grants'       && <GrantsTab person={selectedPerson} />}
-              {subTab === 'settlement'   && <SettlementTab person={selectedPerson} />}
+              {subTab === 'grants'        && <GrantsTab person={selectedPerson} readOnly={readOnly} />}
+              {subTab === 'settlement'    && <SettlementTab person={selectedPerson} />}
               {subTab === 'timesheetfigs' && <TimesheetTab person={selectedPerson} />}
             </div>
           </>
         )}
+        </div>
       </div>
     </div>
   )
