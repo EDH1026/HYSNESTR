@@ -230,7 +230,7 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
           year:       row.year,
           days:       row.days,
           grant_type: row.grant_type,
-          note:       '근로기준법 자동계산 (회계연도)',
+          note:       `근로기준법 자동계산 (회계연도) | ${row.label}`,
         })
       }
     } catch (e) {
@@ -249,7 +249,7 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
         <div className="flex items-center justify-between mb-3">
           <div>
             <h3 className="text-sm font-semibold text-gray-800">법정연차 적립</h3>
-            <p className="text-xs text-muted">역년(1월 1일) 기준, 이월 없음</p>
+            <p className="text-xs text-muted">회계연도(7월 1일) 기준, 이월 없음</p>
           </div>
           {!readOnly && !showAddGrant && (
             <div className="flex gap-2">
@@ -308,37 +308,61 @@ function GrantsTab({ person, readOnly }: { person: Person; readOnly: boolean }) 
               <thead>
                 <tr className="bg-surface-50 border-b border-border text-muted">
                   <th className="px-3 py-2 text-left font-medium">연도</th>
+                  <th className="px-3 py-2 text-left font-medium">기준일</th>
                   <th className="px-3 py-2 text-right font-medium">일수</th>
-                  <th className="px-3 py-2 text-left font-medium">비고</th>
+                  <th className="px-3 py-2 text-left font-medium">비고 (산출 근거)</th>
                   {!readOnly && <th className="px-2 py-2 w-16 text-center font-medium">작업</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {grants.map(g => (
-                  <tr key={g.id} className="hover:bg-surface-50">
-                    <td className="px-3 py-2 font-medium">
-                      {g.year}년
-                      {g.grant_type === 'first_year_monthly' && (
-                        <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">월차</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right font-semibold text-brand-700">{g.days}일</td>
-                    <td className="px-3 py-2 text-muted">{g.note ?? '—'}</td>
-                    {!readOnly && (
-                      <td className="px-2 py-2 text-center">
-                        <button onClick={() => startEditGrant(g)} className="rounded px-1.5 py-0.5 text-[10px] text-brand-600 hover:bg-brand-50 mr-1">수정</button>
-                        <button onClick={() => { if (confirm('삭제할까요?')) deleteGrant.mutate({ id: g.id, personId: person.id }) }}
-                          className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
-                          <Trash2 size={11} />
-                        </button>
+                {grants.map(g => {
+                  const grantDateStr = g.grant_type === 'annual' ? `${g.year}-07-01` : '—'
+                  const noteDetail = (() => {
+                    if (!g.note) return '—'
+                    const pipe = g.note.indexOf(' | ')
+                    return pipe >= 0 ? g.note.slice(pipe + 3) : g.note
+                  })()
+                  return (
+                    <tr key={g.id} className="hover:bg-surface-50">
+                      <td className="px-3 py-2 font-medium">
+                        {g.year}년
+                        {g.grant_type === 'first_year_monthly' && (
+                          <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">월차</span>
+                        )}
                       </td>
-                    )}
-                  </tr>
-                ))}
+                      <td className="px-3 py-2 text-muted font-mono">{grantDateStr}</td>
+                      <td className="px-3 py-2 text-right font-semibold text-brand-700">{g.days}일</td>
+                      <td className="px-3 py-2 text-muted max-w-[220px] truncate" title={g.note ?? undefined}>{noteDetail}</td>
+                      {!readOnly && (
+                        <td className="px-2 py-2 text-center">
+                          <button onClick={() => startEditGrant(g)} className="rounded px-1.5 py-0.5 text-[10px] text-brand-600 hover:bg-brand-50 mr-1">수정</button>
+                          <button onClick={() => { if (confirm('삭제할까요?')) deleteGrant.mutate({ id: g.id, personId: person.id }) }}
+                            className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors">
+                            <Trash2 size={11} />
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
+
+        {/* 입사일 기준 참고값 (AL-2c: 비교·검증용, 항상 표시) */}
+        {person.hire_date && (() => {
+          const annivTotal = sumStatutoryLeave(
+            computeStatutoryLeave(person.hire_date, 'anniversary', numToStr(today())),
+          )
+          return (
+            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted border-t border-border pt-2">
+              <span>입사일 기준 참고:</span>
+              <span className="font-semibold text-gray-700">{annivTotal}일</span>
+              <span className="text-[10px]">(주년일 기준 합산, 재직 여부 무관)</span>
+            </div>
+          )
+        })()}
       </section>
 
       {/* Adjustments section */}

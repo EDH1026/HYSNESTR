@@ -1,29 +1,21 @@
 /**
- * Edge Function: fill-statutory-leave  (PRD v2.29 §5.13 AL-9)
+ * Edge Function: fill-statutory-leave  (PRD v2.31 §5.13 AL-2b③)
  *
  * 근로기준법 제60조 기준 법정연차를 모든 인력(hire_date 존재)에 대해
  * 회계연도(7/1) 기준으로 계산하여 annual_leave_grants 테이블에 반영한다.
  *
- * 규칙 (v2.29 변경 사항):
- *   • grant_type 으로 행 유형을 구분한다:
- *       'first_year_monthly' — 입사 후 11개월 월차(역년별 합산)
- *       'annual'             — 첫 7/1 비례연차 + 이후 매년 7/1 연차
- *   • UNIQUE 키가 (person_id, year, grant_type) 으로 변경되었으므로
- *     INSERT ... ON CONFLICT (person_id, year, grant_type) DO NOTHING 사용.
- *   • 재실행 시: 자동계산 note 행만 삭제 후 재삽입 — 수동 입력 행은 건드리지 않음.
- *     수동 행과 (year, grant_type) 충돌 시 에러 없이 건너뜀.
+ * 규칙:
+ *   • grant_type 'first_year_monthly' / 'annual' 으로 행 유형 구분.
+ *   • 가산: floor((만근속연수 - 1) / 2). 만근속연수 = yearsOfEmployment(hireDate, grantDate).
+ *   • DELETE(자동계산 note 행) → upsert ON CONFLICT DO NOTHING.
  *
- * Body (JSON, optional):
- *   { anchorDate?: "YYYY-MM-DD" }   ← 기본값: 오늘 (서버 UTC)
- *
- * Deploy:
- *   supabase functions deploy fill-statutory-leave
+ * Body: { anchorDate?: "YYYY-MM-DD" }   ← 기본값: UTC 오늘
+ * Deploy: supabase functions deploy fill-statutory-leave
  */
 
 import { serve }        from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// ── CORS ──────────────────────────────────────────────────────
 const CORS = {
   'Access-Control-Allow-Origin':  Deno.env.get('APP_ORIGIN') ?? '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -39,9 +31,7 @@ function json(body: unknown, status = 200) {
 
 // ── 날짜 유틸 ────────────────────────────────────────────────
 
-function r1(n: number): number {
-  return Math.round(n * 10) / 10
-}
+function r1(n: number): number { return Math.round(n * 10) / 10 }
 
 function daysBetween(startStr: string, endStr: string): number {
   const [sy, sm, sd] = startStr.split('-').map(Number)
@@ -57,60 +47,84 @@ function addMonths(dateStr: string, months: number): string {
   const ty = y + Math.floor(totalMonths / 12)
   const tm = (totalMonths % 12 + 12) % 12 + 1
   const daysInMonth = new Date(Date.UTC(ty, tm, 0)).getUTCDate()
-  const day = Math.min(d, daysInMonth)
-  return `${ty}-${String(tm).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  return `${ty}-${String(tm).padStart(2, '0')}-${String(Math.min(d, daysInMonth)).padStart(2, '0')}`
 }
 
-// ── 법정연차 계산 (grant_type 분리) ─────────────────────────
+/** 입사일~기준일 사이 만 근속연수 */
+function yearsOfEmployment(hireDate: string, grantDate: string): number {
+  const hy = parseInt(hireDate.slice(0, 4), 10), hm = parseInt(hireDate.slice(5, 7), 10), hd = parseInt(hireDate.slice(8, 10), 10)
+  const gy = parseInt(grantDate.slice(0, 4), 10), gm = parseInt(grantDate.slice(5, 7), 10), gd = parseInt(grantDate.slice(8, 10), 10)
+  let years = gy - hy
+  if (gm < hm || (gm === hm && gd < hd)) years--
+  return Math.max(0, years)
+}
+
+// ── 법정연차 계산 ─────────────────────────────────────────────
 
 interface TypedGrantRow {
   year:       number
   grant_type: 'first_year_monthly' | 'annual'
   days:       number
+  detail:     string  // 산출 근거 (note 에 포함)
 }
 
 function computeTypedGrants(hireDate: string, asOfDate: string): TypedGrantRow[] {
-  const monthly = new Map<number, number>()  // calendar year → days
-  const annual  = new Map<number, number>()  // calendar year → days
-
   const hireYear  = parseInt(hireDate.slice(0, 4), 10)
   const hireMonth = parseInt(hireDate.slice(5, 7), 10)
 
-  // 첫 11개월 월차 (역년별 합산)
+  // 월차 (역년별 합산)
+  const monthlyMap = new Map<number, { days: number; first: string; last: string }>()
   for (let m = 1; m <= 11; m++) {
     const date = addMonths(hireDate, m)
     if (date > asOfDate) break
-    const yr = parseInt(date.slice(0, 4), 10)
-    monthly.set(yr, r1((monthly.get(yr) ?? 0) + 1))
+    const yr   = parseInt(date.slice(0, 4), 10)
+    const prev = monthlyMap.get(yr)
+    if (prev) { prev.days = r1(prev.days + 1); prev.last = date }
+    else       { monthlyMap.set(yr, { days: 1, first: date, last: date }) }
   }
 
-  // 첫 7/1 비례연차
+  // 첫 7/1 비례연차 + 이후 매년 7/1 연차
   const firstFiscalYear = hireMonth < 7 ? hireYear : hireYear + 1
+  const annualRows: TypedGrantRow[] = []
+
   const firstFiscalDate = `${firstFiscalYear}-07-01`
   if (firstFiscalDate <= asOfDate) {
     const daysWorked = daysBetween(hireDate, firstFiscalDate)
     const days = r1(15 * daysWorked / 365)
-    annual.set(firstFiscalYear, r1((annual.get(firstFiscalYear) ?? 0) + days))
+    annualRows.push({
+      year: firstFiscalYear,
+      grant_type: 'annual',
+      days,
+      detail: `비례연차: 15일×${daysWorked}일/365≈${days}일`,
+    })
   }
 
-  // 이후 매년 7/1 연차
   let fiscalYear = firstFiscalYear + 1
-  let n = 1
   while (true) {
     const date = `${fiscalYear}-07-01`
     if (date > asOfDate) break
-    const elapsed = n + 1
-    annual.set(fiscalYear, Math.min(25, 15 + Math.floor((elapsed - 1) / 2)))
+    const ye    = yearsOfEmployment(hireDate, date)
+    const bonus = Math.min(10, Math.floor((ye - 1) / 2))
+    const days  = 15 + bonus
+    annualRows.push({
+      year: fiscalYear,
+      grant_type: 'annual',
+      days,
+      detail: bonus > 0
+        ? `기본15일+가산${bonus}일=${days}일 (근속${ye}년)`
+        : `기본15일 (근속${ye}년)`,
+    })
     fiscalYear++
-    n++
   }
 
   const rows: TypedGrantRow[] = []
-  for (const [year, days] of monthly)
-    rows.push({ year, grant_type: 'first_year_monthly', days })
-  for (const [year, days] of annual)
-    rows.push({ year, grant_type: 'annual', days: r1(days) })
-  return rows
+  for (const [year, { days, first, last }] of monthlyMap) {
+    const range = first.slice(0, 7) === last.slice(0, 7)
+      ? first.slice(0, 7)
+      : `${first.slice(0, 7)}~${last.slice(0, 7)}`
+    rows.push({ year, grant_type: 'first_year_monthly', days, detail: `매월개근 ${range} 합계 ${days}일` })
+  }
+  return rows.concat(annualRows)
 }
 
 // ── Handler ───────────────────────────────────────────────────
@@ -119,7 +133,6 @@ serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS })
   if (req.method !== 'POST')   return json({ error: 'Method not allowed' }, 405)
 
-  // ── Auth: admin only ──────────────────────────────────────
   const authHeader = req.headers.get('Authorization')
   if (!authHeader) return json({ error: 'Unauthorized' }, 401)
 
@@ -135,44 +148,28 @@ serve(async (req: Request) => {
   if (userErr || !user) return json({ error: 'Unauthorized' }, 401)
 
   const { data: profile } = await callerClient
-    .from('profiles')
-    .select('global_role, status')
-    .eq('id', user.id)
-    .single()
-  if (profile?.global_role !== 'admin' || profile?.status !== 'active') {
+    .from('profiles').select('global_role, status').eq('id', user.id).single()
+  if (profile?.global_role !== 'admin' || profile?.status !== 'active')
     return json({ error: 'Forbidden: admin role required' }, 403)
-  }
 
-  // ── Parse body ───────────────────────────────────────────
   let anchorDate: string
   try {
     const body = await req.json().catch(() => ({}))
     const raw  = body?.anchorDate
     anchorDate = typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)
-      ? raw
-      : new Date().toISOString().slice(0, 10)
+      ? raw : new Date().toISOString().slice(0, 10)
   } catch {
     anchorDate = new Date().toISOString().slice(0, 10)
   }
 
-  // ── Fetch all people with hire_date ───────────────────────
-  const adminClient = createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false },
-  })
+  const adminClient = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } })
 
   const { data: people, error: peopleErr } = await adminClient
-    .from('people')
-    .select('id, hire_date')
-    .not('hire_date', 'is', null)
+    .from('people').select('id, hire_date').not('hire_date', 'is', null)
+  if (peopleErr) return json({ error: `DB read failed: ${peopleErr.message}` }, 500)
 
-  if (peopleErr) {
-    console.error('[fill-statutory-leave] people fetch failed:', peopleErr.message)
-    return json({ error: `DB read failed: ${peopleErr.message}` }, 500)
-  }
-
-  const NOTE = '근로기준법 자동계산 (회계연도)'
-  let totalInserted = 0
-  let totalPeople   = 0
+  const NOTE_PREFIX = '근로기준법 자동계산 (회계연도)'
+  let totalInserted = 0, totalPeople = 0
   const errors: string[] = []
 
   for (const person of (people ?? [])) {
@@ -181,21 +178,19 @@ serve(async (req: Request) => {
       const rows = computeTypedGrants(hireDate, anchorDate)
       if (rows.length === 0) continue
 
-      // 1. 기존 자동계산 행 삭제 (수동 입력 행은 보존)
+      // 기존 자동계산 행 삭제 (수동 입력 보존)
       const { error: delErr } = await adminClient
         .from('annual_leave_grants')
-        .delete()
-        .eq('person_id', person.id)
-        .like('note', '근로기준법 자동계산%')
+        .delete().eq('person_id', person.id).like('note', '근로기준법 자동계산%')
       if (delErr) throw new Error(delErr.message)
 
-      // 2. 새 행 삽입 — 수동 행과 (year, grant_type) 충돌 시 DO NOTHING
+      // 삽입 — 수동 행 (year, grant_type) 충돌 시 DO NOTHING
       const insertRows = rows.map(r => ({
         person_id:  person.id,
         year:       r.year,
         grant_type: r.grant_type,
         days:       r.days,
-        note:       NOTE,
+        note:       `${NOTE_PREFIX} | ${r.detail}`,
       }))
       const { error: insErr } = await adminClient
         .from('annual_leave_grants')
@@ -211,24 +206,11 @@ serve(async (req: Request) => {
     }
   }
 
-  // ── Audit log ────────────────────────────────────────────
   await adminClient.from('audit_log').insert({
-    user_id:     user.id,
-    action:      'sync',
-    target_type: 'annual_leave_grants',
-    target_id:   anchorDate,
-    at:          new Date().toISOString(),
+    user_id: user.id, action: 'sync', target_type: 'annual_leave_grants',
+    target_id: anchorDate, at: new Date().toISOString(),
   })
 
-  console.log(
-    `[fill-statutory-leave] anchor=${anchorDate}` +
-    ` people=${totalPeople} rows=${totalInserted} errors=${errors.length}`,
-  )
-
-  return json({
-    anchorDate,
-    people:   totalPeople,
-    inserted: totalInserted,
-    ...(errors.length > 0 ? { errors } : {}),
-  })
+  console.log(`[fill-statutory-leave] anchor=${anchorDate} people=${totalPeople} rows=${totalInserted} errors=${errors.length}`)
+  return json({ anchorDate, people: totalPeople, inserted: totalInserted, ...(errors.length ? { errors } : {}) })
 })

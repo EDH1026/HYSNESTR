@@ -5,7 +5,7 @@
  * - 첫 해: 매월 만근 시 1일 (최대 11개월 = 11일)
  * - 회계연도(calendar) 기준 — 회사 회계연도 7월 1일 기준 (PRD v2.28):
  *     다음 회계연도 7월 1일: 15 × (입사일~해당 7/1 재직일수 / 365)
- *     이후 매년 7월 1일: min(25, 15 + floor((경과횟수) / 2))
+ *     이후 매년 7월 1일: min(25, 15 + floor((만근속연수 - 1) / 2))
  * - 입사일(anniversary) 기준:
  *     N번째 주년일: min(25, 15 + floor((N - 1) / 2))
  */
@@ -20,7 +20,6 @@ export interface StatutoryLeaveEvent {
 function r1(n: number): number {
   return Math.round(n * 10) / 10
 }
-
 
 /** 두 YYYY-MM-DD 사이 일 수 (end 미포함) */
 function daysBetween(startStr: string, endStr: string): number {
@@ -47,6 +46,22 @@ function addYears(dateStr: string, years: number): string {
   return addMonths(dateStr, years * 12)
 }
 
+/**
+ * 입사일~기준일 사이 만 근속연수.
+ * 주년일(月·日)이 기준일보다 늦으면 아직 해당 연도 미충족.
+ */
+function yearsOfEmployment(hireDate: string, grantDate: string): number {
+  const hy = parseInt(hireDate.slice(0, 4), 10)
+  const hm = parseInt(hireDate.slice(5, 7), 10)
+  const hd = parseInt(hireDate.slice(8, 10), 10)
+  const gy = parseInt(grantDate.slice(0, 4), 10)
+  const gm = parseInt(grantDate.slice(5, 7), 10)
+  const gd = parseInt(grantDate.slice(8, 10), 10)
+  let years = gy - hy
+  if (gm < hm || (gm === hm && gd < hd)) years--
+  return Math.max(0, years)
+}
+
 // ── Public API ────────────────────────────────────────────────
 
 export function computeStatutoryLeave(
@@ -65,29 +80,38 @@ export function computeStatutoryLeave(
   }
 
   if (anchorType === 'calendar') {
-    // 첫 연차: 다음 회계연도 7월 1일, 비례 부여 (PRD v2.28 — 7월 1일 기준)
-    // 7월 이후 입사 → 다음해 7/1; 7월 이전(1~6월) 입사 → 같은 해 7/1
     const hireMonth = parseInt(hireDate.slice(5, 7), 10)
     const firstFiscalYear = hireMonth < 7 ? hireYear : hireYear + 1
     const firstFiscalDate = `${firstFiscalYear}-07-01`
 
     if (firstFiscalDate <= asOfDate) {
       const daysWorked = daysBetween(hireDate, firstFiscalDate)
-      const days = r1(15 * daysWorked / 365)   // 고정 365 분모 (PRD)
-      events.push({ date: firstFiscalDate, days, kind: 'annual', label: `${firstFiscalYear}년 비례연차` })
+      const days = r1(15 * daysWorked / 365)
+      events.push({
+        date: firstFiscalDate,
+        days,
+        kind: 'annual',
+        label: `비례연차: 15일×${daysWorked}일/365≈${days}일`,
+      })
     }
 
-    // 이후 매년 7월 1일
+    // 이후 매년 7월 1일 — 가산: floor((만근속연수 - 1) / 2)
     let fiscalYear = firstFiscalYear + 1
-    let n = 1  // n=1 → elapsed=2 → 15일; n=2 → elapsed=3 → 16일 …
     while (true) {
       const date = `${fiscalYear}-07-01`
       if (date > asOfDate) break
-      const elapsed = n + 1
-      const days = Math.min(25, 15 + Math.floor((elapsed - 1) / 2))
-      events.push({ date, days, kind: 'annual', label: `${fiscalYear}년 연차` })
+      const ye    = yearsOfEmployment(hireDate, date)
+      const bonus = Math.min(10, Math.floor((ye - 1) / 2))
+      const days  = 15 + bonus
+      events.push({
+        date,
+        days,
+        kind: 'annual',
+        label: bonus > 0
+          ? `기본15일+가산${bonus}일=${days}일 (근속${ye}년)`
+          : `기본15일 (근속${ye}년)`,
+      })
       fiscalYear++
-      n++
     }
   } else {
     // 입사일 기준: N번째 주년일
@@ -95,8 +119,16 @@ export function computeStatutoryLeave(
     while (true) {
       const date = addYears(hireDate, n)
       if (date > asOfDate) break
-      const days = Math.min(25, 15 + Math.floor((n - 1) / 2))
-      events.push({ date, days, kind: 'annual', label: `${n}주년 연차` })
+      const bonus = Math.min(10, Math.floor((n - 1) / 2))
+      const days  = 15 + bonus
+      events.push({
+        date,
+        days,
+        kind: 'annual',
+        label: bonus > 0
+          ? `${n}주년: 기본15일+가산${bonus}일=${days}일`
+          : `${n}주년: 기본15일`,
+      })
       n++
     }
   }
@@ -123,23 +155,39 @@ export interface GrantTypeRow {
   grant_type: 'first_year_monthly' | 'annual'
   days:       number
   label:      string
+  grantDate?: string  // 'annual' 타입: 적립 기준일 (YYYY-MM-DD = {year}-07-01)
 }
 
-/** 이벤트를 (역년, grant_type)별로 집계 — Edge Function·자동계산 버튼 공용 */
+/** 이벤트를 (역년, grant_type)별로 집계 + 산출 라벨 생성 */
 export function groupByYearAndType(events: StatutoryLeaveEvent[]): GrantTypeRow[] {
-  const monthly = new Map<number, { days: number; labels: string[] }>()
-  const annual  = new Map<number, { days: number; labels: string[] }>()
+  const monthlyMap = new Map<number, { days: number; first: string; last: string }>()
+  const annualMap  = new Map<number, { days: number; label: string; date: string }>()
+
   for (const e of events) {
     const y = parseInt(e.date.slice(0, 4), 10)
-    const bucket = e.kind === 'monthly' ? monthly : annual
-    const prev = bucket.get(y)
-    if (prev) { prev.days = r1(prev.days + e.days); prev.labels.push(e.label) }
-    else       { bucket.set(y, { days: e.days, labels: [e.label] }) }
+    if (e.kind === 'monthly') {
+      const prev = monthlyMap.get(y)
+      if (prev) { prev.days = r1(prev.days + e.days); prev.last = e.date }
+      else       { monthlyMap.set(y, { days: e.days, first: e.date, last: e.date }) }
+    } else {
+      annualMap.set(y, { days: e.days, label: e.label, date: e.date })
+    }
   }
+
   const rows: GrantTypeRow[] = []
-  for (const [year, { days, labels }] of monthly)
-    rows.push({ year, grant_type: 'first_year_monthly', days, label: labels.join(', ') })
-  for (const [year, { days, labels }] of annual)
-    rows.push({ year, grant_type: 'annual', days, label: labels.join(', ') })
+  for (const [year, { days, first, last }] of monthlyMap) {
+    const range = first.slice(0, 7) === last.slice(0, 7)
+      ? first.slice(0, 7)
+      : `${first.slice(0, 7)}~${last.slice(0, 7)}`
+    rows.push({
+      year,
+      grant_type: 'first_year_monthly',
+      days,
+      label: `매월개근 ${range} 합계 ${days}일`,
+    })
+  }
+  for (const [year, { days, label, date }] of annualMap)
+    rows.push({ year, grant_type: 'annual', days, label, grantDate: date })
+
   return rows.sort((a, b) => a.year - b.year || a.grant_type.localeCompare(b.grant_type))
 }
