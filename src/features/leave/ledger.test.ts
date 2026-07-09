@@ -3,7 +3,7 @@
  *
  * Coverage:
  *   1. Project leave (프로젝트휴가): round(calDays / 10), intersection with main phase
- *   2. Weekend sub (주말/휴일대체): Saturday=0.5, Sunday=1.0, holiday=1.0 regardless of weekend
+ *   2. Weekend sub (주말/휴일대체): Sat=0.5, Sun=0.5; weekday holiday=1.0; weekend overrides holiday (PRD §7-2 v2.13)
  *   3. FIFO deduction order and remainder tracking
  *   4. Unpaid leave (no balance effect)
  *   5. Pipeline exclusion — no accruals from pipeline assignments
@@ -240,7 +240,7 @@ describe('주말/휴일대체 auto-accrual', () => {
     expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(0.5)
   })
 
-  it('Sunday = 1.0 day per date', () => {
+  it('Sunday = 0.5 day (treated as weekend, same as Saturday)', () => {
     // 2024-01-07 = Sunday
     const a = mkAssignment({
       person_id: 'p1', work_item_id: 'wi1',
@@ -250,11 +250,11 @@ describe('주말/휴일대체 auto-accrual', () => {
       workItems: [wi], assignments: [a], accruals: [],
       isHoliday: NO_HOLIDAY, today: dateToNum('2024-02-01'),
     })
-    expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(1.0)
+    expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(0.5)
   })
 
-  it('Saturday that is a holiday = 1.0 day (holiday overrides Saturday)', () => {
-    // 2024-01-06 = Saturday, treat as holiday
+  it('Saturday that is also a holiday = 0.5 day (weekend overrides holiday)', () => {
+    // 2024-01-06 = Saturday, also a holiday → weekend rule takes priority → 0.5
     const isHoliday = (n: number) => n === dateToNum('2024-01-06')
     const a = mkAssignment({
       person_id: 'p1', work_item_id: 'wi1',
@@ -264,11 +264,39 @@ describe('주말/휴일대체 auto-accrual', () => {
       workItems: [wi], assignments: [a], accruals: [],
       isHoliday, today: dateToNum('2024-02-01'),
     })
+    expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(0.5)
+  })
+
+  it('Sunday that is also a holiday = 0.5 day (weekend overrides holiday)', () => {
+    // 2024-01-07 = Sunday, also a holiday → weekend rule takes priority → 0.5
+    const isHoliday = (n: number) => n === dateToNum('2024-01-07')
+    const a = mkAssignment({
+      person_id: 'p1', work_item_id: 'wi1',
+      weekend_dates: ['2024-01-07'],
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [wi], assignments: [a], accruals: [],
+      isHoliday, today: dateToNum('2024-02-01'),
+    })
+    expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(0.5)
+  })
+
+  it('weekday holiday = 1.0 day', () => {
+    // 2024-01-15 = Monday, treated as holiday
+    const isHoliday = (n: number) => n === dateToNum('2024-01-15')
+    const a = mkAssignment({
+      person_id: 'p1', work_item_id: 'wi1',
+      weekend_dates: ['2024-01-15'],
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [wi], assignments: [a], accruals: [],
+      isHoliday, today: dateToNum('2024-02-01'),
+    })
     expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(1.0)
   })
 
   it('sums multiple weekend dates correctly', () => {
-    // 2 Saturdays (0.5 each) + 1 Sunday (1.0)
+    // 2 Saturdays (0.5 each) + 1 Sunday (0.5) = 1.5
     const a = mkAssignment({
       person_id: 'p1', work_item_id: 'wi1',
       weekend_dates: ['2024-01-06', '2024-01-07', '2024-01-13'],
@@ -277,7 +305,7 @@ describe('주말/휴일대체 auto-accrual', () => {
       workItems: [wi], assignments: [a], accruals: [],
       isHoliday: NO_HOLIDAY, today: dateToNum('2024-02-01'),
     })
-    expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(2.0)
+    expect(ledger.accruals.find(e => e.type === '주말/휴일대체')?.days).toBe(1.5)
   })
 })
 

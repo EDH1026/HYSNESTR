@@ -10,7 +10,7 @@
  * No side effects; safe to call in useMemo.
  */
 
-import { dateToNum, numToStr, numToDate, isWeekend, isSaturday } from '@/lib/date'
+import { dateToNum, numToStr, numToDate, isWeekend } from '@/lib/date'
 import type { WorkItem, Assignment, Accrual, AccrualType, LeaveType } from '@/types'
 
 // ── Output types ──────────────────────────────────────────────
@@ -164,8 +164,8 @@ export function computeLedger(
       let wkDays = 0
       for (const d of a.weekend_dates) {
         const n = dateToNum(d)
-        // Saturday=0.5; Sunday or holiday (any day)=1.0 (PRD §7-2)
-        wkDays += (!isHoliday(n) && isSaturday(n)) ? 0.5 : 1.0
+        // Weekend (Sat/Sun) → 0.5 regardless of holiday; non-weekend holiday → 1.0 (PRD §7-2)
+        wkDays += isWeekend(n) ? 0.5 : 1.0
       }
       if (wkDays > 0) {
         autoAccruals.push({
