@@ -488,7 +488,7 @@ function generateSettlementHtml(
     ? accrualRows.map(a => `<tr>
       <td><span class="pill pill-purple">${escHtml(a.type)}</span></td>
       <td class="mono">${escHtml(a.date)}</td>
-      <td>${a.sourceId ? escHtml(workItemById.get(a.sourceId)?.name ?? '—') : '—'}</td>
+      <td>${a.sourceId ? escHtml(workItemById.get(a.sourceId)?.name ?? '—') : (!a.isAuto && a.note ? escHtml(a.note) : '—')}</td>
       <td class="num pos">+${escHtml(a.days)}</td></tr>`)
     : ['<tr><td colspan="4" class="empty">내역 없음</td></tr>']
 
@@ -795,7 +795,9 @@ function SettlementTab({ person }: { person: Person }) {
                       <td className="px-3 py-2"><span className="pill bg-purple-100 text-purple-700 text-[10px]">{a.type}</span></td>
                       <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
                       <td className="px-3 py-2 text-muted truncate max-w-[140px]">
-                        {a.sourceId ? (workItemById.get(a.sourceId)?.name ?? '—') : '—'}
+                        {a.sourceId
+                          ? (workItemById.get(a.sourceId)?.name ?? a.sourceId)
+                          : (!a.isAuto && a.note ? a.note : '—')}
                       </td>
                       <td className="px-3 py-2 text-right font-semibold text-purple-700">+{a.days}</td>
                     </tr>

@@ -139,7 +139,9 @@ function LeaveTab({
                       <span className="pill bg-brand-100 text-brand-700">{e.type}</span>
                     </td>
                     <td className="px-3 py-2 text-muted">
-                      {e.sourceId ? (wiMap.get(e.sourceId)?.name ?? '—') : '—'}
+                      {e.sourceId
+                        ? (wiMap.get(e.sourceId)?.name ?? e.sourceId)
+                        : (!e.isAuto && e.note ? e.note : '—')}
                     </td>
                     <td className="px-3 py-2 text-right font-medium">+{e.days}</td>
                     <td className="px-3 py-2 text-right">
