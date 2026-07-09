@@ -49,7 +49,12 @@ export default function AuditLogViewer() {
     }
   }
 
-  if (error) return <p className="text-sm text-red-600 py-4">{String(error)}</p>
+  if (error) return (
+    <p className="text-sm text-red-600 py-4">
+      감사 로그를 불러오지 못했습니다:{' '}
+      {error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.'}
+    </p>
+  )
 
   return (
     <div className="space-y-3">

@@ -103,7 +103,7 @@ export function useAuditLog(limit = 100) {
         .select('*, profiles(name)')
         .order('at', { ascending: false })
         .limit(limit)
-      if (error) throw error
+      if (error) throw new Error(error.message)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (data ?? []).map((row: any) => ({
         id:          row.id,
