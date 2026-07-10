@@ -942,7 +942,7 @@ function SettlementTab({ person }: { person: Person }) {
             {!person.hire_date ? (
               <p className="text-xs text-muted py-3 text-center">입사일 미입력 — 수동 보정만 반영됨 ({result.statutory}일)</p>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 <StatutorySection
                   title="회계연도(FY) 기준"
                   titleColor="text-brand-700"
@@ -974,12 +974,18 @@ function SettlementTab({ person }: { person: Person }) {
             <h3 className="text-xs font-semibold text-gray-700 mb-2">② 팀 정당 적립 내역</h3>
             <div className="card p-0 overflow-hidden">
               <table className="w-full text-xs">
+                <colgroup>
+                  <col className="w-36" />
+                  <col className="w-28" />
+                  <col />
+                  <col className="w-14" />
+                </colgroup>
                 <thead>
                   <tr className="bg-surface-50 border-b border-border text-muted">
                     <th className="px-3 py-2 text-left font-medium">유형</th>
-                    <th className="px-3 py-2 text-left font-medium">날짜</th>
+                    <th className="px-3 py-2 text-left font-medium whitespace-nowrap">날짜</th>
                     <th className="px-3 py-2 text-left font-medium">원천(프로젝트)</th>
-                    <th className="px-3 py-2 text-right font-medium">일수</th>
+                    <th className="px-3 py-2 text-right font-medium whitespace-nowrap">일수</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -998,7 +1004,7 @@ function SettlementTab({ person }: { person: Person }) {
                           <tr key={a.id} className="hover:bg-surface-50 border-b border-border/40">
                             <td className="px-3 py-2"><span className="pill bg-purple-100 text-purple-700 text-[10px]">{a.type}</span></td>
                             <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
-                            <td className="px-3 py-2 text-muted truncate max-w-[180px]">
+                            <td className="px-3 py-2 text-muted">
                               {a.sourceId
                                 ? wiLabel(workItemById.get(a.sourceId), a.sourceId)
                                 : (!a.isAuto && a.note ? a.note : '—')}
@@ -1029,12 +1035,18 @@ function SettlementTab({ person }: { person: Person }) {
             <h3 className="text-xs font-semibold text-gray-700 mb-2">③ 휴가 사용 내역 <span className="text-muted font-normal">(유급 — 무급리프레시·휴직 제외)</span></h3>
             <div className="card p-0 overflow-hidden">
               <table className="w-full text-xs">
+                <colgroup>
+                  <col className="w-40" />
+                  <col className="w-36" />
+                  <col />
+                  <col className="w-14" />
+                </colgroup>
                 <thead>
                   <tr className="bg-surface-50 border-b border-border text-muted">
-                    <th className="px-3 py-2 text-left font-medium">기간</th>
+                    <th className="px-3 py-2 text-left font-medium whitespace-nowrap">기간</th>
                     <th className="px-3 py-2 text-left font-medium">유형</th>
                     <th className="px-3 py-2 text-left font-medium">FIFO 차감 원천</th>
-                    <th className="px-3 py-2 text-right font-medium">일수</th>
+                    <th className="px-3 py-2 text-right font-medium whitespace-nowrap">일수</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1055,7 +1067,7 @@ function SettlementTab({ person }: { person: Person }) {
                               {u.start === u.end ? u.start : `${u.start}~${u.end}`}
                             </td>
                             <td className="px-3 py-2"><span className="pill bg-amber-100 text-amber-700 text-[10px]">{u.type}</span></td>
-                            <td className="px-3 py-2 text-muted text-[10px] max-w-[200px]">
+                            <td className="px-3 py-2 text-muted text-[10px]">
                               {deductionSummary(u.deductions, accrualById, workItemById)}
                               {u.deficit > 0 && (
                                 <span className="ml-1 text-red-500 whitespace-nowrap">(선사용 {u.deficit}일)</span>
@@ -1318,7 +1330,7 @@ export default function AnnualLeavePanel() {
               </div>
 
               {/* Tab content */}
-              <div className="flex-1 overflow-auto p-6 max-w-3xl">
+              <div className="flex-1 overflow-auto p-6 max-w-7xl">
                 {subTab === 'adjustments'   && <AdjustmentsTab person={selectedPerson} readOnly={readOnly} />}
                 {subTab === 'settlement'    && <SettlementTab person={selectedPerson} />}
                 {subTab === 'timesheetfigs' && <TimesheetTab person={selectedPerson} />}

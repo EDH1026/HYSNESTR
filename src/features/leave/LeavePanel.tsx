@@ -441,13 +441,22 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
             ) : (
               <div className="card p-0 overflow-hidden">
                 <table className="w-full text-xs">
+                  <colgroup>
+                    <col className="w-28" />
+                    <col className="w-36" />
+                    <col />
+                    <col className="w-14" />
+                    <col className="w-14" />
+                    <col className="w-16" />
+                    {canEditThis && <col className="w-7" />}
+                  </colgroup>
                   <thead>
                     <tr className="bg-surface-50 border-b border-border text-muted">
-                      <th className="px-3 py-2 text-left font-medium">날짜</th>
+                      <th className="px-3 py-2 text-left font-medium whitespace-nowrap">날짜</th>
                       <th className="px-3 py-2 text-left font-medium">유형</th>
                       <th className="px-3 py-2 text-left font-medium">원천</th>
-                      <th className="px-3 py-2 text-right font-medium">적립</th>
-                      <th className="px-3 py-2 text-right font-medium">잔여</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">적립</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">잔여</th>
                       <th className="px-3 py-2 text-center font-medium">구분</th>
                       {canEditThis && <th className="px-2 py-2 w-7" />}
                     </tr>
@@ -546,13 +555,21 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
             ) : (
               <div className="card p-0 overflow-hidden">
                 <table className="w-full text-xs">
+                  <colgroup>
+                    <col className="w-44" />
+                    <col className="w-36" />
+                    <col className="w-14" />
+                    <col />
+                    <col className="w-14" />
+                    {canEditThis && <col className="w-7" />}
+                  </colgroup>
                   <thead>
                     <tr className="bg-surface-50 border-b border-border text-muted">
-                      <th className="px-3 py-2 text-left font-medium">기간</th>
+                      <th className="px-3 py-2 text-left font-medium whitespace-nowrap">기간</th>
                       <th className="px-3 py-2 text-left font-medium">유형</th>
-                      <th className="px-3 py-2 text-right font-medium">사용일</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">사용일</th>
                       <th className="px-3 py-2 text-left font-medium">차감 원천</th>
-                      <th className="px-3 py-2 text-right font-medium">부족분</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">부족분</th>
                       {canEditThis && <th className="px-2 py-2 w-7" />}
                     </tr>
                   </thead>
@@ -698,7 +715,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
 
   if (inline) {
     return (
-      <div className="flex-1 overflow-auto p-6 space-y-4 max-w-3xl">
+      <div className="flex-1 overflow-auto p-6 space-y-4 max-w-7xl">
         {body}
       </div>
     )
