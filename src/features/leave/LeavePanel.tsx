@@ -10,10 +10,11 @@
  */
 
 import { useState, useMemo, useCallback, Fragment, type FormEvent } from 'react'
-import { Loader2, Plus, CalendarCheck, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
+import { Loader2, Plus, CalendarCheck, Trash2, ChevronDown, ChevronRight, Download } from 'lucide-react'
 import Modal from '@/components/Modal'
 import { computeLedger, buildHolidaySet } from './ledger'
-import type { LedgerAccrualEntry, LedgerUsageEntry } from './ledger'
+import type { Ledger, LedgerAccrualEntry, LedgerUsageEntry } from './ledger'
+import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
 import { useAccrualsByPerson, useCreateAccrual, useDeleteAccrual } from './hooks'
 import { useAssignmentsByPerson } from '@/features/timeline/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
@@ -42,6 +43,156 @@ function fyRangeLabel(fy: number): string {
 function wiSourceLabel(wi: WorkItem | undefined, fallback: string): string {
   if (!wi) return fallback
   return wi.client ? `${wi.name} — ${wi.client}` : wi.name
+}
+
+function generateLeaveLedgerHtml(
+  person:  Person,
+  refDate: string,
+  ledger:  Ledger,
+  wiMap:   Map<string, WorkItem>,
+): string {
+  const generated  = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+  const accrualById = new Map(ledger.accruals.map(a => [a.id, a]))
+
+  // ── FY-grouped accrual rows ─────────────────────────────────
+  const accrualLines: string[] = []
+  if (ledger.accruals.length === 0) {
+    accrualLines.push('<tr><td colspan="6" class="empty">내역 없음</td></tr>')
+  } else {
+    const byFY = new Map<number, LedgerAccrualEntry[]>()
+    for (const e of ledger.accruals) {
+      const fy = fyFromDate(e.date)
+      if (!byFY.has(fy)) byFY.set(fy, [])
+      byFY.get(fy)!.push(e)
+    }
+    for (const [fy, entries] of [...byFY.entries()].sort(([a], [b]) => a - b)) {
+      const sub  = entries.reduce((s, e) => s + e.days, 0)
+      const fyYY = String(fy).slice(-2)
+      accrualLines.push(`<tr class="fy-hdr"><td colspan="6">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
+      for (const e of entries) {
+        const wi  = e.sourceId ? wiMap.get(e.sourceId) : undefined
+        const src = wi
+          ? escHtml(wiSourceLabel(wi, e.sourceId!))
+          : (!e.isAuto && e.note ? escHtml(e.note) : '—')
+        const tag = e.isAuto
+          ? '<span class="pill pill-gray">자동</span>'
+          : '<span class="pill pill-green">수동</span>'
+        accrualLines.push(`<tr>
+          <td class="mono">${escHtml(e.date)}</td>
+          <td><span class="pill pill-blue">${escHtml(e.type)}</span></td>
+          <td>${src}</td>
+          <td class="num pos">+${escHtml(e.days)}</td>
+          <td class="num">${escHtml(e.remaining)}</td>
+          <td>${tag}</td></tr>`)
+      }
+      accrualLines.push(`<tr class="fy-sub"><td colspan="5">소계</td><td class="num pos">+${sub}</td></tr>`)
+    }
+  }
+  const totalAccrued = ledger.accruals.reduce((s, e) => s + e.days, 0)
+
+  // ── FY-grouped usage rows ───────────────────────────────────
+  const usageLines: string[] = []
+  if (ledger.usages.length === 0) {
+    usageLines.push('<tr><td colspan="5" class="empty">내역 없음</td></tr>')
+  } else {
+    const byFY = new Map<number, LedgerUsageEntry[]>()
+    for (const u of ledger.usages) {
+      const fy = fyFromDate(u.start)
+      if (!byFY.has(fy)) byFY.set(fy, [])
+      byFY.get(fy)!.push(u)
+    }
+    for (const [fy, entries] of [...byFY.entries()].sort(([a], [b]) => a - b)) {
+      const sub  = entries.reduce((s, u) => s + u.days, 0)
+      const fyYY = String(fy).slice(-2)
+      usageLines.push(`<tr class="fy-hdr"><td colspan="5">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
+      for (const u of entries) {
+        const period = u.start === u.end ? escHtml(u.start) : `${escHtml(u.start)}~${escHtml(u.end)}`
+        const deducParts = u.deductions.map(d => {
+          const acc = accrualById.get(d.accrualId)
+          if (!acc) return ''
+          const wi  = acc.sourceId ? wiMap.get(acc.sourceId) : undefined
+          const src = wi ? wiSourceLabel(wi, acc.sourceId!) : (acc.note ?? '범용')
+          return `${escHtml(src)} ${d.days}일`
+        }).filter(Boolean)
+        const deducText = deducParts.length ? deducParts.join(' / ') : '—'
+        const deficit   = u.deficit > 0 ? ` <span class="neg">(선사용 ${u.deficit}일)</span>` : ''
+        const typeTag   = u.isManual
+          ? `<span class="pill pill-red">${escHtml(u.type)}</span> <span class="pill pill-red" style="font-size:10px">수동차감</span>`
+          : `<span class="pill pill-violet">${escHtml(u.type)}</span>`
+        usageLines.push(`<tr>
+          <td class="mono">${period}</td>
+          <td>${typeTag}</td>
+          <td class="num">${escHtml(u.days)}일</td>
+          <td>${deducText}${deficit}</td>
+          <td class="num">${u.deficit > 0 ? `<span class="neg">−${u.deficit}일</span>` : '—'}</td></tr>`)
+      }
+      usageLines.push(`<tr class="fy-sub"><td colspan="4">소계</td><td class="num">${sub}일</td></tr>`)
+    }
+  }
+
+  // ── Unpaid section ──────────────────────────────────────────
+  const unpaidLines = ledger.unpaid.map(u =>
+    `<tr>
+      <td class="mono">${u.start === u.end ? escHtml(u.start) : `${escHtml(u.start)}~${escHtml(u.end)}`}</td>
+      <td><span class="pill pill-gray">${escHtml(u.type)}</span></td>
+      <td class="num">${escHtml(u.days)}일</td></tr>`)
+
+  const unpaidSection = ledger.unpaid.length > 0 ? `
+<section>
+  <h2>무급 이력 (리프레시·휴직)</h2>
+  <table>
+    <thead><tr><th>기간</th><th>유형</th><th>영업일</th></tr></thead>
+    <tbody>${unpaidLines.join('')}</tbody>
+  </table>
+</section>` : ''
+
+  const rem     = ledger.remaining
+  const remSign = rem >= 0 ? '' : ''
+  const remCls  = rem < 0 ? 'neg' : 'pos'
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Leave Ledger — ${escHtml(person.name)}</title>
+<style>${HTML_EXPORT_CSS}</style>
+</head>
+<body>
+<header>
+  <h1>Leave Ledger</h1>
+  <p class="pi">${escHtml(person.name)} · ${escHtml(person.rank)}${person.role ? ` · ${escHtml(person.role)}` : ''}</p>
+  <p class="meta">조회 기준일: ${escHtml(refDate)} &nbsp;|&nbsp; 생성: ${escHtml(generated)}</p>
+</header>
+
+<section>
+  <h2>적립 이력</h2>
+  <table>
+    <thead><tr><th>날짜</th><th>유형</th><th>원천</th><th>적립</th><th>잔여</th><th>구분</th></tr></thead>
+    <tbody>${accrualLines.join('')}</tbody>
+    <tfoot><tr><td colspan="5">전체 합계</td><td class="num pos">+${totalAccrued}</td></tr></tfoot>
+  </table>
+</section>
+
+<section>
+  <h2>사용 이력 (유급)</h2>
+  <table>
+    <thead><tr><th>기간</th><th>유형</th><th>사용일</th><th>차감 원천</th><th>부족분</th></tr></thead>
+    <tbody>${usageLines.join('')}</tbody>
+    <tfoot><tr><td colspan="4">전체 합계</td><td class="num">${ledger.totalUsed}일</td></tr></tfoot>
+  </table>
+</section>
+${unpaidSection}
+<section>
+  <h2>총계</h2>
+  <div class="sb">
+    <div class="summary-row"><span>총 적립</span><span class="sv pos">+${totalAccrued}일</span></div>
+    <div class="summary-row"><span>총 사용 (유급)</span><span class="sv">−${ledger.totalUsed}일</span></div>
+    <div class="summary-row total"><span>잔여</span><span class="sv ${remCls}">${remSign}${rem}일</span></div>
+  </div>
+</section>
+</body>
+</html>`
 }
 
 // ── Shared accrual/usage form ─────────────────────────────────
@@ -342,6 +493,15 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
   const toggleUsageFY = useCallback((fy: number) =>
     setExpandedUsageFYs(p => { const s = new Set(p); s.has(fy) ? s.delete(fy) : s.add(fy); return s }), [])
 
+  const handleDownload = useCallback(() => {
+    if (!ledger) return
+    const safeName = person.name.replace(/\s+/g, '_')
+    triggerDownload(
+      generateLeaveLedgerHtml(person, asOfStr, ledger, wiMap),
+      `LeaveLedger_${safeName}_${asOfStr}.html`,
+    )
+  }, [ledger, person, asOfStr, wiMap])
+
   if (!canViewThis) {
     if (inline) return <p className="p-8 text-sm text-muted">열람 권한이 없습니다.</p>
     return (
@@ -353,7 +513,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
 
   const body = (
     <>
-      {/* Reference date selector */}
+      {/* Reference date selector + download */}
       <div className="flex items-center gap-3">
         <label className="text-xs font-medium text-gray-700">기준일</label>
         <input
@@ -362,6 +522,14 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
           value={asOfStr}
           onChange={e => setAsOfStr(e.target.value)}
         />
+        <button
+          onClick={handleDownload}
+          disabled={!ledger}
+          className="ml-auto flex items-center gap-1.5 btn-secondary text-xs py-1 disabled:opacity-40"
+        >
+          <Download size={13} />
+          HTML로 저장
+        </button>
       </div>
 
       {isLoading || !ledger ? (
