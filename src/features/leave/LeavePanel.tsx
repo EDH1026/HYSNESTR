@@ -10,7 +10,7 @@
  */
 
 import { useState, useMemo, useCallback, Fragment, type FormEvent } from 'react'
-import { Loader2, Plus, CalendarCheck, Trash2 } from 'lucide-react'
+import { Loader2, Plus, CalendarCheck, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
 import Modal from '@/components/Modal'
 import { computeLedger, buildHolidaySet } from './ledger'
 import type { LedgerAccrualEntry, LedgerUsageEntry } from './ledger'
@@ -334,6 +334,14 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
     return [...map.entries()].sort(([a], [b]) => a - b)
   }, [ledger])
 
+  // FY accordion open/close state
+  const [expandedAccrualFYs, setExpandedAccrualFYs] = useState(() => new Set<number>())
+  const [expandedUsageFYs,   setExpandedUsageFYs]   = useState(() => new Set<number>())
+  const toggleAccrualFY = useCallback((fy: number) =>
+    setExpandedAccrualFYs(p => { const s = new Set(p); s.has(fy) ? s.delete(fy) : s.add(fy); return s }), [])
+  const toggleUsageFY = useCallback((fy: number) =>
+    setExpandedUsageFYs(p => { const s = new Set(p); s.has(fy) ? s.delete(fy) : s.add(fy); return s }), [])
+
   if (!canViewThis) {
     if (inline) return <p className="p-8 text-sm text-muted">열람 권한이 없습니다.</p>
     return (
@@ -421,11 +429,25 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
           <section>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs font-semibold text-muted uppercase tracking-wide">적립 이력</h3>
-              {canEditThis && !showAddAccrual && !showAddUsage && (
-                <button onClick={() => setShowAddAccrual(true)} className="btn-secondary text-xs py-0.5 gap-1">
-                  <Plus size={11} /> 수동 적립
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {accrualGroups.length > 0 && (
+                  <button
+                    onClick={() => setExpandedAccrualFYs(
+                      expandedAccrualFYs.size === accrualGroups.length
+                        ? new Set()
+                        : new Set(accrualGroups.map(([fy]) => fy))
+                    )}
+                    className="text-[11px] text-brand-600 hover:underline"
+                  >
+                    {expandedAccrualFYs.size === accrualGroups.length ? '전체 접기' : '전체 펼치기'}
+                  </button>
+                )}
+                {canEditThis && !showAddAccrual && !showAddUsage && (
+                  <button onClick={() => setShowAddAccrual(true)} className="btn-secondary text-xs py-0.5 gap-1">
+                    <Plus size={11} /> 수동 적립
+                  </button>
+                )}
+              </div>
             </div>
 
             {showAddAccrual && (
@@ -465,14 +487,24 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                     {accrualGroups.map(([fy, entries]) => {
                       const sub     = entries.reduce((s, e) => s + e.days, 0)
                       const colSpan = canEditThis ? 7 : 6
+                      const isOpen  = expandedAccrualFYs.has(fy)
                       return (
                         <Fragment key={fy}>
-                          <tr className="bg-slate-100/70 border-y border-border/60">
-                            <td colSpan={colSpan} className="px-3 py-1 text-[11px] font-semibold text-muted tracking-wide">
-                              {fyRangeLabel(fy)}
+                          <tr
+                            className="bg-slate-100/70 border-y border-border/60 cursor-pointer select-none hover:bg-slate-200/60 transition-colors"
+                            onClick={() => toggleAccrualFY(fy)}
+                          >
+                            <td colSpan={colSpan} className="px-3 py-1.5">
+                              <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted tracking-wide">
+                                {isOpen
+                                  ? <ChevronDown size={12} className="shrink-0" />
+                                  : <ChevronRight size={12} className="shrink-0" />}
+                                {fyRangeLabel(fy)}
+                                {!isOpen && <span className="ml-auto font-semibold text-brand-700">+{sub}</span>}
+                              </span>
                             </td>
                           </tr>
-                          {entries.map(e => (
+                          {isOpen && entries.map(e => (
                             <tr key={e.id} className="hover:bg-surface-50 border-b border-border/40">
                               <td className="px-3 py-2 font-mono">{e.date}</td>
                               <td className="px-3 py-2">
@@ -496,7 +528,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                 <td className="px-2 py-2">
                                   {!e.isAuto && (
                                     <button
-                                      onClick={() => void handleDeleteAccrual(e.id, '이 적립을 삭제할까요?')}
+                                      onClick={ev => { ev.stopPropagation(); void handleDeleteAccrual(e.id, '이 적립을 삭제할까요?') }}
                                       className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
                                       title="삭제"
                                     >
@@ -507,11 +539,13 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                               )}
                             </tr>
                           ))}
-                          <tr className="bg-surface-50/80 border-b border-border">
-                            <td colSpan={3} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
-                            <td className="px-3 py-1.5 text-right text-[11px] font-semibold text-brand-700">+{sub}</td>
-                            <td colSpan={canEditThis ? 3 : 2} />
-                          </tr>
+                          {isOpen && (
+                            <tr className="bg-surface-50/80 border-b border-border">
+                              <td colSpan={3} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
+                              <td className="px-3 py-1.5 text-right text-[11px] font-semibold text-brand-700">+{sub}</td>
+                              <td colSpan={canEditThis ? 3 : 2} />
+                            </tr>
+                          )}
                         </Fragment>
                       )
                     })}
@@ -534,11 +568,25 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
           <section>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs font-semibold text-muted uppercase tracking-wide">사용 이력 (유급)</h3>
-              {canEditThis && !showAddUsage && !showAddAccrual && (
-                <button onClick={() => setShowAddUsage(true)} className="btn-secondary text-xs py-0.5 gap-1 text-red-600 border-red-200 hover:bg-red-50">
-                  <Plus size={11} /> 수동 차감
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {usageGroups.length > 0 && (
+                  <button
+                    onClick={() => setExpandedUsageFYs(
+                      expandedUsageFYs.size === usageGroups.length
+                        ? new Set()
+                        : new Set(usageGroups.map(([fy]) => fy))
+                    )}
+                    className="text-[11px] text-brand-600 hover:underline"
+                  >
+                    {expandedUsageFYs.size === usageGroups.length ? '전체 접기' : '전체 펼치기'}
+                  </button>
+                )}
+                {canEditThis && !showAddUsage && !showAddAccrual && (
+                  <button onClick={() => setShowAddUsage(true)} className="btn-secondary text-xs py-0.5 gap-1 text-red-600 border-red-200 hover:bg-red-50">
+                    <Plus size={11} /> 수동 차감
+                  </button>
+                )}
+              </div>
             </div>
 
             {showAddUsage && (
@@ -577,14 +625,24 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                     {usageGroups.map(([fy, entries]) => {
                       const sub     = entries.reduce((s, u) => s + u.days, 0)
                       const colSpan = canEditThis ? 6 : 5
+                      const isOpen  = expandedUsageFYs.has(fy)
                       return (
                         <Fragment key={fy}>
-                          <tr className="bg-slate-100/70 border-y border-border/60">
-                            <td colSpan={colSpan} className="px-3 py-1 text-[11px] font-semibold text-muted tracking-wide">
-                              {fyRangeLabel(fy)}
+                          <tr
+                            className="bg-slate-100/70 border-y border-border/60 cursor-pointer select-none hover:bg-slate-200/60 transition-colors"
+                            onClick={() => toggleUsageFY(fy)}
+                          >
+                            <td colSpan={colSpan} className="px-3 py-1.5">
+                              <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted tracking-wide">
+                                {isOpen
+                                  ? <ChevronDown size={12} className="shrink-0" />
+                                  : <ChevronRight size={12} className="shrink-0" />}
+                                {fyRangeLabel(fy)}
+                                {!isOpen && <span className="ml-auto font-semibold text-gray-700">{sub}일</span>}
+                              </span>
                             </td>
                           </tr>
-                          {entries.map(u => (
+                          {isOpen && entries.map(u => (
                             <tr key={u.assignmentId} className={`border-b border-border/40 ${u.deficit > 0 ? 'bg-red-50' : 'hover:bg-surface-50'}`}>
                               <td className="px-3 py-2 font-mono">
                                 {u.isManual
@@ -625,7 +683,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                 <td className="px-2 py-2">
                                   {u.isManual && (
                                     <button
-                                      onClick={() => void handleDeleteAccrual(u.assignmentId, '이 수동 차감을 삭제할까요?')}
+                                      onClick={ev => { ev.stopPropagation(); void handleDeleteAccrual(u.assignmentId, '이 수동 차감을 삭제할까요?') }}
                                       className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
                                       title="삭제"
                                     >
@@ -636,11 +694,13 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                               )}
                             </tr>
                           ))}
-                          <tr className="bg-surface-50/80 border-b border-border">
-                            <td colSpan={2} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
-                            <td className="px-3 py-1.5 text-right text-[11px] font-semibold">{sub}일</td>
-                            <td colSpan={canEditThis ? 3 : 2} />
-                          </tr>
+                          {isOpen && (
+                            <tr className="bg-surface-50/80 border-b border-border">
+                              <td colSpan={2} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
+                              <td className="px-3 py-1.5 text-right text-[11px] font-semibold">{sub}일</td>
+                              <td colSpan={canEditThis ? 3 : 2} />
+                            </tr>
+                          )}
                         </Fragment>
                       )
                     })}
