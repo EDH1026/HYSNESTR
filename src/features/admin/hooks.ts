@@ -180,12 +180,14 @@ export function useDeleteHoliday() {
 // ── HOL-5: Holiday sync (HOL-1~4) ────────────────────────────
 
 export interface SyncHolidaysResult {
-  added:      number
-  updated:    number
-  total:      number
-  years:      string
-  yearCount?: number
-  errors?:    string[]
+  added:          number
+  updated:        number
+  total:          number
+  years:          string
+  yearCount?:     number
+  isRetryMode?:   boolean
+  retriedMonths?: number
+  errors?:        string[]
 }
 
 export interface HolidaySyncLogRow {

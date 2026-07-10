@@ -1,10 +1,14 @@
 /**
- * Edge Function: sync-holidays  (PRD v2.40 §3)
+ * Edge Function: sync-holidays  (PRD v2.40 §3 + rate-limit handling)
  *
  * Fetches Korean public holidays from 한국천문연구원 특일 정보 API
  * (data.go.kr / SpcdeInfoService / getRestDeInfo) for 2022 through
  * (currentYear + 1), then upserts them into the holidays table.
- * All existing rows (including manual) are overwritten by API results.
+ *
+ * Rate-limit strategy:
+ *   - Sequential calls with 250 ms gap (avoids parallel-burst 429s)
+ *   - Exponential backoff on 429: 1 s → 2 s → 4 s → 8 s (max 4 attempts)
+ *   - Retry mode: if the last sync log has errors, only retry those months
  *
  * Required Supabase secrets (set via `supabase secrets set`):
  *   SUPABASE_URL              (auto-injected in hosted env)
@@ -33,6 +37,8 @@ function json(body: unknown, status = 200) {
   })
 }
 
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
 // ── KASI API ──────────────────────────────────────────────────
 
 const KASI_BASE = 'https://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService'
@@ -43,39 +49,78 @@ interface KasiItem {
   isHoliday: string    // 'Y' | 'N'
 }
 
+/** Parse "YYYY/MM: <msg>" error entries written by this function. */
+function parseFailedMonths(errorText: string | null): Array<{ year: number; month: number }> {
+  if (!errorText) return []
+  const re = /(\d{4})\/(\d{2}):/g
+  const result: Array<{ year: number; month: number }> = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(errorText)) !== null) {
+    result.push({ year: Number(m[1]), month: Number(m[2]) })
+  }
+  return result
+}
+
+/**
+ * Fetch one month's holidays with exponential backoff on HTTP 429.
+ * maxAttempts = 4 → delays 1 s, 2 s, 4 s before final attempt.
+ */
 async function fetchMonthHolidays(
   serviceKey: string,
   year:       number,
   month:      number,
 ): Promise<KasiItem[]> {
-  const params = new URLSearchParams({
-    ServiceKey: serviceKey,
-    solYear:    String(year),
-    solMonth:   String(month).padStart(2, '0'),
-    _type:      'json',
-    numOfRows:  '50',
-    pageNo:     '1',
-  })
+  const maxAttempts = 4
+  let retryDelay    = 1_000
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15_000)
-
-  try {
-    const res = await fetch(`${KASI_BASE}/getRestDeInfo?${params}`, {
-      signal: controller.signal,
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const params = new URLSearchParams({
+      ServiceKey: serviceKey,
+      solYear:    String(year),
+      solMonth:   String(month).padStart(2, '0'),
+      _type:      'json',
+      numOfRows:  '50',
+      pageNo:     '1',
     })
+
+    const controller = new AbortController()
+    const timer      = setTimeout(() => controller.abort(), 15_000)
+    let res: Response
+
+    try {
+      res = await fetch(`${KASI_BASE}/getRestDeInfo?${params}`, {
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+
+    if (res.status === 429) {
+      if (attempt === maxAttempts) {
+        throw new Error(`HTTP 429: rate limit exceeded after ${maxAttempts} attempts`)
+      }
+      console.warn(
+        `[sync-holidays] 429 on ${year}/${String(month).padStart(2, '0')},` +
+        ` retry ${attempt}/${maxAttempts - 1} in ${retryDelay}ms`,
+      )
+      await sleep(retryDelay)
+      retryDelay *= 2
+      continue
+    }
+
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => '')}`)
     }
+
     const body = await res.json()
     // API returns null/empty string when no holidays this month
     const raw = body?.response?.body?.items?.item
     if (!raw || raw === '') return []
     // API returns a single object (not array) when there is exactly one item
     return Array.isArray(raw) ? raw : [raw]
-  } finally {
-    clearTimeout(timer)
   }
+
+  throw new Error('unreachable: retry loop exhausted')
 }
 
 // ── Handler ───────────────────────────────────────────────────
@@ -115,66 +160,83 @@ serve(async (req: Request) => {
     return json({ error: 'Forbidden: admin role required' }, 403)
   }
 
-  // ── 2. Fetch holidays — all months in parallel ─────────────
-  // Always sync 2022 through currentYear+1 (dynamic, no request body needed)
-  const now         = new Date()
-  const currentYear = now.getFullYear()
-  const years: number[] = []
-  for (let y = 2022; y <= currentYear + 1; y++) years.push(y)
-  const yearRange = `${years[0]}~${years[years.length - 1]}`
-
-  // Build a flat list of (year, month) pairs and fetch all concurrently
-  const tasks: Array<{ year: number; month: number }> = []
-  for (const year of years) {
-    for (let month = 1; month <= 12; month++) {
-      tasks.push({ year, month })
-    }
-  }
-
-  console.log(`[sync-holidays] Fetching ${tasks.length} months in parallel…`)
-
-  const results = await Promise.allSettled(
-    tasks.map(({ year, month }) => fetchMonthHolidays(kasiKey, year, month))
-  )
-
-  const apiHolidays: { name: string; date: string }[] = []
-  const fetchErrors: string[] = []
-
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i]
-    const { year, month } = tasks[i]
-    if (r.status === 'fulfilled') {
-      for (const item of r.value) {
-        if (item.isHoliday !== 'Y') continue
-        const d    = String(item.locdate)
-        const date = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`
-        apiHolidays.push({ name: item.dateName, date })
-      }
-    } else {
-      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason)
-      fetchErrors.push(`${year}/${String(month).padStart(2, '0')}: ${msg}`)
-    }
-  }
-
-  console.log(`[sync-holidays] API done — ${apiHolidays.length} holidays, ${fetchErrors.length} month errors`)
-
-  // If every single API call failed, abort before touching the DB
-  if (fetchErrors.length === tasks.length) {
-    console.error('[sync-holidays] All API calls failed:', fetchErrors)
-    return json({ error: `All API calls failed: ${fetchErrors.join('; ')}` }, 502)
-  }
-
-  // ── 3. Upsert holidays (overwrite all existing rows including manual) ──
+  // ── 2. Admin client (needed to read last log + write to DB) ─
   const adminClient = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false },
   })
 
-  const dateFrom = `${years[0]}-01-01`
-  const dateTo   = `${years[years.length - 1]}-12-31`
+  // ── 3. Determine year range ────────────────────────────────
+  const now         = new Date()
+  const currentYear = now.getFullYear()
+  const allYears: number[] = []
+  for (let y = 2022; y <= currentYear + 1; y++) allYears.push(y)
+  const yearRange = `${allYears[0]}~${allYears[allYears.length - 1]}`
+
+  // ── 4. Retry mode: check last sync log for failed months ───
+  const { data: lastLog } = await adminClient
+    .from('holiday_sync_log')
+    .select('error')
+    .order('synced_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const failedFromLastRun = parseFailedMonths(lastLog?.error ?? null)
+    .filter(({ year }) => year >= 2022 && year <= currentYear + 1)
+
+  let tasks: Array<{ year: number; month: number }>
+  const isRetryMode = failedFromLastRun.length > 0
+
+  if (isRetryMode) {
+    tasks = failedFromLastRun
+    console.log(`[sync-holidays] Retry mode: ${tasks.length} months from last failed sync`)
+  } else {
+    tasks = allYears.flatMap(year =>
+      Array.from({ length: 12 }, (_, i) => ({ year, month: i + 1 })),
+    )
+    console.log(`[sync-holidays] Full sync: ${tasks.length} months (${yearRange})`)
+  }
+
+  // ── 5. Sequential fetch — 250 ms gap + backoff on 429 ──────
+  const apiHolidays: Array<{ name: string; date: string }> = []
+  const fetchErrors: string[]                               = []
+
+  for (let i = 0; i < tasks.length; i++) {
+    if (i > 0) await sleep(250)   // avoid parallel-burst rate limit
+    const { year, month } = tasks[i]
+    try {
+      const items = await fetchMonthHolidays(kasiKey, year, month)
+      for (const item of items) {
+        if (item.isHoliday !== 'Y') continue
+        const d = String(item.locdate)
+        apiHolidays.push({
+          name: item.dateName,
+          date: `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`,
+        })
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      fetchErrors.push(`${year}/${String(month).padStart(2, '0')}: ${msg}`)
+      console.error(`[sync-holidays] Failed ${year}/${month}: ${msg}`)
+    }
+  }
+
+  console.log(
+    `[sync-holidays] API done — ${apiHolidays.length} holidays, ${fetchErrors.length} errors`,
+  )
+
+  // Abort only if every single call failed (nothing to write)
+  if (fetchErrors.length === tasks.length && tasks.length > 0) {
+    console.error('[sync-holidays] All API calls failed:', fetchErrors)
+    return json({ error: `All API calls failed: ${fetchErrors.join('; ')}` }, 502)
+  }
+
+  // ── 6. Upsert holidays (overwrite all existing rows) ───────
+  const dateFrom = `${allYears[0]}-01-01`
+  const dateTo   = `${allYears[allYears.length - 1]}-12-31`
 
   const { data: existingRows, error: fetchErr } = await adminClient
     .from('holidays')
-    .select('id, name, date, source')
+    .select('id, name, date')
     .gte('date', dateFrom)
     .lte('date', dateTo)
 
@@ -183,17 +245,13 @@ serve(async (req: Request) => {
     return json({ error: `DB read failed: ${fetchErr.message}` }, 500)
   }
 
-  const existingMap = new Map<string, { id: string; name: string; source: string }>()
+  const existingMap = new Map<string, { id: string; name: string }>()
   for (const row of (existingRows ?? [])) {
-    existingMap.set(row.date, {
-      id:     row.id,
-      name:   row.name,
-      source: (row as Record<string, unknown>).source as string ?? 'manual',
-    })
+    existingMap.set(row.date, { id: row.id, name: row.name })
   }
 
   const toInsert: Array<{ name: string; date: string; recurring: boolean; source: string }> = []
-  const toUpdate: Array<{ id: string; name: string }> = []
+  const toUpdate: Array<{ id: string; name: string }>                                       = []
 
   for (const h of apiHolidays) {
     const ex = existingMap.get(h.date)
@@ -222,7 +280,7 @@ serve(async (req: Request) => {
 
   console.log(`[sync-holidays] Done — added ${added}, updated ${updated}`)
 
-  // ── 4. Write sync log & audit ──────────────────────────────
+  // ── 7. Write sync log & audit ──────────────────────────────
   const errorText = fetchErrors.length > 0 ? fetchErrors.join('; ') : null
 
   await adminClient.from('holiday_sync_log').insert({
@@ -245,9 +303,11 @@ serve(async (req: Request) => {
   return json({
     added,
     updated,
-    total:     apiHolidays.length,
-    years:     yearRange,
-    yearCount: years.length,
+    total:         apiHolidays.length,
+    years:         yearRange,
+    yearCount:     allYears.length,
+    isRetryMode,
+    retriedMonths: isRetryMode ? tasks.length : undefined,
     ...(fetchErrors.length > 0 ? { errors: fetchErrors } : {}),
   })
 })

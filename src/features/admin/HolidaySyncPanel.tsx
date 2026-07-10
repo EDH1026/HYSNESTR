@@ -100,9 +100,12 @@ export default function HolidaySyncPanel() {
           {lastResult && (
             <span className="flex items-center gap-1.5 text-xs text-emerald-700">
               <CheckCircle2 size={13} />
-              {lastResult.yearCount ?? lastResult.years}개 연도,
-              {' '}{lastResult.added + lastResult.updated}건 동기화됨
-              (추가 {lastResult.added} · 수정 {lastResult.updated} · API 총 {lastResult.total}건)
+              {lastResult.isRetryMode
+                ? `재시도 완료 (${lastResult.retriedMonths}개월)`
+                : `${lastResult.yearCount ?? lastResult.years}개 연도`
+              },{' '}
+              {lastResult.added + lastResult.updated}건 동기화됨
+              {' '}(추가 {lastResult.added} · 수정 {lastResult.updated} · API 총 {lastResult.total}건)
               {lastResult.errors && lastResult.errors.length > 0 && (
                 <span className="text-amber-600 ml-1">
                   · 일부 월 오류 {lastResult.errors.length}건
@@ -119,10 +122,13 @@ export default function HolidaySyncPanel() {
           )}
         </div>
 
-        {/* Partial errors */}
+        {/* Partial errors + retry hint */}
         {lastResult?.errors && lastResult.errors.length > 0 && (
           <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-700">
-            <p className="font-semibold mb-1">월별 API 오류 (다른 월은 정상 처리됨)</p>
+            <p className="font-semibold mb-1">
+              월별 API 오류 (다른 월은 정상 처리됨) —
+              동기화를 다시 누르면 아래 {lastResult.errors.length}개월만 재시도합니다
+            </p>
             {lastResult.errors.map((e, i) => <p key={i}>{e}</p>)}
           </div>
         )}
