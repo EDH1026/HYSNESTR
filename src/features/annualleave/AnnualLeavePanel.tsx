@@ -429,7 +429,7 @@ function deductionSummary(
       const wi = acc.sourceId ? workItemById.get(acc.sourceId) : undefined
       byType[acc.type] = {
         days: 0,
-        proj: wi ? wiLabel(wi, wi.name) : null,
+        proj: wi ? wiLabel(wi, wi.name) : (acc.note ?? null),
       }
     }
     byType[acc.type].days += d.days

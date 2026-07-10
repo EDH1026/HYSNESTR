@@ -297,7 +297,12 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
     }
   }
 
-  const wiMap = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
+  const wiMap       = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
+  const accrualNote = useMemo(() => {
+    const m = new Map<string, string | null>()
+    for (const a of ledger?.accruals ?? []) m.set(a.id, a.note ?? null)
+    return m
+  }, [ledger])
 
   // LV-6: 특별휴가 현재 잔여 (수동 차감 입력 시 검증용)
   const specialLeaveBalance = useMemo(() =>
@@ -585,7 +590,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                       {u.deductions.map((d, i) => {
                                         const srcName = d.sourceId
                                           ? wiSourceLabel(wiMap.get(d.sourceId), d.sourceId)
-                                          : '범용'
+                                          : (accrualNote.get(d.accrualId) ?? '범용')
                                         return <span key={i}>{srcName} {d.days}일</span>
                                       })}
                                       {u.type === '지정휴가' && u.deficit > 0 && (
