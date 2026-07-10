@@ -9,10 +9,11 @@
  *   • "Assign remaining" — creates a 지정휴가 leave assignment covering the remaining workdays
  */
 
-import { useState, useMemo, useCallback, type FormEvent } from 'react'
+import { useState, useMemo, useCallback, Fragment, type FormEvent } from 'react'
 import { Loader2, Plus, CalendarCheck, Trash2 } from 'lucide-react'
 import Modal from '@/components/Modal'
 import { computeLedger, buildHolidaySet } from './ledger'
+import type { LedgerAccrualEntry, LedgerUsageEntry } from './ledger'
 import { useAccrualsByPerson, useCreateAccrual, useDeleteAccrual } from './hooks'
 import { useAssignmentsByPerson } from '@/features/timeline/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
@@ -22,9 +23,26 @@ import { useAuthz } from '@/hooks/useAuthz'
 import { useHistory } from '@/lib/history'
 import { makeAccrualCreate, makeAccrualDelete } from '@/lib/historyOps'
 import { dateToNum, numToStr, today, isWeekend, nextWorkday } from '@/lib/date'
-import type { Person, AccrualType, LeaveType } from '@/types'
+import type { Person, AccrualType, LeaveType, WorkItem } from '@/types'
 
 const MANUAL_TYPES: AccrualType[] = ['포상휴가', '특별휴가', '지연보상', '프로젝트휴가', '주말/휴일대체']
+
+// ── FY / source helpers ───────────────────────────────────────
+
+function fyFromDate(dateStr: string): number {
+  const y = parseInt(dateStr.slice(0, 4), 10)
+  const m = parseInt(dateStr.slice(5, 7), 10)
+  return m >= 7 ? y + 1 : y
+}
+
+function fyRangeLabel(fy: number): string {
+  return `FY${String(fy).slice(-2)} (${fy - 1}.07~${fy}.06)`
+}
+
+function wiSourceLabel(wi: WorkItem | undefined, fallback: string): string {
+  if (!wi) return fallback
+  return wi.client ? `${wi.name} — ${wi.client}` : wi.name
+}
 
 // ── Shared accrual/usage form ─────────────────────────────────
 
@@ -288,6 +306,29 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
       .reduce((s, a) => s + a.remaining, 0) ?? 0,
   [ledger])
 
+  // FY-grouped accruals (by date) and usages (by start date)
+  const accrualGroups = useMemo(() => {
+    if (!ledger) return [] as [number, LedgerAccrualEntry[]][]
+    const map = new Map<number, LedgerAccrualEntry[]>()
+    for (const e of ledger.accruals) {
+      const fy = fyFromDate(e.date)
+      if (!map.has(fy)) map.set(fy, [])
+      map.get(fy)!.push(e)
+    }
+    return [...map.entries()].sort(([a], [b]) => a - b)
+  }, [ledger])
+
+  const usageGroups = useMemo(() => {
+    if (!ledger) return [] as [number, LedgerUsageEntry[]][]
+    const map = new Map<number, LedgerUsageEntry[]>()
+    for (const u of ledger.usages) {
+      const fy = fyFromDate(u.start)
+      if (!map.has(fy)) map.set(fy, [])
+      map.get(fy)!.push(u)
+    }
+    return [...map.entries()].sort(([a], [b]) => a - b)
+  }, [ledger])
+
   if (!canViewThis) {
     if (inline) return <p className="p-8 text-sm text-muted">열람 권한이 없습니다.</p>
     return (
@@ -406,43 +447,70 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                       {canEditThis && <th className="px-2 py-2 w-7" />}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border">
-                    {ledger.accruals.map(e => (
-                      <tr key={e.id} className="hover:bg-surface-50">
-                        <td className="px-3 py-2 font-mono">{e.date}</td>
-                        <td className="px-3 py-2">
-                          <span className="pill bg-brand-100 text-brand-700">{e.type}</span>
-                        </td>
-                        <td className="px-3 py-2 text-muted">
-                          {e.sourceId
-                            ? (wiMap.get(e.sourceId)?.name ?? e.sourceId)
-                            : (!e.isAuto && e.note ? e.note : '—')}
-                        </td>
-                        <td className="px-3 py-2 text-right font-medium">+{e.days}</td>
-                        <td className="px-3 py-2 text-right">
-                          <span className={e.remaining === 0 ? 'text-muted line-through' : 'font-medium'}>{e.remaining}</span>
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          {e.isAuto
-                            ? <span className="pill bg-surface-100 text-muted text-[10px]">자동</span>
-                            : <span className="pill bg-emerald-100 text-emerald-700 text-[10px]">수동</span>}
-                        </td>
-                        {canEditThis && (
-                          <td className="px-2 py-2">
-                            {!e.isAuto && (
-                              <button
-                                onClick={() => void handleDeleteAccrual(e.id, '이 적립을 삭제할까요?')}
-                                className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
-                                title="삭제"
-                              >
-                                <Trash2 size={11} />
-                              </button>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                    ))}
+                  <tbody>
+                    {accrualGroups.map(([fy, entries]) => {
+                      const sub     = entries.reduce((s, e) => s + e.days, 0)
+                      const colSpan = canEditThis ? 7 : 6
+                      return (
+                        <Fragment key={fy}>
+                          <tr className="bg-slate-100/70 border-y border-border/60">
+                            <td colSpan={colSpan} className="px-3 py-1 text-[11px] font-semibold text-muted tracking-wide">
+                              {fyRangeLabel(fy)}
+                            </td>
+                          </tr>
+                          {entries.map(e => (
+                            <tr key={e.id} className="hover:bg-surface-50 border-b border-border/40">
+                              <td className="px-3 py-2 font-mono">{e.date}</td>
+                              <td className="px-3 py-2">
+                                <span className="pill bg-brand-100 text-brand-700">{e.type}</span>
+                              </td>
+                              <td className="px-3 py-2 text-muted">
+                                {e.sourceId
+                                  ? wiSourceLabel(wiMap.get(e.sourceId), e.sourceId)
+                                  : (!e.isAuto && e.note ? e.note : '—')}
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium">+{e.days}</td>
+                              <td className="px-3 py-2 text-right">
+                                <span className={e.remaining === 0 ? 'text-muted line-through' : 'font-medium'}>{e.remaining}</span>
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                {e.isAuto
+                                  ? <span className="pill bg-surface-100 text-muted text-[10px]">자동</span>
+                                  : <span className="pill bg-emerald-100 text-emerald-700 text-[10px]">수동</span>}
+                              </td>
+                              {canEditThis && (
+                                <td className="px-2 py-2">
+                                  {!e.isAuto && (
+                                    <button
+                                      onClick={() => void handleDeleteAccrual(e.id, '이 적립을 삭제할까요?')}
+                                      className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
+                                      title="삭제"
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  )}
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                          <tr className="bg-surface-50/80 border-b border-border">
+                            <td colSpan={3} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
+                            <td className="px-3 py-1.5 text-right text-[11px] font-semibold text-brand-700">+{sub}</td>
+                            <td colSpan={canEditThis ? 3 : 2} />
+                          </tr>
+                        </Fragment>
+                      )
+                    })}
                   </tbody>
+                  <tfoot>
+                    <tr className="bg-surface-50 border-t-2 border-border">
+                      <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">전체 합계</td>
+                      <td className="px-3 py-2 text-right font-bold text-brand-700">
+                        +{ledger.accruals.reduce((s, e) => s + e.days, 0)}
+                      </td>
+                      <td colSpan={canEditThis ? 3 : 2} />
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             )}
@@ -483,58 +551,85 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                       {canEditThis && <th className="px-2 py-2 w-7" />}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border">
-                    {ledger.usages.map(u => (
-                      <tr key={u.assignmentId} className={u.deficit > 0 ? 'bg-red-50' : 'hover:bg-surface-50'}>
-                        <td className="px-3 py-2 font-mono">
-                          {u.isManual
-                            ? <span className="flex items-center gap-1.5">
-                                {u.start}
-                                <span className="pill bg-red-100 text-red-700 text-[10px]">수동차감</span>
-                              </span>
-                            : u.start !== u.end ? `${u.start} ~ ${u.end}` : u.start
-                          }
-                          {u.note && <span className="block text-muted mt-0.5 text-[10px]">{u.note}</span>}
-                        </td>
-                        <td className="px-3 py-2">
-                          <span className="pill bg-violet-100 text-violet-700">{u.type}</span>
-                        </td>
-                        <td className="px-3 py-2 text-right font-medium">{u.days}일</td>
-                        <td className="px-3 py-2 text-muted text-[11px]">
-                          {u.deductions.length === 0 && !(u.type === '지정휴가' && u.deficit > 0)
-                            ? '—'
-                            : <span className="flex flex-wrap gap-x-1 gap-y-0.5">
-                                {u.deductions.map((d, i) => {
-                                  const srcName = d.sourceId ? (wiMap.get(d.sourceId)?.name ?? d.sourceId) : '범용'
-                                  return <span key={i}>{srcName} {d.days}일</span>
-                                })}
-                                {u.type === '지정휴가' && u.deficit > 0 && (
-                                  <span className="text-red-500 font-medium">선사용 {u.deficit}일</span>
-                                )}
-                              </span>
-                          }
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          {u.deficit > 0
-                            ? <span className="text-red-600 font-medium">−{u.deficit}일</span>
-                            : <span className="text-muted">—</span>}
-                        </td>
-                        {canEditThis && (
-                          <td className="px-2 py-2">
-                            {u.isManual && (
-                              <button
-                                onClick={() => void handleDeleteAccrual(u.assignmentId, '이 수동 차감을 삭제할까요?')}
-                                className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
-                                title="삭제"
-                              >
-                                <Trash2 size={11} />
-                              </button>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                    ))}
+                  <tbody>
+                    {usageGroups.map(([fy, entries]) => {
+                      const sub     = entries.reduce((s, u) => s + u.days, 0)
+                      const colSpan = canEditThis ? 6 : 5
+                      return (
+                        <Fragment key={fy}>
+                          <tr className="bg-slate-100/70 border-y border-border/60">
+                            <td colSpan={colSpan} className="px-3 py-1 text-[11px] font-semibold text-muted tracking-wide">
+                              {fyRangeLabel(fy)}
+                            </td>
+                          </tr>
+                          {entries.map(u => (
+                            <tr key={u.assignmentId} className={`border-b border-border/40 ${u.deficit > 0 ? 'bg-red-50' : 'hover:bg-surface-50'}`}>
+                              <td className="px-3 py-2 font-mono">
+                                {u.isManual
+                                  ? <span className="flex items-center gap-1.5">
+                                      {u.start}
+                                      <span className="pill bg-red-100 text-red-700 text-[10px]">수동차감</span>
+                                    </span>
+                                  : u.start !== u.end ? `${u.start} ~ ${u.end}` : u.start
+                                }
+                                {u.note && <span className="block text-muted mt-0.5 text-[10px]">{u.note}</span>}
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className="pill bg-violet-100 text-violet-700">{u.type}</span>
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium">{u.days}일</td>
+                              <td className="px-3 py-2 text-muted text-[11px]">
+                                {u.deductions.length === 0 && !(u.type === '지정휴가' && u.deficit > 0)
+                                  ? '—'
+                                  : <span className="flex flex-wrap gap-x-1 gap-y-0.5">
+                                      {u.deductions.map((d, i) => {
+                                        const srcName = d.sourceId
+                                          ? wiSourceLabel(wiMap.get(d.sourceId), d.sourceId)
+                                          : '범용'
+                                        return <span key={i}>{srcName} {d.days}일</span>
+                                      })}
+                                      {u.type === '지정휴가' && u.deficit > 0 && (
+                                        <span className="text-red-500 font-medium">선사용 {u.deficit}일</span>
+                                      )}
+                                    </span>
+                                }
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                {u.deficit > 0
+                                  ? <span className="text-red-600 font-medium">−{u.deficit}일</span>
+                                  : <span className="text-muted">—</span>}
+                              </td>
+                              {canEditThis && (
+                                <td className="px-2 py-2">
+                                  {u.isManual && (
+                                    <button
+                                      onClick={() => void handleDeleteAccrual(u.assignmentId, '이 수동 차감을 삭제할까요?')}
+                                      className="rounded p-1 text-muted hover:text-red-600 hover:bg-red-50 transition-colors"
+                                      title="삭제"
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  )}
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                          <tr className="bg-surface-50/80 border-b border-border">
+                            <td colSpan={2} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
+                            <td className="px-3 py-1.5 text-right text-[11px] font-semibold">{sub}일</td>
+                            <td colSpan={canEditThis ? 3 : 2} />
+                          </tr>
+                        </Fragment>
+                      )
+                    })}
                   </tbody>
+                  <tfoot>
+                    <tr className="bg-surface-50 border-t-2 border-border">
+                      <td colSpan={2} className="px-3 py-2 text-xs font-semibold text-gray-700">전체 합계</td>
+                      <td className="px-3 py-2 text-right font-bold text-gray-800">{ledger.totalUsed}일</td>
+                      <td colSpan={canEditThis ? 3 : 2} />
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             )}

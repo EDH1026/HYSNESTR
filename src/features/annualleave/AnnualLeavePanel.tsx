@@ -7,7 +7,7 @@
  *
  * v2.33: annual_leave_grants 테이블 폐지 → computeStatutoryLeave 순수 함수로 전환
  */
-import { useState, useMemo, useCallback, type FormEvent } from 'react'
+import { useState, useMemo, useCallback, Fragment, type FormEvent } from 'react'
 import { Plus, Trash2, Loader2, AlertTriangle, Eye, Download } from 'lucide-react'
 import { useAuthz } from '@/hooks/useAuthz'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
@@ -426,9 +426,10 @@ function deductionSummary(
     const acc = accrualById.get(d.accrualId)
     if (!acc) continue
     if (!byType[acc.type]) {
+      const wi = acc.sourceId ? workItemById.get(acc.sourceId) : undefined
       byType[acc.type] = {
         days: 0,
-        proj: acc.sourceId ? (workItemById.get(acc.sourceId)?.name ?? null) : null,
+        proj: wi ? wiLabel(wi, wi.name) : null,
       }
     }
     byType[acc.type].days += d.days
@@ -436,6 +437,25 @@ function deductionSummary(
   return Object.entries(byType)
     .map(([t, { days, proj }]) => proj ? `${t} ${days}일 (${proj})` : `${t} ${days}일`)
     .join(' / ')
+}
+
+// ─────────────────────────────────────────────────────────────
+// FY helpers (shared by UI and HTML export)
+// ─────────────────────────────────────────────────────────────
+
+function fyFromDate(dateStr: string): number {
+  const y = parseInt(dateStr.slice(0, 4), 10)
+  const m = parseInt(dateStr.slice(5, 7), 10)
+  return m >= 7 ? y + 1 : y
+}
+
+function fyRangeLabel(fy: number): string {
+  return `FY${String(fy).slice(-2)} (${fy - 1}.07~${fy}.06)`
+}
+
+function wiLabel(wi: WorkItem | undefined, fallback: string): string {
+  if (!wi) return fallback
+  return wi.client ? `${wi.name} — ${wi.client}` : wi.name
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -523,26 +543,66 @@ function generateSettlementHtml(
   const isTeam    = result.entitlementBasis === 'team'
   const isFiscal  = result.adoptedBasis === 'fiscal' || result.adoptedBasis === 'equal'
 
-  const t2 = accrualRows.length
-    ? accrualRows.map(a => `<tr>
-      <td><span class="pill pill-purple">${escHtml(a.type)}</span></td>
-      <td class="mono">${escHtml(a.date)}</td>
-      <td>${a.sourceId ? escHtml(workItemById.get(a.sourceId)?.name ?? '—') : (!a.isAuto && a.note ? escHtml(a.note) : '—')}</td>
-      <td class="num pos">+${escHtml(a.days)}</td></tr>`)
-    : ['<tr><td colspan="4" class="empty">내역 없음</td></tr>']
+  // Build FY-grouped t2 (팀 정당 적립 — by accrual date)
+  const t2Lines: string[] = []
+  if (accrualRows.length === 0) {
+    t2Lines.push('<tr><td colspan="4" class="empty">내역 없음</td></tr>')
+  } else {
+    const t2ByFY = new Map<number, LedgerAccrualEntry[]>()
+    for (const a of accrualRows) {
+      const fy = fyFromDate(a.date)
+      if (!t2ByFY.has(fy)) t2ByFY.set(fy, [])
+      t2ByFY.get(fy)!.push(a)
+    }
+    for (const [fy, entries] of [...t2ByFY.entries()].sort(([a], [b]) => a - b)) {
+      const sub  = entries.reduce((s, a) => s + a.days, 0)
+      const fyYY = String(fy).slice(-2)
+      t2Lines.push(`<tr class="fy-hdr"><td colspan="4">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
+      for (const a of entries) {
+        const wi      = a.sourceId ? workItemById.get(a.sourceId) : undefined
+        const srcText = wi
+          ? escHtml(wi.client ? `${wi.name} — ${wi.client}` : wi.name)
+          : (!a.isAuto && a.note ? escHtml(a.note) : '—')
+        t2Lines.push(`<tr>
+          <td><span class="pill pill-purple">${escHtml(a.type)}</span></td>
+          <td class="mono">${escHtml(a.date)}</td>
+          <td>${srcText}</td>
+          <td class="num pos">+${escHtml(a.days)}</td></tr>`)
+      }
+      t2Lines.push(`<tr class="fy-sub"><td colspan="3">소계</td><td class="num pos">+${sub}</td></tr>`)
+    }
+  }
+  const t2 = t2Lines
 
-  const t3 = paidUsages.length
-    ? paidUsages.map(u => {
+  // Build FY-grouped t3 (사용 이력 — by usage start date)
+  const t3Lines: string[] = []
+  if (paidUsages.length === 0) {
+    t3Lines.push('<tr><td colspan="4" class="empty">내역 없음</td></tr>')
+  } else {
+    const t3ByFY = new Map<number, LedgerUsageEntry[]>()
+    for (const u of paidUsages) {
+      const fy = fyFromDate(u.start)
+      if (!t3ByFY.has(fy)) t3ByFY.set(fy, [])
+      t3ByFY.get(fy)!.push(u)
+    }
+    for (const [fy, entries] of [...t3ByFY.entries()].sort(([a], [b]) => a - b)) {
+      const sub  = entries.reduce((s, u) => s + u.days, 0)
+      const fyYY = String(fy).slice(-2)
+      t3Lines.push(`<tr class="fy-hdr"><td colspan="4">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
+      for (const u of entries) {
         const period  = u.start === u.end ? escHtml(u.start) : `${escHtml(u.start)}~${escHtml(u.end)}`
         const fifo    = escHtml(deductionSummary(u.deductions, accrualById, workItemById))
         const deficit = u.deficit > 0 ? ` <span class="neg">(선사용 ${escHtml(u.deficit)}일)</span>` : ''
-        return `<tr>
-      <td class="mono">${period}</td>
-      <td><span class="pill pill-amber">${escHtml(u.type)}</span></td>
-      <td>${fifo}${deficit}</td>
-      <td class="num">−${escHtml(u.days)}</td></tr>`
-      })
-    : ['<tr><td colspan="4" class="empty">내역 없음</td></tr>']
+        t3Lines.push(`<tr>
+          <td class="mono">${period}</td>
+          <td><span class="pill pill-amber">${escHtml(u.type)}</span></td>
+          <td>${fifo}${deficit}</td>
+          <td class="num">−${escHtml(u.days)}</td></tr>`)
+      }
+      t3Lines.push(`<tr class="fy-sub"><td colspan="3">소계</td><td class="num">−${sub}</td></tr>`)
+    }
+  }
+  const t3 = t3Lines
 
   const netSign      = result.netSettlement > 0 ? '+' : ''
   const excessRow    = result.excess    > 0 ? `<div class="summary-row err"><span>초과 사용분 (퇴사 시 차감)</span><span class="sv">−${result.excess}일</span></div>` : ''
@@ -593,6 +653,8 @@ function generateSettlementHtml(
     .badge-a{background:#dbeafe;color:#1e40af}.badge-b{background:#ede9fe;color:#6d28d9}
     .hint{font-size:11px;color:#9ca3af;margin-left:5px}
     .mono{font-family:ui-monospace,monospace;font-size:11px}
+    .fy-hdr td{background:#f1f5f9;font-size:11px;font-weight:600;color:#64748b;padding:4px 10px;border-color:#e2e8f0}
+    .fy-sub td{background:#f9fafb;font-size:11px;color:#6b7280;font-weight:500;border-top:1px dashed #d1d5db}
     @media print{body{padding:20px;max-width:none}@page{margin:20mm;size:A4}section{break-inside:avoid}}
   `
 
@@ -822,6 +884,27 @@ function SettlementTab({ person }: { person: Person }) {
       .sort((a, b) => a.start.localeCompare(b.start)),
   [ledger])
 
+  // FY-grouped views for UI tables
+  const accrualFYGroups = useMemo(() => {
+    const map = new Map<number, LedgerAccrualEntry[]>()
+    for (const a of accrualRows) {
+      const fy = fyFromDate(a.date)
+      if (!map.has(fy)) map.set(fy, [])
+      map.get(fy)!.push(a)
+    }
+    return [...map.entries()].sort(([a], [b]) => a - b)
+  }, [accrualRows])
+
+  const usageFYGroups = useMemo(() => {
+    const map = new Map<number, LedgerUsageEntry[]>()
+    for (const u of paidUsages) {
+      const fy = fyFromDate(u.start)
+      if (!map.has(fy)) map.set(fy, [])
+      map.get(fy)!.push(u)
+    }
+    return [...map.entries()].sort(([a], [b]) => a - b)
+  }, [paidUsages])
+
   const handleDownload = useCallback(() => {
     if (!result) return
     const safeName = person.name.replace(/\s+/g, '_')
@@ -899,22 +982,37 @@ function SettlementTab({ person }: { person: Person }) {
                     <th className="px-3 py-2 text-right font-medium">일수</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-border">
-                  {accrualRows.map(a => (
-                    <tr key={a.id} className="hover:bg-surface-50">
-                      <td className="px-3 py-2"><span className="pill bg-purple-100 text-purple-700 text-[10px]">{a.type}</span></td>
-                      <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
-                      <td className="px-3 py-2 text-muted truncate max-w-[140px]">
-                        {a.sourceId
-                          ? (workItemById.get(a.sourceId)?.name ?? a.sourceId)
-                          : (!a.isAuto && a.note ? a.note : '—')}
-                      </td>
-                      <td className="px-3 py-2 text-right font-semibold text-purple-700">+{a.days}</td>
-                    </tr>
-                  ))}
-                  {accrualRows.length === 0 && (
+                <tbody>
+                  {accrualRows.length === 0 ? (
                     <tr><td colSpan={4} className="px-3 py-4 text-center text-muted">내역 없음</td></tr>
-                  )}
+                  ) : accrualFYGroups.map(([fy, entries]) => {
+                    const sub = entries.reduce((s, a) => s + a.days, 0)
+                    return (
+                      <Fragment key={fy}>
+                        <tr className="bg-slate-100/70 border-y border-border/60">
+                          <td colSpan={4} className="px-3 py-1 text-[11px] font-semibold text-muted tracking-wide">
+                            {fyRangeLabel(fy)}
+                          </td>
+                        </tr>
+                        {entries.map(a => (
+                          <tr key={a.id} className="hover:bg-surface-50 border-b border-border/40">
+                            <td className="px-3 py-2"><span className="pill bg-purple-100 text-purple-700 text-[10px]">{a.type}</span></td>
+                            <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
+                            <td className="px-3 py-2 text-muted truncate max-w-[180px]">
+                              {a.sourceId
+                                ? wiLabel(workItemById.get(a.sourceId), a.sourceId)
+                                : (!a.isAuto && a.note ? a.note : '—')}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-purple-700">+{a.days}</td>
+                          </tr>
+                        ))}
+                        <tr className="bg-surface-50/80 border-b border-border">
+                          <td colSpan={3} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
+                          <td className="px-3 py-1.5 text-right text-[11px] font-semibold text-purple-700">+{sub}</td>
+                        </tr>
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
                 <tfoot>
                   <tr className="bg-surface-50 border-t-2 border-border">
@@ -939,25 +1037,40 @@ function SettlementTab({ person }: { person: Person }) {
                     <th className="px-3 py-2 text-right font-medium">일수</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-border">
-                  {paidUsages.map(u => (
-                    <tr key={u.assignmentId} className="hover:bg-surface-50">
-                      <td className="px-3 py-2 font-mono text-[11px] whitespace-nowrap">
-                        {u.start === u.end ? u.start : `${u.start}~${u.end}`}
-                      </td>
-                      <td className="px-3 py-2"><span className="pill bg-amber-100 text-amber-700 text-[10px]">{u.type}</span></td>
-                      <td className="px-3 py-2 text-muted text-[10px] max-w-[160px]">
-                        {deductionSummary(u.deductions, accrualById, workItemById)}
-                        {u.deficit > 0 && (
-                          <span className="ml-1 text-red-500 whitespace-nowrap">(선사용 {u.deficit}일)</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-right font-semibold text-gray-800">−{u.days}</td>
-                    </tr>
-                  ))}
-                  {paidUsages.length === 0 && (
+                <tbody>
+                  {paidUsages.length === 0 ? (
                     <tr><td colSpan={4} className="px-3 py-4 text-center text-muted">내역 없음</td></tr>
-                  )}
+                  ) : usageFYGroups.map(([fy, entries]) => {
+                    const sub = entries.reduce((s, u) => s + u.days, 0)
+                    return (
+                      <Fragment key={fy}>
+                        <tr className="bg-slate-100/70 border-y border-border/60">
+                          <td colSpan={4} className="px-3 py-1 text-[11px] font-semibold text-muted tracking-wide">
+                            {fyRangeLabel(fy)}
+                          </td>
+                        </tr>
+                        {entries.map(u => (
+                          <tr key={u.assignmentId} className="hover:bg-surface-50 border-b border-border/40">
+                            <td className="px-3 py-2 font-mono text-[11px] whitespace-nowrap">
+                              {u.start === u.end ? u.start : `${u.start}~${u.end}`}
+                            </td>
+                            <td className="px-3 py-2"><span className="pill bg-amber-100 text-amber-700 text-[10px]">{u.type}</span></td>
+                            <td className="px-3 py-2 text-muted text-[10px] max-w-[200px]">
+                              {deductionSummary(u.deductions, accrualById, workItemById)}
+                              {u.deficit > 0 && (
+                                <span className="ml-1 text-red-500 whitespace-nowrap">(선사용 {u.deficit}일)</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-gray-800">−{u.days}</td>
+                          </tr>
+                        ))}
+                        <tr className="bg-surface-50/80 border-b border-border">
+                          <td colSpan={3} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
+                          <td className="px-3 py-1.5 text-right text-[11px] font-semibold text-gray-800">−{sub}</td>
+                        </tr>
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
                 <tfoot>
                   <tr className="bg-surface-50 border-t-2 border-border">
