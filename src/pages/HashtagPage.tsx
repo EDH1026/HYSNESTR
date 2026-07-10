@@ -13,6 +13,7 @@ import { useAllPeople }      from '@/features/people/hooks'
 import { dateToNum }         from '@/lib/date'
 import { RANK_ORDER }             from '@/features/timeline/constants'
 import { buildWorkItemColorMap }  from '@/lib/colors'
+import { parseSearchQuery }       from '@/lib/searchQuery'
 import type { WorkItem, Person, Assignment } from '@/types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,19 +284,14 @@ export default function HashtagPage() {
 
   const q = query.trim().toLowerCase()
 
-  // Search across name · client · description · hashtags (§5.8)
-  // work_items_safe view already masks sensitive fields for non-editors server-side;
-  // confidential items appear in search with their masked values (PRD §5.8).
+  // Search across name · client · description · hashtags (§5.8, G-5)
+  // Strip '#' so "#전략" matches the stored hashtag value "전략".
   const results = useMemo(() => {
     if (!q) return []
-    const tagQ = q.startsWith('#') ? q.slice(1) : q
+    const normalizedQ = q.replace(/#/g, '')
+    const matches = parseSearchQuery(normalizedQ)
     return workItems
-      .filter(wi =>
-        wi.name.toLowerCase().includes(q) ||
-        (wi.client?.toLowerCase() ?? '').includes(q) ||
-        (wi.description?.toLowerCase() ?? '').includes(q) ||
-        wi.hashtags.some(h => h.toLowerCase().includes(tagQ)),
-      )
+      .filter(wi => matches([wi.name, wi.client ?? '', wi.description ?? '', ...wi.hashtags]))
       .sort((a, b) => b.start.localeCompare(a.start))
   }, [workItems, q])
 

@@ -32,6 +32,7 @@ import { useAllHolidays }         from '@/features/admin/hooks'
 import { useAllPeople }           from '@/features/people/hooks'
 import { dateToNum, numToStr, today } from '@/lib/date'
 import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
+import { parseSearchQuery } from '@/lib/searchQuery'
 import FilterChip from '@/components/FilterChip'
 import type { Person, Rank, WorkItem, AnnualLeaveAdjustment } from '@/types'
 
@@ -69,8 +70,8 @@ function PersonSelector({
   const filtered = useMemo(() => {
     let out = [...people]
     if (nameSearch.trim()) {
-      const q = nameSearch.toLowerCase()
-      out = out.filter(p => p.name.toLowerCase().includes(q))
+      const matches = parseSearchQuery(nameSearch)
+      out = out.filter(p => matches([p.name]))
     }
     if (rankFilter.length)   out = out.filter(p => rankFilter.includes(p.rank))
     if (statusFilter.length) out = out.filter(p => statusFilter.includes(p.status ?? 'active'))

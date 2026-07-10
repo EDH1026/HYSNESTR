@@ -7,12 +7,13 @@
  * - 읽기: work_items_safe 뷰 사용 (기밀 마스킹)
  */
 import { useState, useMemo } from 'react'
-import { Download } from 'lucide-react'
+import { Download, Search } from 'lucide-react'
 import Modal from '@/components/Modal'
 import { useAllWorkItems } from '@/features/workitems/hooks'
 import { useAssignmentsByPerson } from '@/features/timeline/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
 import { dateToNum } from '@/lib/date'
+import { parseSearchQuery } from '@/lib/searchQuery'
 import type { Person, WorkItem, Assignment } from '@/types'
 
 // ── CV entry (one row per project / proposal) ─────────────────
@@ -185,11 +186,21 @@ export default function CvPanel({ person, onClose, inline }: Props) {
 
   // Default: projects only; toggle to also include proposals
   const [includeProposal, setIncludeProposal] = useState(false)
+  const [engSearch,       setEngSearch]       = useState('')
+  const [filterOnly,      setFilterOnly]      = useState(false)
 
   const entries = useMemo(
     () => computeCv(person.id, workItems, assignments, includeProposal),
     [person.id, workItems, assignments, includeProposal],
   )
+
+  const filteredEntries = useMemo(() => {
+    if (!engSearch.trim()) return entries
+    const matches = parseSearchQuery(engSearch)
+    return entries.filter(e =>
+      matches([e.workItem.name, e.workItem.client ?? '', e.workItem.description ?? '', ...e.workItem.hashtags]),
+    )
+  }, [entries, engSearch])
 
   if (!canView('person', person.id)) {
     if (inline) {
@@ -203,7 +214,8 @@ export default function CvPanel({ person, onClose, inline }: Props) {
   }
 
   function handleDownload() {
-    const html    = generateHtml(person, entries, includeProposal)
+    const toExport = filterOnly ? filteredEntries : entries
+    const html    = generateHtml(person, toExport, includeProposal)
     const safe    = person.name.replace(/[^a-zA-Z0-9가-힣_-]/g, '_')
     const dateStr = new Date().toISOString().slice(0, 10)
     triggerDownload(html, `CV_${safe}_${dateStr}.html`, 'text/html;charset=utf-8')
@@ -221,7 +233,7 @@ export default function CvPanel({ person, onClose, inline }: Props) {
           <p className="text-sm font-semibold text-gray-900">{person.name}</p>
           <p className="text-xs text-muted">{person.rank}{person.role ? ` · ${person.role}` : ''}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Project / Proposal toggle */}
           <div className="flex rounded-md overflow-hidden border border-border text-xs font-medium">
             <button
@@ -249,23 +261,48 @@ export default function CvPanel({ person, onClose, inline }: Props) {
               제안서 포함
             </button>
           </div>
+          <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={filterOnly}
+              onChange={e => setFilterOnly(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-border accent-blue-600"
+            />
+            필터링된 항목만 내보내기
+          </label>
           <button onClick={handleDownload} className="btn-primary gap-1.5 text-xs">
             <Download size={13} /> Download HTML
           </button>
         </div>
       </div>
 
+      {/* Engagement search */}
+      <div className="relative">
+        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+        <input
+          className="input pl-7 py-1.5 text-xs w-full"
+          placeholder="Engagement 검색 (프로젝트명, 고객사, 해시태그…)"
+          value={engSearch}
+          onChange={e => setEngSearch(e.target.value)}
+        />
+      </div>
+
       {/* Count summary */}
       <p className="text-[11px] text-muted -mt-1">
-        {entries.length}건 · Pipeline 제외 · Open/Closed 전체
+        {engSearch.trim()
+          ? `${filteredEntries.length} / ${entries.length}건`
+          : `${entries.length}건`}
+        · Pipeline 제외 · Open/Closed 전체
       </p>
 
       {/* Entry list */}
-      {entries.length === 0 ? (
-        <div className="text-center py-12 text-muted text-sm">{emptyMsg}</div>
+      {filteredEntries.length === 0 ? (
+        <div className="text-center py-12 text-muted text-sm">
+          {entries.length === 0 ? emptyMsg : '검색 결과 없음'}
+        </div>
       ) : (
         <div className="space-y-3">
-          {entries.map(e => (
+          {filteredEntries.map(e => (
             <article key={e.workItem.id} className="rounded-lg border border-border p-4 space-y-2">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-1.5 min-w-0">

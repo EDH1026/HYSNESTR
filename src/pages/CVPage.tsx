@@ -6,6 +6,7 @@ import { useAuth } from '@/context/AuthContext'
 import { useAuthz } from '@/hooks/useAuthz'
 import CvPanel, { computeCv } from '@/features/cv/CvPanel'
 import FilterChip from '@/components/FilterChip'
+import { parseSearchQuery } from '@/lib/searchQuery'
 import type { Person, Rank } from '@/types'
 
 const RANKS: Rank[] = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern']
@@ -86,8 +87,8 @@ export default function CVPage() {
     let out = [...people]
 
     if (nameSearch.trim()) {
-      const q = nameSearch.toLowerCase()
-      out = out.filter(p => p.name.toLowerCase().includes(q))
+      const matches = parseSearchQuery(nameSearch)
+      out = out.filter(p => matches([p.name]))
     }
     if (rankFilter.length)   out = out.filter(p => rankFilter.includes(p.rank))
     if (statusFilter.length) out = out.filter(p => statusFilter.includes(p.status))

@@ -7,6 +7,7 @@ import WorkItemModal from '@/features/workitems/WorkItemModal'
 import BulkUploadModal from '@/features/workitems/BulkUploadModal'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import { buildWorkItemColorMap } from '@/lib/colors'
+import { parseSearchQuery } from '@/lib/searchQuery'
 import { useQueryClient } from '@tanstack/react-query'
 import type { WorkItem, WorkItemType } from '@/types'
 
@@ -85,8 +86,8 @@ export default function WorkItemsPage() {
   const filtered = useMemo(() => {
     let out = [...workItems]
     if (nameSearch.trim()) {
-      const q = nameSearch.toLowerCase()
-      out = out.filter(w => w.name.toLowerCase().includes(q) || (w.engagement_number ?? '').toLowerCase().includes(q))
+      const matches = parseSearchQuery(nameSearch)
+      out = out.filter(w => matches([w.name, w.engagement_number ?? '']))
     }
     if (typeFilter.length)   out = out.filter(w => typeFilter.includes(w.type))
     if (statusFilter.length) out = out.filter(w => statusFilter.includes(w.status ?? w.project_status ?? 'open'))

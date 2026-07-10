@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom'
 import { Search, Users, Briefcase, X } from 'lucide-react'
 import { useAllPeople }    from '@/features/people/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
+import { parseSearchQuery } from '@/lib/searchQuery'
 import type { Person, WorkItem } from '@/types'
 
 interface Props {
@@ -19,25 +20,6 @@ interface Props {
 }
 
 const MAX_RESULTS = 6
-
-function matchesPerson(p: Person, q: string): boolean {
-  const lq = q.toLowerCase()
-  if (p.name.toLowerCase().includes(lq)) return true
-  if (p.lpn?.toLowerCase().includes(lq)) return true
-  if (p.role?.toLowerCase().includes(lq)) return true
-  return false
-}
-
-function matchesWorkItem(wi: WorkItem, q: string): boolean {
-  if (wi.name === '(비공개)') return false   // masked confidential — skip
-  const lq = q.toLowerCase()
-  if (wi.name.toLowerCase().includes(lq)) return true
-  if (wi.client?.toLowerCase().includes(lq)) return true
-  if (wi.engagement_number?.toLowerCase().includes(lq)) return true
-  if (wi.description?.toLowerCase().includes(lq)) return true
-  if (wi.hashtags?.some(h => h.toLowerCase().includes(lq))) return true
-  return false
-}
 
 export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props) {
   const navigate = useNavigate()
@@ -71,12 +53,18 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
 
   const matchedPeople = useMemo(() => {
     if (!q) return [] as Person[]
-    return people.filter(p => p.status === 'active' && matchesPerson(p, q)).slice(0, MAX_RESULTS)
+    const matches = parseSearchQuery(q)
+    return people
+      .filter(p => p.status === 'active' && matches([p.name, p.lpn ?? '', p.role ?? '']))
+      .slice(0, MAX_RESULTS)
   }, [q, people])
 
   const matchedWIs = useMemo(() => {
     if (!q) return [] as WorkItem[]
-    return workItems.filter(wi => matchesWorkItem(wi, q)).slice(0, MAX_RESULTS)
+    const matches = parseSearchQuery(q)
+    return workItems
+      .filter(wi => wi.name !== '(비공개)' && matches([wi.name, wi.client ?? '', wi.engagement_number ?? '', wi.description ?? '', ...wi.hashtags]))
+      .slice(0, MAX_RESULTS)
   }, [q, workItems])
 
   function selectPerson(p: Person) {

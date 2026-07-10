@@ -16,6 +16,7 @@ import LeavePanel from '@/features/leave/LeavePanel'
 import FilterChip from '@/components/FilterChip'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import { today } from '@/lib/date'
+import { parseSearchQuery } from '@/lib/searchQuery'
 import type { Person, Rank } from '@/types'
 
 const RANKS: Rank[] = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern']
@@ -63,8 +64,8 @@ export default function LeavePage() {
     if (isViewer) return []
     let out = [...people]
     if (nameSearch.trim()) {
-      const q = nameSearch.toLowerCase()
-      out = out.filter(p => p.name.toLowerCase().includes(q))
+      const matches = parseSearchQuery(nameSearch)
+      out = out.filter(p => matches([p.name]))
     }
     if (rankFilter.length)   out = out.filter(p => rankFilter.includes(p.rank))
     if (statusFilter.length) out = out.filter(p => statusFilter.includes(p.status ?? 'active'))
