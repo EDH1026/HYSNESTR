@@ -318,10 +318,44 @@ export function computeLedger(
       type,
       days,
       deductions,
-      deficit:   remaining,
+      deficit:   remaining,   // overwritten below by LV-12 running balance
       note,
       isManual:  ev.kind === 'manual',
     })
+  }
+
+  // ── LV-12: Running-balance deficit recalculation ──────────
+  // Replace per-entry FIFO-leftover with a chronological running deficit.
+  // Three independent pools per LV-5 source eligibility:
+  //   jieong  — 지정휴가 usages vs {주말/휴일대체·프로젝트휴가·포상·지연보상} accruals
+  //   special — 특별휴가 usages vs {특별휴가} accruals
+  //   general — all other paid leave vs all accruals
+  {
+    const jieongAccs  = allAccruals.filter(a => JIEONG_SOURCES.has(a.type))
+    const specialAccs = allAccruals.filter(a => a.type === '특별휴가')
+    // allAccruals already sorted by date — used as generalAccs
+
+    const poolUsed = { jieong: 0, special: 0, general: 0 }
+
+    const positiveUsages = usages
+      .filter(u => u.days > 0)
+      .sort((a, b) => a.end.localeCompare(b.end) || a.start.localeCompare(b.start))
+
+    for (const u of positiveUsages) {
+      const pool = u.type === '지정휴가' ? 'jieong' as const
+                 : u.type === '특별휴가' ? 'special' as const
+                 : 'general' as const
+
+      poolUsed[pool] = Math.round((poolUsed[pool] + u.days) * 10) / 10
+
+      const eligAccs      = pool === 'jieong' ? jieongAccs
+                           : pool === 'special' ? specialAccs
+                           : allAccruals
+      const runningAccrued = Math.round(
+        eligAccs.filter(a => a.date <= u.end).reduce((s, a) => s + a.days, 0) * 10) / 10
+
+      u.deficit = Math.max(0, Math.round((poolUsed[pool] - runningAccrued) * 10) / 10)
+    }
   }
 
   // ── Step 5: Unpaid leave entries ───────────────────────────
