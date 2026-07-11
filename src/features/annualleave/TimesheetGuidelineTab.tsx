@@ -97,21 +97,18 @@ function parseSnapKey(key: string): [string, string, string] {
 }
 
 /**
- * P-1 per-date employment check.
- * v2.59: introduced hire_date + termination_date filtering
- * v2.60: fixed hire_date — applies only to 'upcoming' people
- * v2.63: removed termination_date check for non-resigned people.
+ * P-1 per-date employment check. (v2.64 — authoritative version)
  *
- * activePeople already excludes status='resigned', so isEmployedOnDate
- * only ever sees 'active' or 'upcoming' people.
+ * hire_date  : applies to ALL statuses — exclude dates before the person started.
+ * termination_date: applies only to 'resigned' — exclude dates after they left.
+ *   'active' people's termination_date may be a future planned date; trust status.
  *
- * termination_date on an 'active' person may be a future planned date or
- * an incorrectly-entered value. Using it as a current-day exclusion gate
- * drops the entire tail of the window for that person (황유동/이준호96 bug).
- * status is the authoritative employment indicator; trust it.
+ * Callers must use snapshotPeople (not activePeople) so that resigned staff
+ * who left mid-window are included with the correct date boundaries.
  */
 function isEmployedOnDate(person: Person, dateStr: string): boolean {
-  if (person.status === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
+  if (person.hire_date && person.hire_date > dateStr) return false
+  if (person.status === 'resigned' && person.termination_date && person.termination_date < dateStr) return false
   return true
 }
 
@@ -534,7 +531,19 @@ export default function TimesheetGuidelineTab() {
   )
   const allCols = useMemo(() => weeks.flatMap(w => w.columns), [weeks])
 
-  const activePeople = useMemo(() => allPeople.filter(p => p.status !== 'resigned'), [allPeople])
+  // v2.64: people who were active at ANY point in the 8-week window.
+  // Includes resigned staff who left mid-window (termination_date ≥ windowStart)
+  // and upcoming staff who joined mid-window (hire_date ≤ windowEnd).
+  // isEmployedOnDate then clips each person to their exact employment dates.
+  const snapshotPeople = useMemo(
+    () => allPeople.filter(p => {
+      if (p.hire_date && p.hire_date > windowEnd) return false          // starts after window
+      if (p.status === 'resigned')
+        return !!(p.termination_date && p.termination_date >= windowStart) // left during/after window
+      return true
+    }),
+    [allPeople, windowStart, windowEnd]
+  )
 
   // ── Snapshot query (TSG-2⑥) ───────────────────────────────────
   const SNAP_KEY = ['tsg_snapshot_v2', windowStart, windowEnd] as const
@@ -700,7 +709,7 @@ export default function TimesheetGuidelineTab() {
     const rowErrors:  { personName: string; personId: string; date: string; error: string }[] = []
     const skippedPeople: { personName: string; personId: string; error: string }[] = []
 
-    for (const person of activePeople) {
+    for (const person of snapshotPeople) {
       const pa = byPerson.asgn.get(person.id) ?? []
       const pc = byPerson.accr.get(person.id) ?? []
       const pj = byPerson.adj.get(person.id)  ?? []
@@ -782,7 +791,7 @@ export default function TimesheetGuidelineTab() {
       // the full target. This surfaces hire_date / termination_date mismatches
       // early so the root cause is visible in the console before any DB writes.
       const fullDayCount = targetWorkingDays.length
-      for (const p of activePeople) {
+      for (const p of snapshotPeople) {
         const personDays = targetWorkingDays.filter(d => isEmployedOnDate(p, d))
         if (personDays.length < fullDayCount) {
           const firstMissing = targetWorkingDays.find(d => !personDays.includes(d))
@@ -796,12 +805,12 @@ export default function TimesheetGuidelineTab() {
         }
       }
 
-      const expectedCount = activePeople.reduce((sum, p) =>
+      const expectedCount = snapshotPeople.reduce((sum, p) =>
         sum + targetWorkingDays.filter(d => isEmployedOnDate(p, d)).length, 0)
       console.log(
         `[TSG 초기화] 시작 — 대상 ${targetWorkingDays.length}영업일 ` +
         `(최신 주 ${currentWeekEverSaved ? '포함' : '제외'}), ` +
-        `기대 행수: ${expectedCount} (${activePeople.length}명 × P-1 per-date 적용)`
+        `기대 행수: ${expectedCount} (snapshotPeople ${snapshotPeople.length}명 × P-1 per-date)`
       )
 
       const { computed, rowErrors, skippedPeople } = computeCodes(targetWorkingDays)
@@ -854,7 +863,7 @@ export default function TimesheetGuidelineTab() {
             .limit(50000)
           const actualSet = new Set((actualRows ?? []).map((r: any) => `${r.person_id}|${r.date}`))
           const missing: { name: string; date: string }[] = []
-          for (const p of activePeople) {
+          for (const p of snapshotPeople) {
             for (const d of targetWorkingDays) {
               if (!isEmployedOnDate(p, d)) continue
               if (!actualSet.has(`${p.id}|${d}`)) missing.push({ name: p.name, date: d })
@@ -1053,13 +1062,13 @@ export default function TimesheetGuidelineTab() {
 
   // ── Derived ───────────────────────────────────────────────────
   const filteredPeople = useMemo(() => {
-    let out = [...activePeople]
+    let out = [...snapshotPeople]
     if (nameSearch.trim()) {
       const matches = parseSearchQuery(nameSearch)
       out = out.filter(p => matches([p.name]))
     }
     return sortPeople(out)
-  }, [activePeople, nameSearch])
+  }, [snapshotPeople, nameSearch])
 
   const { newCount, corrCount, manualCount } = useMemo(() => {
     let n = 0, c = 0, m = 0
@@ -1173,7 +1182,7 @@ export default function TimesheetGuidelineTab() {
             최신 주: {numToStr(latestMonNum)} ~ {windowEnd}
             <span className="ml-2">창: {windowStart} ~ {windowEnd}</span>
             <span className="ml-2">영업일 {allWorkingDays.length}일</span>
-            <span className="ml-2">대상 {activePeople.length}명</span>
+            <span className="ml-2">대상 {snapshotPeople.length}명</span>
           </p>
           {isSnapshotMode && snapshotVersion && (
             <p className="text-[10px] text-muted mt-0.5">
@@ -1351,7 +1360,7 @@ export default function TimesheetGuidelineTab() {
               {weeks.map(week => {
                 const isOpen = expandedWeeks.has(week.weekStart)
                 let wNew = 0, wCorr = 0, wManual = 0
-                for (const p of activePeople) for (const col of week.columns) {
+                for (const p of snapshotPeople) for (const col of week.columns) {
                   if (col.isHoliday) continue
                   const prefix = `${p.id}||${col.date}||`
                   for (const [key, entry] of effectiveEntries) {
