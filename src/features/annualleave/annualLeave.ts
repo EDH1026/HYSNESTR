@@ -37,14 +37,11 @@ function adjContrib(a: Pick<AnnualLeaveAdjustment, 'direction' | 'days'>): numbe
 // ── Output types ──────────────────────────────────────────────
 
 export interface AnnualLeaveSettlementResult {
-  // 법정연차 (순수 함수 계산)
-  fiscalItems:         StatutoryLeaveItem[]   // 회계연도 기준 항목 목록
+  // 법정연차 (입사일/주년일 기준만 — AL-3a)
   anniversaryItems:    StatutoryLeaveItem[]   // 입사일 기준 항목 목록
-  fiscalSubtotal:      number                 // 회계연도 기준 소계 (보정 전)
   anniversarySubtotal: number                 // 입사일 기준 소계 (보정 전)
   adjustmentsTotal:    number                 // 수동 보정 합계
-  adoptedBasis:        'fiscal' | 'anniversary' | 'equal' | 'none'
-  statutory:           number                 // max(fiscal,anniv) + adjustments
+  statutory:           number                 // anniversarySubtotal + adjustments
 
   // 기타 누적 항목
   weekendSub:   number
@@ -98,24 +95,15 @@ export function computeAnnualLeaveSettlement(
       .reduce((s, a) => s + adjContrib(a), 0),
   )
 
-  let fiscalItems:         StatutoryLeaveItem[] = []
+  // AL-3a: 퇴사 정산은 입사일(주년일) 기준만 사용
   let anniversaryItems:    StatutoryLeaveItem[] = []
-  let fiscalSubtotal     = 0
   let anniversarySubtotal = 0
-  let adoptedBasis: AnnualLeaveSettlementResult['adoptedBasis'] = 'none'
-  let statutory          = 0
+  let statutory           = 0
 
   if (hireDate) {
-    fiscalItems         = computeStatutoryLeave(hireDate, 'fiscal',      asOfDate)
     anniversaryItems    = computeStatutoryLeave(hireDate, 'anniversary', asOfDate)
-    fiscalSubtotal      = r1(sumStatutoryLeave(fiscalItems))
     anniversarySubtotal = r1(sumStatutoryLeave(anniversaryItems))
-    adoptedBasis        = fiscalSubtotal > anniversarySubtotal
-      ? 'fiscal'
-      : anniversarySubtotal > fiscalSubtotal
-        ? 'anniversary'
-        : 'equal'
-    statutory = r1(Math.max(fiscalSubtotal, anniversarySubtotal) + adjustmentsTotal)
+    statutory           = r1(anniversarySubtotal + adjustmentsTotal)
   } else {
     statutory = adjustmentsTotal
   }
@@ -137,9 +125,7 @@ export function computeAnnualLeaveSettlement(
   const netSettlement = r1(shortfall - excess)
 
   return {
-    fiscalItems, anniversaryItems,
-    fiscalSubtotal, anniversarySubtotal, adjustmentsTotal,
-    adoptedBasis, statutory,
+    anniversaryItems, anniversarySubtotal, adjustmentsTotal, statutory,
     weekendSub, specialLeave, candidateA,
     teamAccrued, totalEntitlement, entitlementBasis,
     totalUsed, excess, shortfall, netSettlement,

@@ -469,11 +469,7 @@ function renderStatutoryItemsHtml(
   adjRows: AnnualLeaveAdjustment[],
   subtotal: number,
   adjustmentsTotal: number,
-  isAdopted: boolean,
 ): string {
-  const adoptedClass = isAdopted ? 'chosen-a' : 'unchosen'
-  const adoptedBadge = isAdopted ? '<span class="badge badge-a">채택</span>' : ''
-
   const itemRows = items.map(item => {
     if (item.kind === 'probation') {
       return `<tr>
@@ -499,9 +495,8 @@ function renderStatutoryItemsHtml(
   const grandTotal = Math.round((subtotal + adjustmentsTotal) * 10) / 10
 
   return `
-    <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px">
-      <span class="${adoptedClass}" style="font-size:12px;font-weight:600">소계 ${grandTotal}일</span>
-      ${adoptedBadge}
+    <div style="margin-bottom:8px">
+      <span style="font-size:12px;font-weight:600">소계 ${grandTotal}일</span>
     </div>
     <table>
       <thead><tr><th>유형</th><th>FY / 기준일</th><th>산출 근거</th><th>일수</th></tr></thead>
@@ -531,7 +526,6 @@ function generateSettlementHtml(
 ): string {
   const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
   const isTeam    = result.entitlementBasis === 'team'
-  const isFiscal  = result.adoptedBasis === 'fiscal' || result.adoptedBasis === 'equal'
 
   // Build FY-grouped t2 (팀 정당 적립 — by accrual date)
   const t2Lines: string[] = []
@@ -617,17 +611,11 @@ function generateSettlementHtml(
 
 <section>
   <h2>① 법정연차 적립·보정 내역</h2>
-  <div class="two-col">
-    <div class="col-box">
-      <div class="col-title" style="color:#1d4ed8">회계연도(FY) 기준</div>
-      ${renderStatutoryItemsHtml(result.fiscalItems, adjRows, result.fiscalSubtotal, result.adjustmentsTotal, isFiscal)}
-    </div>
-    <div class="col-box">
-      <div class="col-title" style="color:#7c3aed">입사일 기준</div>
-      ${renderStatutoryItemsHtml(result.anniversaryItems, adjRows, result.anniversarySubtotal, result.adjustmentsTotal, !isFiscal && result.adoptedBasis !== 'none')}
-    </div>
+  <div class="col-box">
+    <div class="col-title" style="color:#7c3aed">입사일(주년일) 기준</div>
+    ${renderStatutoryItemsHtml(result.anniversaryItems, adjRows, result.anniversarySubtotal, result.adjustmentsTotal)}
   </div>
-  <p style="margin-top:8px;font-size:12px;color:#6b7280">채택된 법정연차 = <strong>${result.statutory}일</strong> (수동 보정 포함)</p>
+  <p style="margin-top:8px;font-size:12px;color:#6b7280">법정연차 = <strong>${result.statutory}일</strong> (수동 보정 포함)</p>
 </section>
 
 <section>
@@ -697,7 +685,6 @@ function StatutorySection({
   adjRows,
   subtotal,
   adjustmentsTotal,
-  isAdopted,
 }: {
   title:            string
   titleColor:       string
@@ -705,19 +692,15 @@ function StatutorySection({
   adjRows:          AnnualLeaveAdjustment[]
   subtotal:         number
   adjustmentsTotal: number
-  isAdopted:        boolean
 }) {
   const grandTotal = Math.round((subtotal + adjustmentsTotal) * 10) / 10
   return (
-    <div className={`rounded-lg border ${isAdopted ? 'border-brand-300 bg-blue-50/50' : 'border-border bg-surface-50'} overflow-hidden`}>
+    <div className="rounded-lg border border-border bg-surface-50 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
         <span className={`text-xs font-semibold ${titleColor}`}>{title}</span>
-        <div className="flex items-center gap-2">
-          <span className={`text-xs tabular-nums font-bold ${isAdopted ? 'text-brand-700' : 'text-gray-500'}`}>
-            {grandTotal}일
-          </span>
-          {isAdopted && <span className="pill bg-brand-100 text-brand-700 text-[10px]">채택</span>}
-        </div>
+        <span className="text-xs tabular-nums font-bold text-gray-700">
+          {grandTotal}일
+        </span>
       </div>
       <table className="w-full text-xs">
         <tbody className="divide-y divide-border">
@@ -768,7 +751,7 @@ function StatutorySection({
             <td colSpan={3} className="px-3 py-2 text-xs font-semibold text-gray-700">
               법정연차 소계 + 수동 보정 {adjustmentsTotal >= 0 ? '+' : ''}{adjustmentsTotal}일
             </td>
-            <td className={`px-3 py-2 text-right font-bold ${isAdopted ? 'text-brand-700' : 'text-gray-600'}`}>
+            <td className="px-3 py-2 text-right font-bold text-brand-700">
               {grandTotal}일
             </td>
           </tr>
@@ -905,29 +888,17 @@ function SettlementTab({ person }: { person: Person }) {
             {!person.hire_date ? (
               <p className="text-xs text-muted py-3 text-center">입사일 미입력 — 수동 보정만 반영됨 ({result.statutory}일)</p>
             ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                <StatutorySection
-                  title="회계연도(FY) 기준"
-                  titleColor="text-brand-700"
-                  items={result.fiscalItems}
-                  adjRows={adjRows}
-                  subtotal={result.fiscalSubtotal}
-                  adjustmentsTotal={result.adjustmentsTotal}
-                  isAdopted={result.adoptedBasis === 'fiscal' || result.adoptedBasis === 'equal'}
-                />
-                <StatutorySection
-                  title="입사일 기준"
-                  titleColor="text-purple-700"
-                  items={result.anniversaryItems}
-                  adjRows={adjRows}
-                  subtotal={result.anniversarySubtotal}
-                  adjustmentsTotal={result.adjustmentsTotal}
-                  isAdopted={result.adoptedBasis === 'anniversary'}
-                />
-              </div>
+              <StatutorySection
+                title="입사일(주년일) 기준"
+                titleColor="text-purple-700"
+                items={result.anniversaryItems}
+                adjRows={adjRows}
+                subtotal={result.anniversarySubtotal}
+                adjustmentsTotal={result.adjustmentsTotal}
+              />
             )}
             <div className="mt-2 px-3 py-2 bg-surface-50 border border-border rounded text-xs text-gray-700">
-              채택된 법정연차 누적 합계: <span className="font-bold text-brand-700">{result.statutory}일</span>
+              법정연차 누적 합계: <span className="font-bold text-brand-700">{result.statutory}일</span>
               <span className="text-muted ml-1">(수동 보정 {result.adjustmentsTotal >= 0 ? '+' : ''}{result.adjustmentsTotal}일 포함)</span>
             </div>
           </section>
