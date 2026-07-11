@@ -3,7 +3,7 @@
  * 주차별(×인력별) 매트릭스 형식으로 타임시트 코드 지침을 표시한다.
  * 최신 주 위에, 최근 1-2주 기본 펼침, 이전 주 기본 접힘.
  */
-import { useState, useMemo, useCallback, useRef, useEffect, Fragment, type ChangeEvent } from 'react'
+import { useState, useMemo, useCallback, useRef, useEffect, type ChangeEvent } from 'react'
 import {
   Loader2, Play, Download, Save, AlertTriangle, RefreshCw,
   ChevronDown, ChevronRight,
@@ -361,7 +361,7 @@ export default function TimesheetGuidelineTab() {
           const kind: 'new' | 'correction' | 'unchanged' =
             existing === null      ? 'new' :
             existing !== comp.code ? 'correction' : 'unchanged'
-          cells.set(key, { ...comp, existing, kind })
+          cells.set(key, { computed: comp.code, provisional: comp.provisional, existing, kind })
         }
       }
 
