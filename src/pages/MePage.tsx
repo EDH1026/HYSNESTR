@@ -171,12 +171,12 @@ function LeaveTab({
                   <th className="px-3 py-2 text-left font-medium">기간</th>
                   <th className="px-3 py-2 text-left font-medium">유형</th>
                   <th className="px-3 py-2 text-right font-medium">사용일</th>
-                  <th className="px-3 py-2 text-right font-medium">부족분</th>
+                  <th className="px-3 py-2 text-right font-medium">Balance</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {ledger.usages.map(u => (
-                  <tr key={u.assignmentId} className={u.deficit > 0 ? 'bg-red-50' : 'hover:bg-surface-50'}>
+                  <tr key={u.assignmentId} className={u.deficit < 0 ? 'bg-red-50' : 'hover:bg-surface-50'}>
                     <td className="px-3 py-2 font-mono">
                       {u.start}{u.start !== u.end ? ` ~ ${u.end}` : ''}
                     </td>
@@ -184,10 +184,12 @@ function LeaveTab({
                       <span className="pill bg-violet-100 text-violet-700">{u.type}</span>
                     </td>
                     <td className="px-3 py-2 text-right font-medium">{u.days}일</td>
-                    <td className="px-3 py-2 text-right">
-                      {u.deficit > 0
-                        ? <span className="text-red-600 font-medium">−{u.deficit}일</span>
-                        : <span className="text-muted">—</span>}
+                    <td className="px-3 py-2 text-right font-medium tabular-nums">
+                      {u.deficit < 0
+                        ? <span className="text-red-600">−{-u.deficit}일</span>
+                        : u.deficit > 0
+                          ? <span className="text-emerald-600">+{u.deficit}일</span>
+                          : <span className="text-muted">0일</span>}
                     </td>
                   </tr>
                 ))}

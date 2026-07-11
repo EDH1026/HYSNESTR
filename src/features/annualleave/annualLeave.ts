@@ -197,11 +197,12 @@ export function computeTimesheetFigures(
       .reduce((s, d) => s + d.days, 0),
   )
 
-  // ④ 지정휴가 선사용분 (FIFO shortfall 합)
+  // ④ 지정휴가 선사용분: LV-12 running balance 기준 — 마지막 지정휴가 사용 시점의 잔액이 음수면 그 절댓값
+  const jieongEntries = usagesOnOrBefore
+    .filter(u => u.type === '지정휴가' && !u.isManual && u.days > 0)
+    .sort((a, b) => a.end.localeCompare(b.end) || a.start.localeCompare(b.start))
   const designatedShortfall = r1(
-    usagesOnOrBefore
-      .filter(u => u.type === '지정휴가' && !u.isManual)
-      .reduce((s, u) => s + u.deficit, 0),
+    jieongEntries.length > 0 ? Math.max(0, -jieongEntries[jieongEntries.length - 1].deficit) : 0,
   )
 
   return { statutoryThisYear, projectLeaveUsed, designatedFromProject, designatedShortfall }

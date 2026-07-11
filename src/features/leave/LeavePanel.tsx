@@ -115,7 +115,7 @@ function generateLeaveLedgerHtml(
           return `${escHtml(src)} ${d.days}일`
         }).filter(Boolean)
         const deducText = deducParts.length ? deducParts.join(' / ') : '—'
-        const deficit   = u.deficit > 0 ? ` <span class="neg">(선사용 ${u.deficit}일)</span>` : ''
+        const deficit   = u.deficit < 0 ? ` <span class="neg">(선사용 ${-u.deficit}일)</span>` : ''
         const typeTag   = u.isManual
           ? `<span class="pill pill-red">${escHtml(u.type)}</span> <span class="pill pill-red" style="font-size:10px">수동차감</span>`
           : `<span class="pill pill-violet">${escHtml(u.type)}</span>`
@@ -124,7 +124,7 @@ function generateLeaveLedgerHtml(
           <td>${typeTag}</td>
           <td class="num">${escHtml(u.days)}일</td>
           <td>${deducText}${deficit}</td>
-          <td class="num">${u.deficit > 0 ? `<span class="neg">−${u.deficit}일</span>` : '—'}</td></tr>`)
+          <td class="num">${u.deficit < 0 ? `<span class="neg">−${-u.deficit}일</span>` : u.deficit > 0 ? `<span class="pos">+${u.deficit}일</span>` : `0일`}</td></tr>`)
       }
       usageLines.push(`<tr class="fy-sub"><td colspan="4">소계</td><td class="num">${sub}일</td></tr>`)
     }
@@ -177,7 +177,7 @@ function generateLeaveLedgerHtml(
 <section>
   <h2>사용 이력 (유급)</h2>
   <table>
-    <thead><tr><th>기간</th><th>유형</th><th>사용일</th><th>차감 원천</th><th>부족분</th></tr></thead>
+    <thead><tr><th>기간</th><th>유형</th><th>사용일</th><th>차감 원천</th><th>Balance</th></tr></thead>
     <tbody>${usageLines.join('')}</tbody>
     <tfoot><tr><td colspan="4">전체 합계</td><td class="num">${ledger.totalUsed}일</td></tr></tfoot>
   </table>
@@ -785,7 +785,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                       <th className="px-3 py-2 text-left font-medium">유형</th>
                       <th className="px-3 py-2 text-right font-medium whitespace-nowrap">사용일</th>
                       <th className="px-3 py-2 text-left font-medium">차감 원천</th>
-                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">부족분</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">Balance</th>
                       {canEditThis && <th className="px-2 py-2 w-7" />}
                     </tr>
                   </thead>
@@ -811,7 +811,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                             </td>
                           </tr>
                           {isOpen && entries.map(u => (
-                            <tr key={u.assignmentId} className={`border-b border-border/40 ${u.deficit > 0 ? 'bg-red-50' : 'hover:bg-surface-50'}`}>
+                            <tr key={u.assignmentId} className={`border-b border-border/40 ${u.deficit < 0 ? 'bg-red-50' : 'hover:bg-surface-50'}`}>
                               <td className="px-3 py-2 font-mono">
                                 {u.isManual
                                   ? <span className="flex items-center gap-1.5">
@@ -827,7 +827,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                               </td>
                               <td className="px-3 py-2 text-right font-medium">{u.days}일</td>
                               <td className="px-3 py-2 text-muted text-[11px]">
-                                {u.deductions.length === 0 && !(u.type === '지정휴가' && u.deficit > 0)
+                                {u.deductions.length === 0 && !(u.type === '지정휴가' && u.deficit < 0)
                                   ? '—'
                                   : <span className="flex flex-wrap gap-x-1 gap-y-0.5">
                                       {u.deductions.map((d, i) => {
@@ -836,16 +836,18 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                           : (accrualNote.get(d.accrualId) ?? '범용')
                                         return <span key={i}>{srcName} {d.days}일</span>
                                       })}
-                                      {u.type === '지정휴가' && u.deficit > 0 && (
-                                        <span className="text-red-500 font-medium">선사용 {u.deficit}일</span>
+                                      {u.type === '지정휴가' && u.deficit < 0 && (
+                                        <span className="text-red-500 font-medium">선사용 {-u.deficit}일</span>
                                       )}
                                     </span>
                                 }
                               </td>
-                              <td className="px-3 py-2 text-right">
-                                {u.deficit > 0
-                                  ? <span className="text-red-600 font-medium">−{u.deficit}일</span>
-                                  : <span className="text-muted">—</span>}
+                              <td className="px-3 py-2 text-right font-medium tabular-nums">
+                                {u.deficit < 0
+                                  ? <span className="text-red-600">−{-u.deficit}일</span>
+                                  : u.deficit > 0
+                                    ? <span className="text-emerald-600">+{u.deficit}일</span>
+                                    : <span className="text-muted">0일</span>}
                               </td>
                               {canEditThis && (
                                 <td className="px-2 py-2">

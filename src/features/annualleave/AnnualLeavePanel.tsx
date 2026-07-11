@@ -582,7 +582,7 @@ function generateSettlementHtml(
       for (const u of entries) {
         const period  = u.start === u.end ? escHtml(u.start) : `${escHtml(u.start)}~${escHtml(u.end)}`
         const fifo    = escHtml(deductionSummary(u.deductions, accrualById, workItemById))
-        const deficit = u.deficit > 0 ? ` <span class="neg">(선사용 ${escHtml(u.deficit)}일)</span>` : ''
+        const deficit = u.deficit < 0 ? ` <span class="neg">(선사용 ${escHtml(-u.deficit)}일)</span>` : ''
         t3Lines.push(`<tr>
           <td class="mono">${period}</td>
           <td><span class="pill pill-amber">${escHtml(u.type)}</span></td>
@@ -1082,8 +1082,8 @@ function SettlementTab({ person }: { person: Person }) {
                             <td className="px-3 py-2"><span className="pill bg-amber-100 text-amber-700 text-[10px]">{u.type}</span></td>
                             <td className="px-3 py-2 text-muted text-[10px]">
                               {deductionSummary(u.deductions, accrualById, workItemById)}
-                              {u.deficit > 0 && (
-                                <span className="ml-1 text-red-500 whitespace-nowrap">(선사용 {u.deficit}일)</span>
+                              {u.deficit < 0 && (
+                                <span className="ml-1 text-red-500 whitespace-nowrap">(선사용 {-u.deficit}일)</span>
                               )}
                             </td>
                             <td className="px-3 py-2 text-right font-semibold text-gray-800">−{u.days}</td>

@@ -39,7 +39,7 @@ export interface LedgerUsageEntry {
   type:         LeaveType
   days:         number        // working days in this leave period
   deductions:   LedgerDeduction[]
-  deficit:      number        // days used beyond available balance (≥ 0)
+  deficit:      number        // running balance = accrued − used (positive = surplus, negative = shortfall)
   note?:        string | null
   isManual?:    boolean       // true = direction='usage' accrual record (not an assignment)
 }
@@ -354,7 +354,7 @@ export function computeLedger(
       const runningAccrued = Math.round(
         eligAccs.filter(a => a.date <= u.end).reduce((s, a) => s + a.days, 0) * 10) / 10
 
-      u.deficit = Math.max(0, Math.round((poolUsed[pool] - runningAccrued) * 10) / 10)
+      u.deficit = Math.round((runningAccrued - poolUsed[pool]) * 10) / 10
     }
   }
 
