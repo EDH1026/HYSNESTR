@@ -71,6 +71,7 @@ export interface WorkItem {
   main_start: string | null   // YYYY-MM-DD — main phase start (projects only)
   end_date: string            // YYYY-MM-DD
   engagement_number: string | null
+  temp_engagement_code?: string | null        // AL-17: 정식 코드 미확정 시 임시 타임시트 코드 (PRD v2.54)
   client: string | null
   hashtags: string[]
   status?: 'open' | 'closed' | null           // 전 유형 공통 (PRD v2.4 §3); optional until database.ts regenerated

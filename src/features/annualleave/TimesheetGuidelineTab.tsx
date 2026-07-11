@@ -1,26 +1,27 @@
 /**
- * TimesheetGuidelineTab — AL-12/13/14/15/16
- * 코드-행 × 날짜-열 × 시간 매트릭스. 인력별 그룹, 주차별 아코디언.
+ * TimesheetGuidelineTab — AL-12/13/14/15/16/17
+ * 코드-행 × 날짜-열 × 시간 매트릭스. 인력별 그룹(zebra), 주차별 아코디언.
+ * 미확정 프로젝트 요약 패널 + 대체 코드(temp_engagement_code) 인라인 편집.
  */
 import { useState, useMemo, useCallback, useRef, useEffect, Fragment } from 'react'
 import {
   Loader2, Play, Download, Save, AlertTriangle, RefreshCw,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, Pencil, X, Check,
 } from 'lucide-react'
-import { useAllPeople }      from '@/features/people/hooks'
-import { useAllAssignments } from '@/features/timeline/hooks'
-import { useAllAccruals }    from '@/features/leave/hooks'
-import { useAllWorkItems }   from '@/features/workitems/hooks'
-import { useAllHolidays }    from '@/features/admin/hooks'
-import { useAllAdjustments } from './hooks'
-import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
-import { resolveTimesheetCode } from './resolveTimesheetCode'
-import type { ResolveContext } from './resolveTimesheetCode'
+import { useAllPeople }                    from '@/features/people/hooks'
+import { useAllAssignments }               from '@/features/timeline/hooks'
+import { useAllAccruals }                  from '@/features/leave/hooks'
+import { useAllWorkItems, useUpdateWorkItem } from '@/features/workitems/hooks'
+import { useAllHolidays }                  from '@/features/admin/hooks'
+import { useAllAdjustments }               from './hooks'
+import { computeLedger, buildHolidaySet }  from '@/features/leave/ledger'
+import { resolveTimesheetCode }            from './resolveTimesheetCode'
+import type { ResolveContext }             from './resolveTimesheetCode'
 import { today, numToStr, isWeekend, weekStart } from '@/lib/date'
-import { parseSearchQuery } from '@/lib/searchQuery'
-import { supabase } from '@/lib/supabase'
+import { parseSearchQuery }                from '@/lib/searchQuery'
+import { supabase }                        from '@/lib/supabase'
 import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
-import type { Person, Rank } from '@/types'
+import type { Person, Rank, WorkItem }     from '@/types'
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -31,6 +32,10 @@ const DAY_NAMES    = ['월', '화', '수', '목', '금'] as const
 const RANK_ORDER: Record<Rank, number> = {
   Partner: 0, SM: 1, M: 2, Senior: 3, Staff: 4, Intern: 5,
 }
+
+// Alternating zebra backgrounds for person groups (index % 2)
+const ZEBRA_BG  = ['bg-white', 'bg-slate-50/60'] as const
+const ZEBRA_HDR = ['bg-slate-100/70', 'bg-slate-200/50'] as const
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -51,14 +56,14 @@ interface CodeRowData {
 
 interface ColInfo {
   date:      string
-  label:     string    // "월 7/6"
+  label:     string
   isHoliday: boolean
   inWindow:  boolean
 }
 
 interface WeekInfo {
   weekStart: string
-  label:     string    // "7/6(월) ~ 7/10(금)"
+  label:     string
   columns:   ColInfo[]
 }
 
@@ -116,7 +121,6 @@ function buildCodeRows(
   week:     WeekInfo,
   allCells: Map<string, CellData>,
 ): CodeRowData[] {
-  // code → { provisional, cells }
   const codeMap = new Map<string, { provisional: boolean; cells: Map<string, { hasHours: boolean; changeKind: ChangeKind }> }>()
 
   const ensure = (code: string) => {
@@ -129,7 +133,6 @@ function buildCodeRows(
     const cell = allCells.get(entryKey(personId, col.date))
     if (!cell) continue
 
-    // Computed code fills this cell
     const cur = ensure(cell.computed)
     if (cell.provisional) cur.provisional = true
     const ck: ChangeKind =
@@ -137,7 +140,6 @@ function buildCodeRows(
       cell.kind === 'correction' ? 'replaced' : 'unchanged'
     cur.cells.set(col.date, { hasHours: true, changeKind: ck })
 
-    // Old code that was replaced — show as "disappeared"
     if (cell.kind === 'correction' && cell.existing && cell.existing !== cell.computed) {
       ensure(cell.existing).cells.set(col.date, { hasHours: false, changeKind: 'removed' })
     }
@@ -179,7 +181,7 @@ function generateGuidelineHtml(
   const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
   const sorted    = sortPeople(people)
 
-  const CK_BG: Record<ChangeKind, string> = {
+  const CK_STYLE: Record<ChangeKind, string> = {
     new:       'background:#eff6ff;color:#1d4ed8',
     replaced:  'background:#fffbeb;color:#b45309',
     removed:   'background:#fff1f2;color:#e11d48',
@@ -188,31 +190,32 @@ function generateGuidelineHtml(
 
   const weekSections = weeks.map(week => {
     const colHeaders = week.columns.map(col =>
-      `<th class="${!col.inWindow ? 'out-win' : col.isHoliday ? 'holiday' : ''}">${escHtml(col.label)}${col.isHoliday && col.inWindow ? '<br><small>공휴일</small>' : ''}</th>`
+      `<th class="${!col.inWindow ? 'out-win' : col.isHoliday ? 'holiday' : ''}" style="width:80px;text-align:center">${escHtml(col.label)}${col.isHoliday && col.inWindow ? '<br><small>공휴일</small>' : ''}</th>`
     ).join('')
 
     const rows: string[] = []
 
-    for (const person of sorted) {
+    sorted.forEach((person, pi) => {
       const codeRows = buildCodeRows(person.id, week, allCells)
-      if (codeRows.length === 0) continue
+      if (codeRows.length === 0) return
+      const bg = pi % 2 === 0 ? '' : 'background:#f8fafc'
 
-      rows.push(`<tr class="person-hdr"><td colspan="${week.columns.length + 1}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
+      rows.push(`<tr class="person-hdr" style="${bg}"><td colspan="${week.columns.length + 1}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
 
       for (const row of codeRows) {
         const cells = week.columns.map(col => {
           if (!col.inWindow) return `<td class="out-win"></td>`
-          if (col.isHoliday)  return `<td class="holiday">—</td>`
+          if (col.isHoliday)  return `<td class="holiday" style="text-align:center">—</td>`
           const c = row.cells.get(col.date)
           if (!c) return `<td></td>`
-          const style = CK_BG[c.changeKind] ? ` style="${CK_BG[c.changeKind]}"` : ''
+          const style = CK_STYLE[c.changeKind] ? ` style="${CK_STYLE[c.changeKind]}"` : ''
           const txt   = c.hasHours ? '8' : c.changeKind === 'removed' ? '—' : ''
-          return `<td class="num"${style}>${escHtml(txt)}</td>`
+          return `<td style="text-align:center;font-family:monospace"${style}>${escHtml(txt)}</td>`
         }).join('')
         const prov = row.provisional ? ' ⚠' : ''
-        rows.push(`<tr><td class="code-lbl">${escHtml(row.code)}${prov}</td>${cells}</tr>`)
+        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${prov}</td>${cells}</tr>`)
       }
-    }
+    })
 
     if (rows.length === 0) {
       rows.push(`<tr><td colspan="${week.columns.length + 1}" class="empty">해당 항목 없음</td></tr>`)
@@ -221,7 +224,7 @@ function generateGuidelineHtml(
     return `<section>
 <h2>${escHtml(week.label)}</h2>
 <table>
-  <thead><tr><th>코드</th>${colHeaders}</tr></thead>
+  <thead><tr><th style="min-width:130px">코드</th>${colHeaders}</tr></thead>
   <tbody>${rows.join('')}</tbody>
 </table>
 </section>`
@@ -234,11 +237,10 @@ function generateGuidelineHtml(
 <title>타임시트 지침 — ${escHtml(todayStr)}</title>
 <style>
 ${HTML_EXPORT_CSS}
-.person-hdr td { background:#f1f5f9; font-size:12px; padding:4px 8px; }
+.person-hdr td { font-size:12px; padding:5px 8px; border-top:2px solid #cbd5e1; }
 .rank { font-size:10px; color:#6b7280; }
 .code-lbl { font-family:monospace; font-size:11px; min-width:130px; }
-.num { text-align:center; font-family:monospace; }
-.holiday { background:#f9fafb; color:#9ca3af; text-align:center; }
+.holiday { background:#f9fafb; color:#9ca3af; }
 .out-win { background:#fafafa; }
 </style>
 </head>
@@ -251,6 +253,145 @@ ${HTML_EXPORT_CSS}
 ${weekSections.join('\n')}
 </body>
 </html>`
+}
+
+// ── Pending projects panel (AL-17) ─────────────────────────────
+
+interface PendingPanelProps {
+  workItems:   WorkItem[]
+  assignments: { work_item_id: string | null; kind: string; start: string; end_date: string }[]
+  windowStart: string
+  windowEnd:   string
+  onEdit:      (wi: WorkItem) => void
+}
+
+function PendingProjectsPanel({
+  workItems, assignments, windowStart, windowEnd, onEdit,
+}: PendingPanelProps) {
+  const pending = useMemo(() => {
+    const activeIds = new Set<string>()
+    for (const a of assignments) {
+      if (a.kind !== 'work' || !a.work_item_id) continue
+      if (a.start <= windowEnd && a.end_date >= windowStart) activeIds.add(a.work_item_id)
+    }
+    return workItems.filter(
+      wi => wi.type === 'project' && !wi.engagement_number && activeIds.has(wi.id)
+    )
+  }, [workItems, assignments, windowStart, windowEnd])
+
+  if (pending.length === 0) return null
+
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-700">
+        <AlertTriangle size={13} />
+        대체 코드 미확정 프로젝트 ({pending.length}건) — 현재 8주 창 안에 배정된 프로젝트
+      </div>
+      <div className="space-y-1.5">
+        {pending.map(wi => (
+          <div key={wi.id} className="flex items-center gap-2 text-xs bg-white/70 rounded border border-amber-100 px-3 py-1.5">
+            <span className="font-medium text-gray-800 flex-1 truncate">{wi.name}</span>
+            {wi.temp_engagement_code
+              ? <span className="font-mono text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded text-[11px]">{wi.temp_engagement_code}</span>
+              : <span className="text-muted italic text-[11px]">코드 없음</span>}
+            <button
+              onClick={() => onEdit(wi)}
+              className="flex items-center gap-1 text-brand-600 hover:text-brand-700 font-medium"
+            >
+              <Pencil size={11} />
+              {wi.temp_engagement_code ? '수정' : '입력'}
+            </button>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-amber-600">
+        정식 engagement_number 등록 후 "지침 생성"을 다시 실행하면 자동으로 정정 지시가 생성됩니다.
+      </p>
+    </div>
+  )
+}
+
+// ── Temp-code edit modal (AL-17) ───────────────────────────────
+
+interface EditCodeModalProps {
+  wi:          WorkItem
+  onClose:     () => void
+  onSaved:     () => void
+}
+
+function EditCodeModal({ wi, onClose, onSaved }: EditCodeModalProps) {
+  const [value, setValue]       = useState(wi.temp_engagement_code ?? '')
+  const [error, setError]       = useState<string | null>(null)
+  const updateWorkItem          = useUpdateWorkItem()
+
+  async function handleSave() {
+    setError(null)
+    try {
+      await updateWorkItem.mutateAsync({ id: wi.id, temp_engagement_code: value.trim() || null })
+      onSaved()
+    } catch (e) {
+      setError(formatError(e))
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/25 flex items-center justify-center z-50"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-xl p-5 w-80 space-y-4"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-800">{wi.name}</h4>
+            <p className="text-[11px] text-muted mt-0.5">대체 타임시트 코드 입력 (AL-17)</p>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-gray-600 mt-0.5">
+            <X size={15} />
+          </button>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-700">대체 코드</label>
+          <input
+            className="input w-full text-sm font-mono"
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            placeholder="예: KR1234-0"
+            autoFocus
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !updateWorkItem.isPending) handleSave()
+              if (e.key === 'Escape') onClose()
+            }}
+          />
+          <p className="text-[10px] text-muted">
+            비워두면 대체 코드가 삭제되고 "(코드 미정)"으로 표시됩니다.
+          </p>
+        </div>
+
+        {error && (
+          <p className="text-xs text-red-600 flex items-center gap-1">
+            <AlertTriangle size={11} /> {error}
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary text-xs py-1" onClick={onClose}>취소</button>
+          <button
+            className="btn-primary text-xs py-1 gap-1 disabled:opacity-40"
+            disabled={updateWorkItem.isPending}
+            onClick={handleSave}
+          >
+            {updateWorkItem.isPending
+              ? <><Loader2 size={12} className="animate-spin" /> 저장 중…</>
+              : <><Check size={12} /> 저장</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ── Main component ─────────────────────────────────────────────
@@ -295,7 +436,7 @@ export default function TimesheetGuidelineTab() {
     [allPeople],
   )
 
-  // ── State ──────────────────────────────────────────────────
+  // ── Core state ─────────────────────────────────────────────
 
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSaving,     setIsSaving]     = useState(false)
@@ -306,7 +447,10 @@ export default function TimesheetGuidelineTab() {
   const [generated,    setGenerated]    = useState(false)
   const [nameSearch,   setNameSearch]   = useState('')
 
-  // Accordion: default expand first 2 weeks after generation
+  // AL-17: temp-code editor
+  const [editingWi, setEditingWi] = useState<WorkItem | null>(null)
+
+  // Accordion
   const [expandedWeeks, setExpandedWeeks] = useState<Set<string>>(new Set())
   const expandInitRef = useRef(false)
 
@@ -353,9 +497,9 @@ export default function TimesheetGuidelineTab() {
     try {
       const windowEndNum = todayNum + WINDOW_AHEAD
 
-      const assignmentsByPerson = new Map<string, typeof allAssignments>()
-      const accrualsByPerson    = new Map<string, typeof allAccruals>()
-      const adjustmentsByPerson = new Map<string, typeof allAdjustments>()
+      const assignmentsByPerson  = new Map<string, typeof allAssignments>()
+      const accrualsByPerson     = new Map<string, typeof allAccruals>()
+      const adjustmentsByPerson  = new Map<string, typeof allAdjustments>()
 
       for (const a of allAssignments) {
         if (!assignmentsByPerson.has(a.person_id)) assignmentsByPerson.set(a.person_id, [])
@@ -466,7 +610,6 @@ export default function TimesheetGuidelineTab() {
         if (upsertErr) throw upsertErr
       }
 
-      // Cleanup: remove entries that have left the window
       const { error: delErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .delete()
@@ -482,7 +625,7 @@ export default function TimesheetGuidelineTab() {
     }
   }
 
-  // ── Render ────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────
 
   return (
     <div className="space-y-4">
@@ -547,12 +690,21 @@ export default function TimesheetGuidelineTab() {
         </div>
       )}
 
-      {/* AL-16: save success with count + time */}
+      {/* AL-16: save success */}
       {savedAt && (
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
           {savedCount}건 저장됨 — {savedAt}
         </div>
       )}
+
+      {/* AL-17: pending projects summary — always shown (not just after generation) */}
+      <PendingProjectsPanel
+        workItems={allWorkItems}
+        assignments={allAssignments}
+        windowStart={windowStart}
+        windowEnd={windowEnd}
+        onEdit={setEditingWi}
+      />
 
       {!generated && !isGenerating && (
         <div className="rounded-md border border-border bg-surface-50 px-4 py-10 text-center">
@@ -601,7 +753,7 @@ export default function TimesheetGuidelineTab() {
             <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-blue-100" /> 신규</span>
             <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-100" /> 정정(신규 코드)</span>
             <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-rose-100" /> 정정(이전 코드 삭제)</span>
-            <span className="text-[10px] ml-auto">셀값 = 투입시간(h) / 하루 8h 기준</span>
+            <span className="ml-auto text-[10px]">셀값 = 투입시간(h) / 하루 8h 기준</span>
           </div>
 
           {/* Weekly accordion sections */}
@@ -609,7 +761,6 @@ export default function TimesheetGuidelineTab() {
             {weeks.map(week => {
               const isOpen = expandedWeeks.has(week.weekStart)
 
-              // Count for badge
               let wNew = 0, wCorr = 0
               for (const person of activePeople) {
                 for (const col of week.columns) {
@@ -639,17 +790,25 @@ export default function TimesheetGuidelineTab() {
 
                   {isOpen && (
                     <div className="overflow-x-auto">
-                      <table className="w-full text-xs border-t border-border">
+                      <table className="border-t border-border" style={{ tableLayout: 'fixed', width: '100%', minWidth: `${200 + week.columns.length * 80}px` }}>
+                        <colgroup>
+                          {/* code label col */}
+                          <col style={{ width: '160px', minWidth: '160px' }} />
+                          {/* one fixed-width col per day */}
+                          {week.columns.map(col => (
+                            <col key={col.date} style={{ width: '80px', minWidth: '80px' }} />
+                          ))}
+                        </colgroup>
                         <thead>
                           <tr className="bg-surface-50 border-b border-border">
-                            <th className="px-3 py-2 text-left font-medium text-muted w-36 sticky left-0 bg-surface-50 z-10">
+                            <th className="px-3 py-2 text-left text-xs font-medium text-muted sticky left-0 bg-surface-50 z-10">
                               코드
                             </th>
                             {week.columns.map(col => (
                               <th
                                 key={col.date}
                                 className={[
-                                  'px-2 py-2 text-center font-medium w-16',
+                                  'py-2 text-center text-xs font-medium',
                                   !col.inWindow  ? 'text-gray-300 bg-gray-50/50' :
                                   col.isHoliday  ? 'text-gray-400 bg-gray-50' :
                                   'text-gray-700',
@@ -664,28 +823,32 @@ export default function TimesheetGuidelineTab() {
                           </tr>
                         </thead>
                         <tbody>
-                          {filteredPeople.map(person => {
+                          {filteredPeople.map((person, personIdx) => {
                             const codeRows = buildCodeRows(person.id, week, allCells)
                             if (codeRows.length === 0) return null
+
+                            const zebraRow = ZEBRA_BG[personIdx % 2]
+                            const zebraHdr = ZEBRA_HDR[personIdx % 2]
+
                             return (
                               <Fragment key={person.id}>
-                                {/* Person group header */}
-                                <tr className="bg-slate-100/60 border-t border-border/60">
+                                {/* Person group header — bold top border for visual separation */}
+                                <tr className={`${zebraHdr} border-t-2 border-slate-300/60`}>
                                   <td
                                     colSpan={week.columns.length + 1}
-                                    className="px-3 py-1 sticky left-0 bg-slate-100/60"
+                                    className={`px-3 py-1.5 sticky left-0 ${zebraHdr}`}
                                   >
-                                    <span className="font-semibold text-gray-700">{person.name}</span>
-                                    <span className="ml-1.5 text-[10px] text-muted">{person.rank}</span>
+                                    <span className="font-semibold text-gray-700 text-xs">{person.name}</span>
+                                    <span className="ml-1.5 text-[10px] text-muted font-normal">{person.rank}</span>
                                   </td>
                                 </tr>
                                 {/* Code rows */}
                                 {codeRows.map(row => (
-                                  <tr key={row.code} className="border-b border-border/30 hover:bg-surface-50/40">
+                                  <tr key={row.code} className={`${zebraRow} border-b border-border/20 hover:brightness-[0.97]`}>
                                     {/* Code label — sticky left */}
-                                    <td className="px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 bg-white z-10 border-r border-border/30">
-                                      <span className="flex items-center gap-1">
-                                        {row.code}
+                                    <td className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20`}>
+                                      <span className="flex items-center gap-1 min-w-0">
+                                        <span className="truncate">{row.code}</span>
                                         {row.provisional && (
                                           <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" aria-label="임시 코드" />
                                         )}
@@ -701,12 +864,12 @@ export default function TimesheetGuidelineTab() {
                                       }
 
                                       const c = row.cells.get(col.date)
-                                      if (!c) return <td key={col.date} />
+                                      if (!c) return <td key={col.date} className={zebraRow} />
 
-                                      const bg =
+                                      const bgCls =
                                         c.changeKind === 'new'      ? 'bg-blue-50' :
                                         c.changeKind === 'replaced' ? 'bg-amber-50' :
-                                        c.changeKind === 'removed'  ? 'bg-rose-50' : ''
+                                        c.changeKind === 'removed'  ? 'bg-rose-50' : zebraRow
 
                                       const textCls =
                                         c.changeKind === 'new'      ? 'text-blue-700 font-semibold' :
@@ -715,7 +878,7 @@ export default function TimesheetGuidelineTab() {
                                         'text-gray-700'
 
                                       return (
-                                        <td key={col.date} className={`text-center py-1.5 ${bg}`}>
+                                        <td key={col.date} className={`text-center py-1.5 ${bgCls}`}>
                                           <span className={`tabular-nums text-xs ${textCls}`}>
                                             {c.hasHours ? '8' : c.changeKind === 'removed' ? '—' : ''}
                                           </span>
@@ -729,7 +892,7 @@ export default function TimesheetGuidelineTab() {
                           })}
                           {filteredPeople.every(p => buildCodeRows(p.id, week, allCells).length === 0) && (
                             <tr>
-                              <td colSpan={week.columns.length + 1} className="px-3 py-4 text-center text-muted">
+                              <td colSpan={week.columns.length + 1} className="px-3 py-4 text-center text-xs text-muted">
                                 {nameSearch ? '검색 결과 없음' : '해당 주 데이터 없음'}
                               </td>
                             </tr>
@@ -743,6 +906,15 @@ export default function TimesheetGuidelineTab() {
             })}
           </div>
         </>
+      )}
+
+      {/* AL-17: temp-code edit modal */}
+      {editingWi && (
+        <EditCodeModal
+          wi={editingWi}
+          onClose={() => setEditingWi(null)}
+          onSaved={() => setEditingWi(null)}
+        />
       )}
     </div>
   )

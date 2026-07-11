@@ -116,8 +116,9 @@ export function resolveTimesheetCode(
   if (workAsgn?.work_item_id) {
     const wi = ctx.workItems.find(w => w.id === workAsgn.work_item_id)
     if (wi?.type === 'project') {
-      if (!wi.engagement_number) return { code: '(코드 미정)', provisional: true }
-      return { code: wi.engagement_number }
+      if (wi.engagement_number)    return { code: wi.engagement_number }
+      if (wi.temp_engagement_code) return { code: wi.temp_engagement_code, provisional: true }
+      return { code: '(코드 미정)', provisional: true }
     }
     if (wi?.type === 'proposal') {
       const partnerCodes = ctx.allPeople

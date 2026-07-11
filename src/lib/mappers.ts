@@ -82,25 +82,27 @@ export function toPerson(row: Database['public']['Tables']['people']['Row']): Pe
 
 export function toWorkItem(row: RawWorkItem): WorkItem {
   const r = row as typeof row & {
-    status?:         string | null
-    project_status?: string | null
-    description?:    string | null
-    confidential?:   boolean | null
+    status?:               string | null
+    project_status?:       string | null
+    description?:          string | null
+    confidential?:         boolean | null
+    temp_engagement_code?: string | null
   }
   return {
-    id:                r.id,
-    type:              r.type as WorkItem['type'],
-    name:              r.name,
-    start:             r.start,
-    main_start:        r.main_start,
-    end_date:          r.end_date,
-    engagement_number: r.engagement_number,
-    client:            r.client,
-    hashtags:          r.hashtags ?? [],
-    status:            (r.status ?? 'open') as WorkItem['status'],
-    project_status:    (r.project_status ?? null) as WorkItem['project_status'],
-    description:       r.description ?? null,
-    confidential:      r.confidential ?? false,
+    id:                   r.id,
+    type:                 r.type as WorkItem['type'],
+    name:                 r.name,
+    start:                r.start,
+    main_start:           r.main_start,
+    end_date:             r.end_date,
+    engagement_number:    r.engagement_number,
+    temp_engagement_code: r.temp_engagement_code ?? null,
+    client:               r.client,
+    hashtags:             r.hashtags ?? [],
+    status:               (r.status ?? 'open') as WorkItem['status'],
+    project_status:       (r.project_status ?? null) as WorkItem['project_status'],
+    description:          r.description ?? null,
+    confidential:         r.confidential ?? false,
   }
 }
 
