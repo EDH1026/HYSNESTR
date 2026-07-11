@@ -97,17 +97,25 @@ function parseSnapKey(key: string): [string, string, string] {
 }
 
 /**
- * P-1 per-date employment check. (v2.64 — authoritative version)
+ * P-1 per-date employment check. (v2.65)
  *
- * hire_date  : applies to ALL statuses — exclude dates before the person started.
- * termination_date: applies only to 'resigned' — exclude dates after they left.
- *   'active' people's termination_date may be a future planned date; trust status.
+ * hire_date — applies to 'upcoming' ONLY.
+ *   For 'active'/'resigned', hire_date in the DB may be the system registration
+ *   date (e.g. the day the record was created), NOT the actual employment start.
+ *   Applying it to all statuses caused the "+8 days" bug (v2.64): people whose
+ *   record was created on 2026-07-02 appeared to start then, blanking 30 earlier days.
+ *   For 'upcoming', hire_date IS their authoritative future start date — use it.
  *
- * Callers must use snapshotPeople (not activePeople) so that resigned staff
- * who left mid-window are included with the correct date boundaries.
+ * termination_date — applies to 'resigned' ONLY.
+ *   Active people's termination_date may be a future planned date; trust status.
+ *   snapshotPeople already gates resigned people by termination_date >= windowStart,
+ *   so this just clips their dates precisely within the window.
+ *
+ * Loop note: all callers (computeCodes, handleReset diagnostic, missing-rows check)
+ * are synchronous for-of / .filter() / .reduce() loops — no async closure risk.
  */
 function isEmployedOnDate(person: Person, dateStr: string): boolean {
-  if (person.hire_date && person.hire_date > dateStr) return false
+  if (person.status === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
   if (person.status === 'resigned' && person.termination_date && person.termination_date < dateStr) return false
   return true
 }
@@ -790,17 +798,28 @@ export default function TimesheetGuidelineTab() {
       // v2.63 diagnostic: log any person whose effective day count differs from
       // the full target. This surfaces hire_date / termination_date mismatches
       // early so the root cause is visible in the console before any DB writes.
+      // Also checks for numeric-suffix names (potential duplicate person_id issues).
       const fullDayCount = targetWorkingDays.length
+      const numericSuffixRe = /\d+$/
       for (const p of snapshotPeople) {
         const personDays = targetWorkingDays.filter(d => isEmployedOnDate(p, d))
-        if (personDays.length < fullDayCount) {
-          const firstMissing = targetWorkingDays.find(d => !personDays.includes(d))
+        const isShort = personDays.length < fullDayCount
+        const hasNumSuffix = numericSuffixRe.test(p.name.trim())
+        if (isShort || hasNumSuffix) {
+          const firstMissing = isShort ? targetWorkingDays.find(d => !personDays.includes(d)) : undefined
+          const reason = isShort
+            ? (p.status === 'resigned' && p.termination_date
+                ? `termination_date=${p.termination_date}`
+                : p.status === 'upcoming' && p.hire_date
+                  ? `hire_date=${p.hire_date}`
+                  : '이유불명(DB 확인 필요)')
+            : '이름 접미사 숫자 — 동명이인 여부 확인 필요'
           console.warn(
             `[TSG 초기화 진단] ${p.name} (id=${p.id}): ` +
             `대상일 ${personDays.length}/${fullDayCount} ` +
             `status=${p.status} hire_date=${p.hire_date ?? 'null'} ` +
             `termination_date=${p.termination_date ?? 'null'} ` +
-            `첫 누락일=${firstMissing ?? '없음'}`
+            `첫 누락일=${firstMissing ?? '없음'} 원인=${reason}`
           )
         }
       }
