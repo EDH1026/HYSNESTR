@@ -96,6 +96,18 @@ function parseSnapKey(key: string): [string, string, string] {
   return [key.slice(0, i1), key.slice(i1 + 2, i2), key.slice(i2 + 2)]
 }
 
+/**
+ * P-1 per-date employment check.
+ * Root cause fix (v2.59): activePeople includes 'upcoming' (hire_date in future)
+ * and recently-resigned people whose termination_date falls inside the window.
+ * Generating rows for those days inflates expectedCount and causes diagnosis mismatches.
+ */
+function isEmployedOnDate(person: Person, dateStr: string): boolean {
+  if (person.hire_date && person.hire_date > dateStr) return false
+  if (person.termination_date && person.termination_date < dateStr) return false
+  return true
+}
+
 // ── Pure helpers ───────────────────────────────────────────────
 
 function monthDay(s: string): string {
@@ -203,13 +215,23 @@ async function deleteSnapshotRange(gte: string, lte: string): Promise<void> {
   if (error) throw error
 }
 
-async function batchInsertSnapshot(rows: object[], batchSize = 500): Promise<void> {
+async function batchInsertSnapshot(rows: object[], batchSize = 200): Promise<void> {
+  // Batch size capped at 200 (not 500) to stay within PostgREST body limits.
+  // Each batch is independent; failure here is the most common cause of partial commits.
   for (let i = 0; i < rows.length; i += batchSize) {
     const batch = rows.slice(i, i + batchSize)
+    const batchNum = Math.floor(i / batchSize) + 1
+    const totalBatches = Math.ceil(rows.length / batchSize)
     const { error } = await (supabase as any)
       .from('timesheet_guideline_snapshot')
       .insert(batch)
-    if (error) throw error
+    if (error) {
+      // Include batch position so partial-commit failures are diagnosable.
+      const wrapped = new Error(
+        `배치 ${batchNum}/${totalBatches} (행 ${i + 1}~${i + batch.length}) 삽입 실패: ${formatError(error)}`
+      )
+      throw wrapped
+    }
   }
 }
 
@@ -612,7 +634,13 @@ export default function TimesheetGuidelineTab() {
 
   // ── Shared: TSG-1 compute for given days ─────────────────────
   // TSG-2 핵심 불변식: 스냅샷·과거 수동 이력 참조 없음 — 라이브 데이터만 사용
-  function computeCodes(days: string[]): Map<string, { hours: number; provisional: boolean }> {
+  // v2.59: per-row try-catch (에러를 삼키지 않고 로그 + 화면 노출),
+  //        per-date P-1 check (hire_date/termination_date 범위 이탈 날짜 제외)
+  function computeCodes(days: string[]): {
+    computed:   Map<string, { hours: number; provisional: boolean }>
+    rowErrors:  { personName: string; personId: string; date: string; error: string }[]
+    skippedPeople: { personName: string; personId: string; error: string }[]
+  } {
     const byPerson = {
       asgn: new Map<string, typeof allAssignments>(),
       accr: new Map<string, typeof allAccruals>(),
@@ -631,19 +659,48 @@ export default function TimesheetGuidelineTab() {
       byPerson.adj.get(a.person_id)!.push(a)
     }
 
-    const computed = new Map<string, { hours: number; provisional: boolean }>()
+    const computed    = new Map<string, { hours: number; provisional: boolean }>()
+    const rowErrors:  { personName: string; personId: string; date: string; error: string }[] = []
+    const skippedPeople: { personName: string; personId: string; error: string }[] = []
+
     for (const person of activePeople) {
       const pa = byPerson.asgn.get(person.id) ?? []
       const pc = byPerson.accr.get(person.id) ?? []
       const pj = byPerson.adj.get(person.id)  ?? []
-      const ledger = computeLedger(person.id, { workItems: allWorkItems, assignments: pa, accruals: pc, isHoliday, today: windowEndNum })
+
+      // per-person: computeLedger can throw for unusual assignment/accrual state
+      let ledger: ReturnType<typeof computeLedger>
+      try {
+        ledger = computeLedger(person.id, { workItems: allWorkItems, assignments: pa, accruals: pc, isHoliday, today: windowEndNum })
+      } catch (e) {
+        const msg = formatError(e)
+        console.error(`[TSG 초기화 오류] computeLedger — ${person.name} (${person.id}): ${msg}`, e)
+        skippedPeople.push({ personName: person.name, personId: person.id, error: msg })
+        continue  // skip all dates for this person, log and move on
+      }
+
       const ctx: ResolveContext = { allPeople, assignments: pa, allAssignments, workItems: allWorkItems, isHoliday, ledger, adjustments: pj, hireDate: person.hire_date }
+
       for (const dateStr of days) {
-        const result = resolveTimesheetCode(person, dateStr, ctx)
-        computed.set(snapKey(person.id, dateStr, result.code), { hours: 8, provisional: result.provisional ?? false })
+        // P-1 per-date employment validity (v2.59 root cause fix)
+        // 'upcoming' people (hire_date > dateStr) and terminated people
+        // (termination_date < dateStr) must not generate snapshot rows for out-of-range dates.
+        if (!isEmployedOnDate(person, dateStr)) continue
+
+        try {
+          const result = resolveTimesheetCode(person, dateStr, ctx)
+          computed.set(snapKey(person.id, dateStr, result.code), { hours: 8, provisional: result.provisional ?? false })
+        } catch (e) {
+          const msg = formatError(e)
+          console.error(`[TSG 초기화 오류] resolveTimesheetCode — ${person.name} (${person.id}) ${dateStr}: ${msg}`, e)
+          rowErrors.push({ personName: person.name, personId: person.id, date: dateStr, error: msg })
+          // Insert an error-code row so the (person, date) slot is NOT silently missing.
+          computed.set(snapKey(person.id, dateStr, '(계산오류)'), { hours: 0, provisional: true })
+        }
       }
     }
-    return computed
+
+    return { computed, rowErrors, skippedPeople }
   }
 
   // ── [1단계] 초기화 with diagnostics ──────────────────────────
@@ -653,22 +710,46 @@ export default function TimesheetGuidelineTab() {
     setGenError(null)
     setResetMsg(null)
     setDiagMessage(null)
-    const expectedCount = activePeople.length * pastWorkingDays.length
-    console.log(`[TSG 초기화] 시작 — 기대 행수: ${expectedCount} (${activePeople.length}명 × ${pastWorkingDays.length}일)`)
+
+    // v2.59: expectedCount uses per-date P-1 check (hire_date/termination_date),
+    // so 'upcoming' or mid-window-terminated people are excluded from days outside
+    // their employment period — matching exactly what computeCodes now generates.
+    const expectedCount = activePeople.reduce((sum, p) =>
+      sum + pastWorkingDays.filter(d => isEmployedOnDate(p, d)).length, 0)
+    console.log(`[TSG 초기화] 시작 — 기대 행수: ${expectedCount} (P-1 per-date 적용, ${activePeople.length}명 × ~${pastWorkingDays.length}일)`)
+
     try {
-      const computed = computeCodes(pastWorkingDays)
+      const { computed, rowErrors, skippedPeople } = computeCodes(pastWorkingDays)
+
+      // Expose TSG-1 errors before DB operations so they're visible even if insert fails
+      if (rowErrors.length > 0 || skippedPeople.length > 0) {
+        const lines: string[] = []
+        if (skippedPeople.length > 0) {
+          lines.push(`computeLedger 실패 ${skippedPeople.length}명:`)
+          skippedPeople.forEach(s => lines.push(`  • ${s.personName}: ${s.error}`))
+        }
+        if (rowErrors.length > 0) {
+          lines.push(`resolveTimesheetCode 실패 ${rowErrors.length}건:`)
+          rowErrors.slice(0, 10).forEach(r => lines.push(`  • ${r.personName} ${r.date}: ${r.error}`))
+          if (rowErrors.length > 10) lines.push(`  … 외 ${rowErrors.length - 10}건 (콘솔 확인)`)
+        }
+        console.warn('[TSG 초기화 TSG-1 오류]', { rowErrors, skippedPeople })
+        setDiagMessage(`[TSG-1 오류 ${rowErrors.length + skippedPeople.length}건]\n${lines.join('\n')}`)
+      }
+
       const runAt = new Date().toISOString()
       const rows = [...computed.entries()].map(([key, comp]) => {
         const [personId, date, code] = parseSnapKey(key)
         return { person_id: personId, date, code, hours: comp.hours, detail: comp.provisional ? '(임시)' : null, run_at: runAt }
       })
+      console.log(`[TSG 초기화] 계산 완료 — ${rows.length}행 생성 (기대 ${expectedCount}행)`)
 
       // Delete-then-insert for past window (atomic replace)
       const pastEnd = numToStr(latestMonNum - 1)
       await deleteSnapshotRange(windowStart, pastEnd)
       await batchInsertSnapshot(rows)
 
-      // [1단계] Diagnostic verification
+      // Diagnostic verification: recount rows and find missing (person, date) pairs
       const { count: actualCount, error: cntErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .select('*', { count: 'exact', head: true })
@@ -678,7 +759,6 @@ export default function TimesheetGuidelineTab() {
       if (!cntErr) {
         console.log(`[TSG 초기화 검증] 기대: ${expectedCount}행, 실제: ${actualCount}행`)
         if (actualCount !== expectedCount) {
-          // Find missing pairs
           const { data: actualRows } = await (supabase as any)
             .from('timesheet_guideline_snapshot')
             .select('person_id, date')
@@ -688,17 +768,21 @@ export default function TimesheetGuidelineTab() {
           const missing: { name: string; date: string }[] = []
           for (const p of activePeople) {
             for (const d of pastWorkingDays) {
+              if (!isEmployedOnDate(p, d)) continue
               if (!actualSet.has(`${p.id}|${d}`)) missing.push({ name: p.name, date: d })
             }
           }
           if (missing.length > 0) {
             console.warn('[TSG 초기화 검증] 누락된 행:', missing.slice(0, 20))
-            setDiagMessage(`[진단] 기대 ${expectedCount}행, 실제 ${actualCount}행 — 누락 ${missing.length}건 (콘솔 확인)`)
+            const preview = missing.slice(0, 5).map(m => `${m.name} ${m.date}`).join(', ')
+            setDiagMessage(prev =>
+              `${prev ? prev + '\n' : ''}[검증] 기대 ${expectedCount}행, 실제 ${actualCount}행 — 누락 ${missing.length}건: ${preview}${missing.length > 5 ? ' …' : ''}`
+            )
           }
         }
       }
 
-      // Also delete entries older than window
+      // Purge rows older than current window
       const { error: delOldErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .delete()
@@ -727,7 +811,15 @@ export default function TimesheetGuidelineTab() {
     expandInitRef.current = false
     try {
       // TSG-1: pure computation — no snapshot access
-      const computed = computeCodes(allWorkingDays)
+      const { computed, rowErrors, skippedPeople } = computeCodes(allWorkingDays)
+
+      if (rowErrors.length > 0 || skippedPeople.length > 0) {
+        const lines: string[] = []
+        if (skippedPeople.length > 0) lines.push(`computeLedger 실패 ${skippedPeople.length}명: ${skippedPeople.map(s => s.personName).join(', ')}`)
+        if (rowErrors.length > 0) lines.push(`resolveTimesheetCode 실패 ${rowErrors.length}건 (콘솔 확인)`)
+        console.warn('[TSG 지침 생성 TSG-1 오류]', { rowErrors, skippedPeople })
+        setDiagMessage(lines.join('\n'))
+      }
 
       // Fetch current snapshot for comparison
       const { data: snapRows, error: fetchErr } = await (supabase as any)
