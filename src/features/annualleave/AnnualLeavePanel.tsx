@@ -785,6 +785,7 @@ function SettlementTab({ person }: { person: Person }) {
       specialLeaveAccrued,
       teamActualAccrued:  ledger.actualAccrued,
       totalPaidUsed:      ledger.actualUsed,
+      unpaidPeriods:      ledger.unpaid,
     })
   }, [ledger, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr, person.hire_date])
 

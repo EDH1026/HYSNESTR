@@ -84,28 +84,57 @@ export type StatutoryLeaveItem = ProbationItem | AnnualItem
  *
  * - anchorType = 'fiscal'      → 회계연도(7/1) 기준
  * - anchorType = 'anniversary' → 입사일 주년일 기준
+ * - opts.unpaidPeriods         → AL-2e: 무급 기간이 겹치는 달 개근 불인정 (신입사원 휴가 순연)
  */
 export function computeStatutoryLeave(
   hireDate:   string,
   anchorType: 'fiscal' | 'anniversary',
   asOfDate:   string,
+  opts?: {
+    unpaidPeriods?: { start: string; end: string }[]
+  },
 ): StatutoryLeaveItem[] {
   const items: StatutoryLeaveItem[] = []
+  const unpaidPeriods = opts?.unpaidPeriods ?? []
 
   // 신입사원 휴가: 입사 후 첫 11개월
-  const monthDates: string[] = []
-  for (let m = 1; m <= 11; m++) {
-    const date = addMonths(hireDate, m)
-    if (date > asOfDate) break
-    monthDates.push(date)
-  }
-  if (monthDates.length > 0) {
-    items.push({
-      kind: 'probation',
-      from: monthDates[0],
-      to:   monthDates[monthDates.length - 1],
-      days: monthDates.length,
-    })
+  if (unpaidPeriods.length > 0) {
+    // AL-2e: 무급휴가 있는 달은 개근 불인정 → 11일 충족까지 순연
+    const earnedDates: string[] = []
+    let monthIdx = 1
+    while (earnedDates.length < 11) {
+      const periodStart = addMonths(hireDate, monthIdx - 1)
+      const earnDate    = addMonths(hireDate, monthIdx)
+      if (earnDate > asOfDate) break
+      // 월 구간 [periodStart, earnDate) 에 무급 기간이 겹치면 해당 달 불인정
+      const hasUnpaid = unpaidPeriods.some(up => up.start < earnDate && up.end >= periodStart)
+      if (!hasUnpaid) earnedDates.push(earnDate)
+      monthIdx++
+      if (monthIdx > 23) break  // 최대 12개월 무급 + 11개월 = 23
+    }
+    if (earnedDates.length > 0) {
+      items.push({
+        kind: 'probation',
+        from: earnedDates[0],
+        to:   earnedDates[earnedDates.length - 1],
+        days: earnedDates.length,
+      })
+    }
+  } else {
+    const monthDates: string[] = []
+    for (let m = 1; m <= 11; m++) {
+      const date = addMonths(hireDate, m)
+      if (date > asOfDate) break
+      monthDates.push(date)
+    }
+    if (monthDates.length > 0) {
+      items.push({
+        kind: 'probation',
+        from: monthDates[0],
+        to:   monthDates[monthDates.length - 1],
+        days: monthDates.length,
+      })
+    }
   }
 
   const hireYear  = parseInt(hireDate.slice(0, 4), 10)
