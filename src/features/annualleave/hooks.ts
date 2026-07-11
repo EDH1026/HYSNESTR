@@ -12,6 +12,20 @@ import type { AnnualLeaveAdjustment } from '@/types'
 
 // ── annual_leave_adjustments ──────────────────────────────────
 
+export function useAllAdjustments() {
+  return useQuery({
+    queryKey: queryKeys.annualLeave.allAdjustments(),
+    queryFn: async (): Promise<AnnualLeaveAdjustment[]> => {
+      const { data, error } = await (supabase as any)
+        .from('annual_leave_adjustments')
+        .select('*')
+        .order('date', { ascending: true })
+      if (error) throw error
+      return data ?? []
+    },
+  })
+}
+
 export function useAdjustmentsByPerson(personId: string | null) {
   return useQuery({
     queryKey: queryKeys.annualLeave.adjustments(personId ?? ''),

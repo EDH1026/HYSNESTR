@@ -54,6 +54,7 @@ export interface Person {
   hire_date: string | null    // YYYY-MM-DD
   termination_date: string | null
   status: PersonStatus
+  nbd_code: string | null     // NBD engagement code (Partner rank only, AL-11)
 }
 
 /**
@@ -146,6 +147,15 @@ export interface LeaveTypeRecord {
   name:       string
   active:     boolean
   sort_order: number
+}
+
+/** Snapshot of per-person per-day timesheet code (AL-12 8-week sliding window). */
+export interface TimesheetGuidelineSnapshot {
+  person_id: string
+  date:      string   // YYYY-MM-DD
+  code:      string
+  detail:    string | null
+  run_at:    string   // ISO timestamp of last generation run
 }
 
 /** Immutable audit trail for all data and permission changes. */

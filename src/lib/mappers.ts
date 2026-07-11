@@ -62,6 +62,7 @@ export function toPerson(row: Database['public']['Tables']['people']['Row']): Pe
     lpn?: string | null
     hire_date?: string | null
     termination_date?: string | null
+    nbd_code?: string | null
   }
   const hireDate        = r.hire_date        ?? null
   const terminationDate = r.termination_date ?? null
@@ -75,6 +76,7 @@ export function toPerson(row: Database['public']['Tables']['people']['Row']): Pe
     termination_date: terminationDate,
     // Status is always computed at read time — the DB column is ignored.
     status:           getEmploymentStatus(hireDate, terminationDate),
+    nbd_code:         r.nbd_code ?? null,
   }
 }
 
@@ -155,6 +157,7 @@ export type CreatePersonInput = {
   lpn?:              string | null
   hire_date?:        string | null
   termination_date?: string | null
+  nbd_code?:         string | null
   // status is not persisted — computed at read time
 }
 export type UpdatePersonInput = Partial<CreatePersonInput>

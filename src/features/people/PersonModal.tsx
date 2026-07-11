@@ -31,6 +31,7 @@ export default function PersonModal({ person, readOnly, onClose }: Props) {
     lpn:              person?.lpn              ?? '',
     hire_date:        person?.hire_date        ?? '',
     termination_date: person?.termination_date ?? '',
+    nbd_code:         person?.nbd_code         ?? '',
   })
   const [err, setErr] = useState<string | null>(null)
 
@@ -65,6 +66,7 @@ export default function PersonModal({ person, readOnly, onClose }: Props) {
       lpn:              form.lpn.trim() || null,
       hire_date:        form.hire_date        || null,
       termination_date: form.termination_date || null,
+      nbd_code:         form.rank === 'Partner' ? (form.nbd_code.trim() || null) : null,
       // status is not written to DB — computed at read time from hire_date/termination_date
     }
     try {
@@ -155,6 +157,23 @@ export default function PersonModal({ person, readOnly, onClose }: Props) {
             <p className="mt-1 text-[11px] text-amber-600">{lpnWarn}</p>
           )}
         </div>
+
+        {/* NBD Code — Partner only */}
+        {form.rank === 'Partner' && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">
+              NBD Code
+              <span className="ml-1 text-[10px] text-muted">Partner 전용 — 제안 타임시트 코드</span>
+            </label>
+            <input
+              className="input font-mono text-xs"
+              value={form.nbd_code}
+              onChange={f('nbd_code')}
+              disabled={readOnly}
+              placeholder="예: NBD-12345"
+            />
+          </div>
+        )}
 
         {/* Hire date + Termination date */}
         <div className="grid grid-cols-2 gap-3">

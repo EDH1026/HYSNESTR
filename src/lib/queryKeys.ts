@@ -57,6 +57,11 @@ export const queryKeys = {
   },
 
   annualLeave: {
-    adjustments: (personId: string) => ['annualLeaveAdjustments', { personId }] as const,
+    adjustments:    (personId: string) => ['annualLeaveAdjustments', { personId }] as const,
+    allAdjustments: ()                 => ['annualLeaveAdjustments', 'all']        as const,
+  },
+
+  timesheetSnapshot: {
+    all: () => ['timesheetGuidelineSnapshot'] as const,
   },
 } as const
