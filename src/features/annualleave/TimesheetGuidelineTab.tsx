@@ -543,7 +543,7 @@ export default function TimesheetGuidelineTab() {
       return (data ?? []) as { person_id: string; date: string; code: string; hours: number }[]
     },
     enabled:   !dataLoading,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 0,
   })
 
   const snapshotVersion = useMemo(() => {
@@ -552,6 +552,7 @@ export default function TimesheetGuidelineTab() {
   }, [snapshotRows])
 
   // ── State ─────────────────────────────────────────────────────
+  const isResettingRef = useRef(false)   // in-flight guard; survives re-renders (v2.61)
   const [isPreviewing,   setIsPreviewing]   = useState(false)
   const [isResetting,    setIsResetting]    = useState(false)
   const [isSaving,       setIsSaving]       = useState(false)
@@ -581,12 +582,24 @@ export default function TimesheetGuidelineTab() {
     setExpandedPeople(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
   }, [])
 
-  const snapshotLoadedRef = useRef(false)
+  // Tracks the last snapshotRows reference we loaded into allEntries.
+  // Using reference identity (not a boolean) so background refetches after
+  // handleReset always trigger a re-sync from the fresh DB data. (v2.61)
+  const lastLoadedSnapRef = useRef<typeof snapshotRows>(undefined)
 
-  // Load snapshot into allEntries on first arrival (TSG-2⑥)
+  // Load/re-load snapshot into allEntries whenever a new snapshotRows arrives.
+  // Guards:
+  //  - skip if still loading initial data
+  //  - skip if same reference (no new data)
+  //  - skip if user has unsaved manual changes (don't overwrite edits)
+  //  - skip if user is viewing a live preview (not snapshot mode)
   useEffect(() => {
-    if (snapshotLoadedRef.current || !snapshotRows || dataLoading) return
-    snapshotLoadedRef.current = true
+    if (dataLoading || isLoadingSnapshot || snapshotRows === undefined) return
+    if (snapshotRows === lastLoadedSnapRef.current) return
+    if (manualChanges.size > 0) return
+    if (isPreviewing) return
+    if (previewed && !isSnapshotMode) return   // user is reviewing preview results
+    lastLoadedSnapRef.current = snapshotRows
     if (snapshotRows.length === 0) return
     const entries = new Map<string, SnapshotEntry>()
     for (const row of snapshotRows) {
@@ -600,7 +613,8 @@ export default function TimesheetGuidelineTab() {
     setAllEntries(entries)
     setPreviewed(true)
     setIsSnapshotMode(true)
-  }, [snapshotRows, dataLoading])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotRows, dataLoading, isLoadingSnapshot, manualChanges.size, isPreviewing, previewed, isSnapshotMode])
 
   // Accordion: expand first 2 weeks after preview
   const [expandedWeeks, setExpandedWeeks] = useState<Set<string>>(new Set())
@@ -708,6 +722,10 @@ export default function TimesheetGuidelineTab() {
 
   // ── [1단계] 초기화 with diagnostics ──────────────────────────
   async function handleReset() {
+    // v2.61: concurrent execution guard — prevents overlapping resets
+    if (isResettingRef.current) return
+    isResettingRef.current = true
+
     setShowResetModal(false)
     setIsResetting(true)
     setGenError(null)
@@ -753,6 +771,7 @@ export default function TimesheetGuidelineTab() {
       await batchInsertSnapshot(rows)
 
       // Diagnostic verification: recount rows and find missing (person, date) pairs
+      let verifiedOk = false
       const { count: actualCount, error: cntErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .select('*', { count: 'exact', head: true })
@@ -760,8 +779,9 @@ export default function TimesheetGuidelineTab() {
         .lte('date', pastEnd)
 
       if (!cntErr) {
+        verifiedOk = actualCount === expectedCount
         console.log(`[TSG 초기화 검증] 기대: ${expectedCount}행, 실제: ${actualCount}행`)
-        if (actualCount !== expectedCount) {
+        if (!verifiedOk) {
           const { data: actualRows } = await (supabase as any)
             .from('timesheet_guideline_snapshot')
             .select('person_id, date')
@@ -793,12 +813,38 @@ export default function TimesheetGuidelineTab() {
         .lt('date', windowStart)
       if (delOldErr) console.warn('[TSG 초기화] 구 항목 삭제 실패:', delOldErr)
 
-      setResetMsg(`과거 ${rows.length}건 재설정 완료`)
-      void queryClient.invalidateQueries({ queryKey: SNAP_KEY })
+      // v2.61: immediately update UI state from computed rows so the table reflects
+      // the reset result without waiting for the cache to refetch.
+      const freshEntries = new Map<string, SnapshotEntry>()
+      for (const [key, comp] of computed.entries()) {
+        freshEntries.set(key, {
+          hours:         comp.hours,
+          provisional:   comp.provisional,
+          existingHours: comp.hours,
+          kind:          'unchanged',
+        })
+      }
+      setAllEntries(freshEntries)
+      setManualChanges(new Map())
+      setPreviewed(true)
+      setIsSnapshotMode(true)
+      // Stamp lastLoadedSnapRef with the current (stale) reference so that when the
+      // background refetch below brings a new reference, the effect re-syncs from DB.
+      lastLoadedSnapRef.current = snapshotRows
+
+      // await ensures the cache is updated before the loading spinner disappears;
+      // the effect will then re-sync allEntries from the authoritative DB data.
+      await queryClient.invalidateQueries({ queryKey: SNAP_KEY })
+
+      const verifyLabel = verifiedOk
+        ? `기대 ${expectedCount}건 일치 ✓`
+        : `기대 ${expectedCount}건, 실제 ${actualCount ?? '?'}건 불일치`
+      setResetMsg(`초기화 완료 — ${rows.length}건 저장 · ${verifyLabel}`)
     } catch (e) {
       setGenError(formatError(e))
     } finally {
       setIsResetting(false)
+      isResettingRef.current = false
     }
   }
 
