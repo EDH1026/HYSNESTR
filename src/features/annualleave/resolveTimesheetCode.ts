@@ -46,7 +46,7 @@ const VACATION_TYPES = new Set([
 // ── Main function ─────────────────────────────────────────────
 
 export function resolveTimesheetCode(
-  person:  Person,
+  _person: Person,
   dateStr: string,
   ctx:     ResolveContext,
 ): TimesheetCodeResult {

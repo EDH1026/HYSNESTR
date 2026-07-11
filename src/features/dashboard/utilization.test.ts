@@ -25,7 +25,7 @@ import type { Person, Assignment, WorkItem } from '@/types'
 
 const mkP = (overrides: Partial<Person> = {}): Person => ({
   id: 'p1', name: 'Test User', rank: 'M', role: '',
-  lpn: null, hire_date: null, termination_date: null, status: 'active',
+  lpn: null, hire_date: null, termination_date: null, status: 'active', nbd_code: null,
   ...overrides,
 })
 

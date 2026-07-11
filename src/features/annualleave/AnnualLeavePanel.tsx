@@ -1332,7 +1332,7 @@ export default function AnnualLeavePanel() {
           <div className="flex flex-1 overflow-hidden">
             <PersonSelector
               selected={selectedPerson}
-              onSelect={p => { setSelectedPerson(p); if (subTab === 'tsguideline') setSubTab('adjustments') }}
+              onSelect={p => setSelectedPerson(p)}
             />
             <div className="flex-1 flex flex-col overflow-hidden">
               {!selectedPerson ? (

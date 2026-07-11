@@ -73,7 +73,7 @@ function OverrideInput({
           {computed}
         </span>
         {provisional && (
-          <AlertTriangle size={11} className="text-amber-500 flex-shrink-0" title="임시 코드 — 추후 정정 필요" />
+          <AlertTriangle size={11} className="text-amber-500 flex-shrink-0" aria-label="임시 코드 — 추후 정정 필요" />
         )}
       </div>
       <input
@@ -330,7 +330,10 @@ export default function TimesheetGuidelineTab() {
 
         for (const dateStr of workingDays) {
           const result = resolveTimesheetCode(person, dateStr, ctx)
-          computed.set(entryKey(person.id, dateStr), result)
+          computed.set(entryKey(person.id, dateStr), {
+            code:        result.code,
+            provisional: result.provisional ?? false,
+          })
         }
       }
 
