@@ -98,15 +98,20 @@ function parseSnapKey(key: string): [string, string, string] {
 
 /**
  * P-1 per-date employment check.
- * v2.59: 'upcoming' (hire_date in future) and terminated people are excluded
- * from dates outside their employment period.
- * v2.60 fix: 'active' people are NEVER excluded by hire_date — only 'upcoming'
- * people (not yet started) are filtered. Applying hire_date to 'active' people
- * incorrectly blanked out all weeks before the hire_date for recently-onboarded staff.
+ * v2.59: introduced hire_date + termination_date filtering
+ * v2.60: fixed hire_date — applies only to 'upcoming' people
+ * v2.63: removed termination_date check for non-resigned people.
+ *
+ * activePeople already excludes status='resigned', so isEmployedOnDate
+ * only ever sees 'active' or 'upcoming' people.
+ *
+ * termination_date on an 'active' person may be a future planned date or
+ * an incorrectly-entered value. Using it as a current-day exclusion gate
+ * drops the entire tail of the window for that person (황유동/이준호96 bug).
+ * status is the authoritative employment indicator; trust it.
  */
 function isEmployedOnDate(person: Person, dateStr: string): boolean {
   if (person.status === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
-  if (person.termination_date && person.termination_date < dateStr) return false
   return true
 }
 
@@ -772,6 +777,24 @@ export default function TimesheetGuidelineTab() {
       const targetEnd = targetWorkingDays.length > 0
         ? targetWorkingDays[targetWorkingDays.length - 1]
         : numToStr(latestMonNum - 1)
+
+      // v2.63 diagnostic: log any person whose effective day count differs from
+      // the full target. This surfaces hire_date / termination_date mismatches
+      // early so the root cause is visible in the console before any DB writes.
+      const fullDayCount = targetWorkingDays.length
+      for (const p of activePeople) {
+        const personDays = targetWorkingDays.filter(d => isEmployedOnDate(p, d))
+        if (personDays.length < fullDayCount) {
+          const firstMissing = targetWorkingDays.find(d => !personDays.includes(d))
+          console.warn(
+            `[TSG 초기화 진단] ${p.name} (id=${p.id}): ` +
+            `대상일 ${personDays.length}/${fullDayCount} ` +
+            `status=${p.status} hire_date=${p.hire_date ?? 'null'} ` +
+            `termination_date=${p.termination_date ?? 'null'} ` +
+            `첫 누락일=${firstMissing ?? '없음'}`
+          )
+        }
+      }
 
       const expectedCount = activePeople.reduce((sum, p) =>
         sum + targetWorkingDays.filter(d => isEmployedOnDate(p, d)).length, 0)
