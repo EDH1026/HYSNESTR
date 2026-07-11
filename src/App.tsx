@@ -21,7 +21,8 @@ import HolidaysPage       from '@/pages/HolidaysPage'
 import CVPage             from '@/pages/CVPage'
 import AdminPage          from '@/pages/AdminPage'
 import DataTestPage       from '@/pages/DataTestPage'
-import AnnualLeavePage    from '@/pages/AnnualLeavePage'
+import AnnualLeavePage          from '@/pages/AnnualLeavePage'
+import TimesheetGuidelinePage   from '@/pages/TimesheetGuidelinePage'
 /** All authenticated users → /dashboard. */
 function HomeRedirect() {
   return <Navigate to="/dashboard" replace />
@@ -79,8 +80,9 @@ export default function App() {
                   <Route path="people"        element={<PeoplePage />} />
                   <Route path="work-items"    element={<WorkItemsPage />} />
                   <Route path="holidays"      element={<HolidaysPage />} />
-                  <Route path="annual-leave"  element={<AnnualLeavePage />} />
-                  <Route path="data-test"     element={<DataTestPage />} />
+                  <Route path="annual-leave"          element={<AnnualLeavePage />} />
+                  <Route path="timesheet-guideline"   element={<TimesheetGuidelinePage />} />
+                  <Route path="data-test"             element={<DataTestPage />} />
                 </Route>
 
                 {/* ── Admin only ────────────────────────────── */}

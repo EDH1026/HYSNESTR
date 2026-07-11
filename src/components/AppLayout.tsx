@@ -10,6 +10,7 @@ import {
   Umbrella,
   CalendarCheck,
   CalendarCheck2,
+  ClipboardList,
   FileText,
   Hash,
   Settings,
@@ -55,7 +56,8 @@ const NAV: {
   // ── Viewer-accessible (cont.) ─────────────────────────────
   { to: '/leave',      label: 'Leave',           icon: Umbrella        },
   // ── Editor / admin only ───────────────────────────────────
-  { to: '/annual-leave', label: '연차 관리',      icon: CalendarCheck2,  editorOnly: true },
+  { to: '/annual-leave',         label: '연차 관리',     icon: CalendarCheck2, editorOnly: true },
+  { to: '/timesheet-guideline', label: '타임시트 지침', icon: ClipboardList,  editorOnly: true },
   // ── Admin only ────────────────────────────────────────────
   { to: '/admin',      label: 'Admin',            icon: Settings,        adminOnly: true  },
 ]

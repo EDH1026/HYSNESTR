@@ -3,13 +3,12 @@
  * - editor/admin: 전체 편집 가능
  * - assistant: 조회 전용 (편집 컨트롤 숨김, RLS로도 차단)
  *
- * 탭: 적립 관리 | 퇴사 정산 | 수치 안내
+ * 탭: 적립 관리 | 연차 정산 | 수치 안내
  *
  * v2.33: annual_leave_grants 테이블 폐지 → computeStatutoryLeave 순수 함수로 전환
  */
 import { useState, useMemo, useCallback, useEffect, useRef, Fragment, type FormEvent } from 'react'
 import { Plus, Trash2, Loader2, AlertTriangle, Eye, Download, ChevronDown, ChevronRight } from 'lucide-react'
-import TimesheetGuidelineTab from './TimesheetGuidelineTab'
 import { useAuthz } from '@/hooks/useAuthz'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import type { LedgerAccrualEntry, LedgerUsageEntry } from '@/features/leave/ledger'
@@ -866,7 +865,7 @@ function SettlementTab({ person }: { person: Person }) {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <label className="text-xs font-medium text-gray-700">기준일 (퇴사 예정일)</label>
+        <label className="text-xs font-medium text-gray-700">기준일</label>
         <input type="date" className="input py-1 text-xs w-36"
           value={asOfStr} onChange={e => setAsOfStr(e.target.value)} />
         <button
@@ -1272,17 +1271,12 @@ function FigureCard({ num, label, value, hint, warn }: { num: string; label: str
 // Main export
 // ─────────────────────────────────────────────────────────────
 
-type SubTab = 'adjustments' | 'settlement' | 'timesheetfigs' | 'tsguideline'
+type SubTab = 'adjustments' | 'settlement' | 'timesheetfigs'
 
-const PERSON_TABS: { id: Exclude<SubTab, 'tsguideline'>; label: string }[] = [
+const PERSON_TABS: { id: SubTab; label: string }[] = [
   { id: 'adjustments',   label: '적립 관리' },
-  { id: 'settlement',    label: '퇴사 정산' },
+  { id: 'settlement',    label: '연차 정산' },
   { id: 'timesheetfigs', label: '수치 안내' },
-]
-
-const ALL_TABS: { id: SubTab; label: string }[] = [
-  ...PERSON_TABS,
-  { id: 'tsguideline', label: '타임시트 지침' },
 ]
 
 export default function AnnualLeavePanel() {
@@ -1290,23 +1284,6 @@ export default function AnnualLeavePanel() {
   const [subTab, setSubTab] = useState<SubTab>('adjustments')
   const { isAssistant } = useAuthz()
   const readOnly = isAssistant()
-
-  // Sub-tab bar (shared across all tabs — always visible at top)
-  const tabBar = (
-    <div className="flex gap-0 border-b border-border px-6 pt-2 flex-shrink-0">
-      {ALL_TABS.map(t => (
-        <button key={t.id} onClick={() => setSubTab(t.id)}
-          className={[
-            'px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors',
-            subTab === t.id
-              ? 'border-b-2 border-brand-600 text-brand-700'
-              : 'text-muted hover:text-gray-900',
-          ].join(' ')}>
-          {t.label}
-        </button>
-      ))}
-    </div>
-  )
 
   return (
     <div className="flex h-full flex-col">
@@ -1317,58 +1294,61 @@ export default function AnnualLeavePanel() {
         </div>
       )}
 
-      {/* 타임시트 지침 — full-width, no person selector */}
-      {subTab === 'tsguideline' ? (
-        <div className="flex flex-col flex-1 overflow-hidden">
-          {tabBar}
-          <div className="flex-1 overflow-auto p-6">
-            <TimesheetGuidelineTab />
-          </div>
+      <div className="flex flex-col flex-1 overflow-hidden">
+        {/* Sub-tab bar */}
+        <div className="flex gap-0 border-b border-border px-6 pt-2 flex-shrink-0">
+          {PERSON_TABS.map(t => (
+            <button key={t.id} onClick={() => setSubTab(t.id)}
+              className={[
+                'px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors',
+                subTab === t.id
+                  ? 'border-b-2 border-brand-600 text-brand-700'
+                  : 'text-muted hover:text-gray-900',
+              ].join(' ')}>
+              {t.label}
+            </button>
+          ))}
         </div>
-      ) : (
-        /* Person-scoped tabs */
-        <div className="flex flex-col flex-1 overflow-hidden">
-          {tabBar}
-          <div className="flex flex-1 overflow-hidden">
-            <PersonSelector
-              selected={selectedPerson}
-              onSelect={p => setSelectedPerson(p)}
-            />
-            <div className="flex-1 flex flex-col overflow-hidden">
-              {!selectedPerson ? (
-                <div className="flex items-center justify-center h-full text-muted text-sm">
-                  왼쪽에서 인력을 선택하세요.
-                </div>
-              ) : (
-                <>
-                  {/* Person header */}
-                  <div className="border-b border-border px-6 py-3 flex items-center gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-gray-900">{selectedPerson.name}</p>
-                      <p className="text-xs text-muted">
-                        {selectedPerson.rank}
-                        {selectedPerson.status === 'resigned' && <span className="ml-1 text-red-500">(퇴사)</span>}
-                      </p>
-                    </div>
-                    {selectedPerson.status === 'resigned' ? (
-                      <span className="pill bg-red-100 text-red-700 text-[10px] ml-auto">퇴사자</span>
-                    ) : (
-                      <span className="pill bg-emerald-100 text-emerald-700 text-[10px] ml-auto">재직 중</span>
-                    )}
-                  </div>
 
-                  {/* Tab content */}
-                  <div className="flex-1 overflow-auto p-6 max-w-7xl">
-                    {subTab === 'adjustments'   && <AdjustmentsTab person={selectedPerson} readOnly={readOnly} />}
-                    {subTab === 'settlement'    && <SettlementTab person={selectedPerson} />}
-                    {subTab === 'timesheetfigs' && <TimesheetTab person={selectedPerson} />}
+        <div className="flex flex-1 overflow-hidden">
+          <PersonSelector
+            selected={selectedPerson}
+            onSelect={p => setSelectedPerson(p)}
+          />
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {!selectedPerson ? (
+              <div className="flex items-center justify-center h-full text-muted text-sm">
+                왼쪽에서 인력을 선택하세요.
+              </div>
+            ) : (
+              <>
+                {/* Person header */}
+                <div className="border-b border-border px-6 py-3 flex items-center gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">{selectedPerson.name}</p>
+                    <p className="text-xs text-muted">
+                      {selectedPerson.rank}
+                      {selectedPerson.status === 'resigned' && <span className="ml-1 text-red-500">(퇴사)</span>}
+                    </p>
                   </div>
-                </>
-              )}
-            </div>
+                  {selectedPerson.status === 'resigned' ? (
+                    <span className="pill bg-red-100 text-red-700 text-[10px] ml-auto">퇴사자</span>
+                  ) : (
+                    <span className="pill bg-emerald-100 text-emerald-700 text-[10px] ml-auto">재직 중</span>
+                  )}
+                </div>
+
+                {/* Tab content */}
+                <div className="flex-1 overflow-auto p-6 max-w-7xl">
+                  {subTab === 'adjustments'   && <AdjustmentsTab person={selectedPerson} readOnly={readOnly} />}
+                  {subTab === 'settlement'    && <SettlementTab person={selectedPerson} />}
+                  {subTab === 'timesheetfigs' && <TimesheetTab person={selectedPerson} />}
+                </div>
+              </>
+            )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }

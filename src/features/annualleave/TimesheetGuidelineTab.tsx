@@ -1,5 +1,5 @@
 /**
- * TimesheetGuidelineTab — AL-12/13/14/15/16/17
+ * TimesheetGuidelineTab — AL-12/13/14/15/16/17 + TSG-8/9
  * 코드-행 × 날짜-열 × 시간 매트릭스. 인력별 그룹(zebra), 주차별 아코디언.
  *
  * 워크플로우 (AL-12 3단계):
@@ -7,11 +7,17 @@
  *   2. 지침 생성 — 8주 전체 미리보기; 스냅샷 미변경
  *   3. 저장 — 미리보기 결과를 스냅샷에 실제 반영
  *
+ * [2단계] 탭 진입 시 즉시 스냅샷 로드해 표시 (isSnapshotMode)
+ * [3단계] batchUpsert 500행 분할 (Supabase per-request row limit)
+ * [4단계] TSG-8: 셀 클릭 → 인라인 코드 수정 (manualOverrides)
+ * [5단계] TSG-9: 인력×주 투입시간 검증 경고
+ *
  * 창 정의 (AL-12 버그 수정):
  *   최신 주 = 오늘이 속한 주(월~금). 미래 날짜 포함 안 함.
  *   8주 창  = 최신 주 포함 이전 7주. windowEnd = latestFriday.
  */
 import { useState, useMemo, useCallback, useRef, useEffect, Fragment } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, Play, Download, Save, AlertTriangle, RefreshCw,
   ChevronDown, ChevronRight, Pencil, X, Check, RotateCcw,
@@ -39,11 +45,9 @@ const RANK_ORDER: Record<Rank, number> = {
   Partner: 0, SM: 1, M: 2, Senior: 3, Staff: 4, Intern: 5,
 }
 
-// Alternating zebra backgrounds (person index % 2)
 const ZEBRA_ROW = ['bg-white', 'bg-slate-50/60'] as const
 const ZEBRA_HDR = ['bg-slate-100/70', 'bg-slate-200/50'] as const
 
-// Fixed column widths
 const CODE_COL_W = 160  // px
 const DAY_COL_W  = 80   // px
 
@@ -53,10 +57,10 @@ interface CellData {
   computed:    string
   provisional: boolean
   existing:    string | null
-  kind:        'new' | 'correction' | 'unchanged'
+  kind:        'new' | 'correction' | 'unchanged' | 'manual'
 }
 
-type ChangeKind = 'new' | 'replaced' | 'removed' | 'unchanged'
+type ChangeKind = 'new' | 'replaced' | 'removed' | 'unchanged' | 'manual'
 
 interface CodeRowData {
   code:        string
@@ -73,7 +77,7 @@ interface ColInfo {
 interface WeekInfo {
   weekStart: string
   label:     string
-  columns:   ColInfo[]  // always Mon–Fri
+  columns:   ColInfo[]
 }
 
 // ── Pure helpers ───────────────────────────────────────────────
@@ -86,10 +90,9 @@ function monthDay(s: string): string {
   return `${parseInt(s.slice(5, 7), 10)}/${parseInt(s.slice(8, 10), 10)}`
 }
 
-/** Build 8 weeks, latest first. Each week is always Mon–Fri. */
 function computeWeeks(
-  windowStartNum: number,   // must be a Monday
-  windowEndNum:   number,   // must be a Friday
+  windowStartNum: number,
+  windowEndNum:   number,
   isHoliday:      (n: number) => boolean,
 ): WeekInfo[] {
   const weeks: WeekInfo[] = []
@@ -113,7 +116,7 @@ function computeWeeks(
     })
     monNum += 7
   }
-  return weeks.reverse()   // latest first
+  return weeks.reverse()
 }
 
 function sortPeople(people: Person[]): Person[] {
@@ -123,11 +126,10 @@ function sortPeople(people: Person[]): Person[] {
   })
 }
 
-/** Build code-row data for one person in one week. */
 function buildCodeRows(
   personId: string,
   week:     WeekInfo,
-  allCells: Map<string, CellData>,
+  cells:    Map<string, CellData>,
 ): CodeRowData[] {
   const codeMap = new Map<string, { provisional: boolean; cells: Map<string, { hasHours: boolean; changeKind: ChangeKind }> }>()
 
@@ -138,17 +140,18 @@ function buildCodeRows(
 
   for (const col of week.columns) {
     if (col.isHoliday) continue
-    const cell = allCells.get(entryKey(personId, col.date))
+    const cell = cells.get(entryKey(personId, col.date))
     if (!cell) continue
 
     const cur = ensure(cell.computed)
     if (cell.provisional) cur.provisional = true
     const ck: ChangeKind =
       cell.kind === 'new'        ? 'new' :
-      cell.kind === 'correction' ? 'replaced' : 'unchanged'
+      cell.kind === 'correction' ? 'replaced' :
+      cell.kind === 'manual'     ? 'manual' : 'unchanged'
     cur.cells.set(col.date, { hasHours: true, changeKind: ck })
 
-    if (cell.kind === 'correction' && cell.existing && cell.existing !== cell.computed) {
+    if ((cell.kind === 'correction' || cell.kind === 'manual') && cell.existing && cell.existing !== cell.computed) {
       ensure(cell.existing).cells.set(col.date, { hasHours: false, changeKind: 'removed' })
     }
   }
@@ -164,7 +167,6 @@ function buildCodeRows(
     .map(([code, info]) => ({ code, ...info }))
 }
 
-/** Format Supabase/unknown errors into a human-readable string (AL-16). */
 function formatError(e: unknown): string {
   if (e instanceof Error) return e.message
   if (typeof e === 'object' && e !== null) {
@@ -176,7 +178,6 @@ function formatError(e: unknown): string {
   return '저장 중 알 수 없는 오류가 발생했습니다.'
 }
 
-/** Working days (Mon–Fri, not holiday) in a numeric range [fromNum, toNum] inclusive. */
 function workingDaysList(fromNum: number, toNum: number, isHoliday: (n: number) => boolean): string[] {
   const days: string[] = []
   for (let n = fromNum; n <= toNum; n++) {
@@ -185,12 +186,24 @@ function workingDaysList(fromNum: number, toNum: number, isHoliday: (n: number) 
   return days
 }
 
+// ── [3단계] Batch upsert helper ────────────────────────────────
+
+async function batchUpsert(rows: object[], batchSize = 500): Promise<void> {
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize)
+    const { error } = await (supabase as any)
+      .from('timesheet_guideline_snapshot')
+      .upsert(batch, { onConflict: 'person_id,date' })
+    if (error) throw error
+  }
+}
+
 // ── HTML export ────────────────────────────────────────────────
 
 function generateGuidelineHtml(
   weeks:       WeekInfo[],
   people:      Person[],
-  allCells:    Map<string, CellData>,
+  cells:       Map<string, CellData>,
   windowStart: string,
   windowEnd:   string,
   todayStr:    string,
@@ -203,6 +216,7 @@ function generateGuidelineHtml(
     replaced:  'background:#fffbeb;color:#b45309',
     removed:   'background:#fff1f2;color:#e11d48',
     unchanged: '',
+    manual:    'background:#f5f3ff;color:#7c3aed',
   }
 
   const weekSections = weeks.map(week => {
@@ -213,12 +227,12 @@ function generateGuidelineHtml(
 
     const rows: string[] = []
     sorted.forEach((person, pi) => {
-      const codeRows = buildCodeRows(person.id, week, allCells)
+      const codeRows = buildCodeRows(person.id, week, cells)
       if (codeRows.length === 0) return
       const bg = pi % 2 === 0 ? '' : 'background:#f8fafc'
       rows.push(`<tr class="person-hdr" style="${bg}"><td colspan="${week.columns.length + 1}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
       for (const row of codeRows) {
-        const cells = week.columns.map(col => {
+        const rowCells = week.columns.map(col => {
           if (col.isHoliday) return `<td class="holiday" style="text-align:center">—</td>`
           const c = row.cells.get(col.date)
           if (!c) return `<td></td>`
@@ -227,7 +241,7 @@ function generateGuidelineHtml(
           return `<td style="text-align:center;font-family:monospace"${style}>${escHtml(txt)}</td>`
         }).join('')
         const prov = row.provisional ? ' ⚠' : ''
-        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${prov}</td>${cells}</tr>`)
+        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${prov}</td>${rowCells}</tr>`)
       }
     })
 
@@ -422,16 +436,15 @@ export default function TimesheetGuidelineTab() {
   const { data: allWorkItems   = [], isLoading: lw } = useAllWorkItems()
   const { data: allHolidays    = [], isLoading: lh } = useAllHolidays()
   const { data: allAdjustments = [], isLoading: lj } = useAllAdjustments()
+  const queryClient = useQueryClient()
 
   const dataLoading = lp || la || lc || lw || lh || lj
 
-  // ── Window calculation (AL-12 bug fix) ───────────────────────
-  // Latest week = Mon–Fri of the week containing today. Never includes future dates.
-  // 8-week window = latest week + 7 prior weeks.
+  // ── Window calculation ────────────────────────────────────────
   const todayNum       = today()
-  const latestMonNum   = weekStart(todayNum)      // Mon of current week
-  const latestFriNum   = latestMonNum + 4          // Fri of current week (= windowEnd)
-  const windowStartNum = latestMonNum - 7 * 7      // Mon 7 weeks before latest Mon
+  const latestMonNum   = weekStart(todayNum)
+  const latestFriNum   = latestMonNum + 4
+  const windowStartNum = latestMonNum - 7 * 7
   const windowEndNum   = latestFriNum
 
   const todayStr    = numToStr(todayNum)
@@ -445,13 +458,11 @@ export default function TimesheetGuidelineTab() {
 
   const isHoliday = useCallback((n: number) => holidaySet.has(n), [holidaySet])
 
-  // All working days in the 8-week window
   const allWorkingDays = useMemo(
     () => workingDaysList(windowStartNum, windowEndNum, isHoliday),
     [windowStartNum, windowEndNum, isHoliday],
   )
 
-  // Past working days only (excludes latest week) — used by reset
   const pastWorkingDays = useMemo(
     () => workingDaysList(windowStartNum, latestMonNum - 1, isHoliday),
     [windowStartNum, latestMonNum, isHoliday],
@@ -467,23 +478,74 @@ export default function TimesheetGuidelineTab() {
     [allPeople],
   )
 
-  // ── State ──────────────────────────────────────────────────
+  // ── [2단계] Snapshot query ────────────────────────────────────
+  const SNAP_KEY = ['tsg_snapshot', windowStart, windowEnd] as const
 
-  const [isPreviewing,   setIsPreviewing]   = useState(false)
-  const [isResetting,    setIsResetting]    = useState(false)
-  const [isSaving,       setIsSaving]       = useState(false)
-  const [genError,       setGenError]       = useState<string | null>(null)
-  const [allCells,       setAllCells]       = useState<Map<string, CellData>>(new Map())
-  const [savedAt,        setSavedAt]        = useState<string | null>(null)
-  const [savedCount,     setSavedCount]     = useState(0)
-  const [resetMsg,       setResetMsg]       = useState<string | null>(null)
-  const [previewed,      setPreviewed]      = useState(false)
-  const [showResetModal, setShowResetModal] = useState(false)
-  const [nameSearch,     setNameSearch]     = useState('')
-  const [editingWi,      setEditingWi]      = useState<WorkItem | null>(null)
+  const { data: snapshotRows, isLoading: isLoadingSnapshot } = useQuery({
+    queryKey:   SNAP_KEY,
+    queryFn:    async () => {
+      const { data, error } = await (supabase as any)
+        .from('timesheet_guideline_snapshot')
+        .select('person_id, date, code, run_at')
+        .gte('date', windowStart)
+        .lte('date', windowEnd)
+      if (error) throw error
+      return (data ?? []) as { person_id: string; date: string; code: string; run_at: string }[]
+    },
+    enabled:    !dataLoading,
+    staleTime:  5 * 60 * 1000,
+  })
+
+  const snapshotVersion = useMemo(() => {
+    if (!snapshotRows?.length) return null
+    const latest = snapshotRows.reduce((m, r) => (r.run_at > m ? r.run_at : m), snapshotRows[0].run_at)
+    return new Date(latest).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+  }, [snapshotRows])
+
+  // ── State ─────────────────────────────────────────────────────
+  const [isPreviewing,    setIsPreviewing]    = useState(false)
+  const [isResetting,     setIsResetting]     = useState(false)
+  const [isSaving,        setIsSaving]        = useState(false)
+  const [genError,        setGenError]        = useState<string | null>(null)
+  const [allCells,        setAllCells]        = useState<Map<string, CellData>>(new Map())
+  const [savedAt,         setSavedAt]         = useState<string | null>(null)
+  const [savedCount,      setSavedCount]      = useState(0)
+  const [resetMsg,        setResetMsg]        = useState<string | null>(null)
+  const [previewed,       setPreviewed]       = useState(false)
+  const [isSnapshotMode,  setIsSnapshotMode]  = useState(false)
+  const [showResetModal,  setShowResetModal]  = useState(false)
+  const [nameSearch,      setNameSearch]      = useState('')
+  const [editingWi,       setEditingWi]       = useState<WorkItem | null>(null)
+
+  // [4단계] Manual override state
+  const [manualOverrides, setManualOverrides] = useState<Map<string, string>>(new Map())
+  const [editingCell,     setEditingCell]     = useState<{ personId: string; date: string } | null>(null)
+  const [editInputValue,  setEditInputValue]  = useState('')
+
+  const snapshotLoadedRef = useRef(false)
+
+  // [2단계] Load snapshot into allCells on first arrival
+  useEffect(() => {
+    if (snapshotLoadedRef.current || !snapshotRows || dataLoading) return
+    snapshotLoadedRef.current = true
+    if (snapshotRows.length === 0) return
+
+    const cells = new Map<string, CellData>()
+    for (const row of snapshotRows) {
+      cells.set(entryKey(row.person_id, row.date), {
+        computed:    row.code,
+        provisional: false,
+        existing:    row.code,
+        kind:        'unchanged',
+      })
+    }
+    setAllCells(cells)
+    setPreviewed(true)
+    setIsSnapshotMode(true)
+  }, [snapshotRows, dataLoading])
 
   // Accordion: expand first 2 weeks after generation
-  const [expandedWeeks, setExpandedWeeks]   = useState<Set<string>>(new Set())
+  const [expandedWeeks, setExpandedWeeks] = useState<Set<string>>(new Set())
   const expandInitRef = useRef(false)
 
   useEffect(() => {
@@ -501,8 +563,23 @@ export default function TimesheetGuidelineTab() {
     })
   }, [])
 
-  // ── Shared: compute AL-11 codes for a list of dates ───────────
+  // ── [4단계] effectiveCells ────────────────────────────────────
+  const effectiveCells = useMemo((): Map<string, CellData> => {
+    if (manualOverrides.size === 0) return allCells
+    const out = new Map(allCells)
+    for (const [key, code] of manualOverrides) {
+      const existing = allCells.get(key)
+      out.set(key, {
+        computed:    code,
+        provisional: false,
+        existing:    existing?.existing ?? existing?.computed ?? null,
+        kind:        'manual',
+      })
+    }
+    return out
+  }, [allCells, manualOverrides])
 
+  // ── Shared: compute AL-11 codes for a list of dates ───────────
   function computeCodes(days: string[]): Map<string, { code: string; provisional: boolean }> {
     const assignmentsByPerson = new Map<string, typeof allAssignments>()
     const accrualsByPerson    = new Map<string, typeof allAccruals>()
@@ -559,8 +636,7 @@ export default function TimesheetGuidelineTab() {
     return computed
   }
 
-  // ── [1단계] 초기화 ─────────────────────────────────────────
-
+  // ── [1단계] 초기화 (batchUpsert) ─────────────────────────────
   async function handleReset() {
     setShowResetModal(false)
     setIsResetting(true)
@@ -574,12 +650,7 @@ export default function TimesheetGuidelineTab() {
         return { person_id: personId, date, code: comp.code, detail: comp.provisional ? '(임시)' : null, run_at: runAt }
       })
 
-      if (rows.length > 0) {
-        const { error } = await (supabase as any)
-          .from('timesheet_guideline_snapshot')
-          .upsert(rows, { onConflict: 'person_id,date' })
-        if (error) throw error
-      }
+      await batchUpsert(rows)
 
       const { error: delErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
@@ -595,12 +666,15 @@ export default function TimesheetGuidelineTab() {
     }
   }
 
-  // ── [2단계] 지침 생성 (미리보기만; 스냅샷 미변경) ────────────
-
+  // ── [2단계] 지침 생성 ─────────────────────────────────────────
   async function handlePreview() {
+    setIsSnapshotMode(false)
+    setManualOverrides(new Map())
+    setEditingCell(null)
     setIsPreviewing(true)
     setGenError(null)
     setResetMsg(null)
+    expandInitRef.current = false
     try {
       const computed = computeCodes(allWorkingDays)
 
@@ -634,7 +708,6 @@ export default function TimesheetGuidelineTab() {
       setSavedAt(null)
       setSavedCount(0)
       setPreviewed(true)
-      expandInitRef.current = false
     } catch (e) {
       setGenError(formatError(e))
     } finally {
@@ -642,25 +715,29 @@ export default function TimesheetGuidelineTab() {
     }
   }
 
-  // ── [3단계] 저장 (미리보기 결과를 스냅샷에 반영) ─────────────
-
+  // ── [3단계] 저장 (effectiveCells + batchUpsert) ───────────────
   async function handleSave() {
     setIsSaving(true)
     setGenError(null)
     try {
       const runAt = new Date().toISOString()
       const rows: object[] = []
-      for (const [key, cell] of allCells.entries()) {
+      for (const [key, cell] of effectiveCells.entries()) {
         const [personId, date] = key.split('|')
-        rows.push({ person_id: personId, date, code: cell.computed, detail: cell.provisional ? '(임시 — 추후 정정 필요)' : null, run_at: runAt })
+        rows.push({
+          person_id: personId,
+          date,
+          code:   cell.computed,
+          detail: cell.kind === 'manual'
+            ? '(수동 입력)'
+            : cell.provisional
+            ? '(임시 — 추후 정정 필요)'
+            : null,
+          run_at: runAt,
+        })
       }
 
-      if (rows.length > 0) {
-        const { error: upsertErr } = await (supabase as any)
-          .from('timesheet_guideline_snapshot')
-          .upsert(rows, { onConflict: 'person_id,date' })
-        if (upsertErr) throw upsertErr
-      }
+      await batchUpsert(rows)
 
       const { error: delErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
@@ -668,6 +745,10 @@ export default function TimesheetGuidelineTab() {
         .lt('date', windowStart)
       if (delErr) throw delErr
 
+      // Invalidate snapshot query so next mount shows fresh data
+      void queryClient.invalidateQueries({ queryKey: SNAP_KEY })
+
+      setManualOverrides(new Map())
       setSavedCount(rows.length)
       setSavedAt(new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))
     } catch (e) {
@@ -677,8 +758,26 @@ export default function TimesheetGuidelineTab() {
     }
   }
 
-  // ── Derived ───────────────────────────────────────────────
+  // ── [4단계] Inline cell edit helpers ─────────────────────────
+  function startCellEdit(personId: string, date: string, currentCode: string) {
+    setEditingCell({ personId, date })
+    setEditInputValue(currentCode)
+  }
 
+  function commitCellEdit() {
+    if (!editingCell) return
+    const val = editInputValue.trim()
+    if (val) {
+      setManualOverrides(prev => {
+        const next = new Map(prev)
+        next.set(entryKey(editingCell.personId, editingCell.date), val)
+        return next
+      })
+    }
+    setEditingCell(null)
+  }
+
+  // ── Derived ───────────────────────────────────────────────────
   const filteredPeople = useMemo(() => {
     let out = [...activePeople]
     if (nameSearch.trim()) {
@@ -688,23 +787,49 @@ export default function TimesheetGuidelineTab() {
     return sortPeople(out)
   }, [activePeople, nameSearch])
 
-  const { newCount, corrCount } = useMemo(() => {
-    let n = 0, c = 0
-    for (const cell of allCells.values()) {
+  const { newCount, corrCount, manualCount } = useMemo(() => {
+    let n = 0, c = 0, m = 0
+    for (const cell of effectiveCells.values()) {
       if (cell.kind === 'new') n++
       else if (cell.kind === 'correction') c++
+      else if (cell.kind === 'manual') m++
     }
-    return { newCount: n, corrCount: c }
-  }, [allCells])
+    return { newCount: n, corrCount: c, manualCount: m }
+  }, [effectiveCells])
 
-  // ── Render ─────────────────────────────────────────────────
+  // ── [5단계] Hours alerts ─────────────────────────────────────
+  const hoursAlerts = useMemo(() => {
+    if (!previewed) return []
+    const alerts: { personName: string; weekLabel: string; workdays: number; assigned: number }[] = []
+    for (const week of weeks) {
+      const workdays = week.columns.filter(c => !c.isHoliday).length
+      if (workdays === 0) continue
+      for (const person of filteredPeople) {
+        let assignedDays = 0
+        for (const col of week.columns) {
+          if (col.isHoliday) continue
+          const key  = entryKey(person.id, col.date)
+          const cell = effectiveCells.get(key)
+          if (cell && cell.computed !== 'unassigned') assignedDays++
+        }
+        if (assignedDays < workdays) {
+          alerts.push({ personName: person.name, weekLabel: week.label, workdays, assigned: assignedDays })
+        }
+      }
+    }
+    return alerts
+  }, [previewed, weeks, filteredPeople, effectiveCells])
 
+  const [showAlerts, setShowAlerts] = useState(false)
+
+  // ── Render ─────────────────────────────────────────────────────
   const anyBusy = isPreviewing || isResetting || isSaving
+  const isLoading = dataLoading || isLoadingSnapshot
 
   return (
     <div className="space-y-4">
 
-      {/* ── Header bar ─────────────────────────────────────── */}
+      {/* ── Header bar ────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start gap-3">
         <div>
           <h3 className="text-sm font-semibold text-gray-800">타임시트 지침 생성</h3>
@@ -714,13 +839,19 @@ export default function TimesheetGuidelineTab() {
             <span className="ml-2">영업일 {allWorkingDays.length}일</span>
             <span className="ml-2">대상 {activePeople.length}명</span>
           </p>
+          {isSnapshotMode && snapshotVersion && (
+            <p className="text-[10px] text-muted mt-0.5">
+              스냅샷 기준: <span className="font-medium">{snapshotVersion}</span>
+              <span className="ml-1.5 text-muted/70">— "지침 생성"으로 최신 데이터 반영</span>
+            </p>
+          )}
         </div>
 
         <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
           {/* Step 1: 초기화 */}
           <button
             onClick={() => setShowResetModal(true)}
-            disabled={anyBusy || dataLoading}
+            disabled={anyBusy || isLoading}
             title="최신 주를 제외한 과거 7주를 현재 데이터로 재설정"
             className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40"
           >
@@ -732,7 +863,7 @@ export default function TimesheetGuidelineTab() {
           {/* Step 2: 지침 생성 */}
           <button
             onClick={handlePreview}
-            disabled={anyBusy || dataLoading}
+            disabled={anyBusy || isLoading}
             className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40"
           >
             {isPreviewing
@@ -747,7 +878,7 @@ export default function TimesheetGuidelineTab() {
             <>
               <button
                 onClick={() => triggerDownload(
-                  generateGuidelineHtml(weeks, filteredPeople, allCells, windowStart, windowEnd, todayStr),
+                  generateGuidelineHtml(weeks, filteredPeople, effectiveCells, windowStart, windowEnd, todayStr),
                   `타임시트지침_${todayStr}.html`,
                 )}
                 disabled={anyBusy}
@@ -757,21 +888,21 @@ export default function TimesheetGuidelineTab() {
               </button>
               <button
                 onClick={handleSave}
-                disabled={isSaving || allCells.size === 0}
+                disabled={isSaving || effectiveCells.size === 0}
                 className="btn-primary text-xs py-1 gap-1 disabled:opacity-40"
               >
                 {isSaving
                   ? <><Loader2 size={13} className="animate-spin" /> 저장 중…</>
-                  : <><Save size={13} /> {allCells.size}건 저장</>}
+                  : <><Save size={13} /> {effectiveCells.size}건 저장</>}
               </button>
             </>
           )}
         </div>
       </div>
 
-      {dataLoading && (
+      {isLoading && (
         <div className="flex items-center gap-2 text-xs text-muted">
-          <Loader2 size={14} className="animate-spin" /> 데이터 로딩 중…
+          <Loader2 size={14} className="animate-spin" /> {dataLoading ? '데이터 로딩 중…' : '스냅샷 로딩 중…'}
         </div>
       )}
 
@@ -790,7 +921,7 @@ export default function TimesheetGuidelineTab() {
         </div>
       )}
 
-      {/* Save success (AL-16) */}
+      {/* Save success */}
       {savedAt && (
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
           {savedCount}건 저장됨 — {savedAt}
@@ -806,8 +937,34 @@ export default function TimesheetGuidelineTab() {
         onEdit={setEditingWi}
       />
 
+      {/* [5단계] Hours alerts */}
+      {hoursAlerts.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <button
+            onClick={() => setShowAlerts(v => !v)}
+            className="w-full flex items-center gap-2 text-xs font-semibold text-amber-700"
+          >
+            <AlertTriangle size={13} />
+            <span>투입시간 미달 경고 {hoursAlerts.length}건</span>
+            <span className="ml-1 font-normal text-amber-600">(TSG-9: 영업일×8h 미충족)</span>
+            <span className="ml-auto">{showAlerts ? '▲' : '▼'}</span>
+          </button>
+          {showAlerts && (
+            <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+              {hoursAlerts.map((a, i) => (
+                <div key={i} className="flex items-center gap-2 text-[11px] bg-white/70 rounded px-2 py-1">
+                  <span className="font-medium text-gray-800 w-20 truncate">{a.personName}</span>
+                  <span className="text-muted flex-1 truncate">{a.weekLabel}</span>
+                  <span className="font-mono text-amber-700">{a.assigned}/{a.workdays}일</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Empty state */}
-      {!previewed && !isPreviewing && (
+      {!previewed && !isPreviewing && !isLoading && (
         <div className="rounded-md border border-border bg-surface-50 px-4 py-10 text-center">
           <p className="text-sm text-muted">"지침 생성" 버튼을 눌러 이번 주 타임시트 코드 지침을 산출하세요.</p>
           <p className="text-xs text-muted mt-1">
@@ -816,17 +973,26 @@ export default function TimesheetGuidelineTab() {
         </div>
       )}
 
-      {/* ── Preview matrix ──────────────────────────────────── */}
+      {/* ── Preview/snapshot matrix ────────────────────────────── */}
       {previewed && (
         <>
           {/* Summary + search */}
           <div className="flex items-center gap-3 flex-wrap border-b border-border pb-3">
             <div className="flex items-center gap-2 text-xs">
-              <span className="pill bg-blue-100 text-blue-700">신규 {newCount}건</span>
-              <span className={`pill text-[10px] ${corrCount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
-                정정 {corrCount}건
-              </span>
-              <span className="text-[10px] text-muted">미리보기 (저장 전)</span>
+              {isSnapshotMode ? (
+                <span className="pill bg-gray-100 text-gray-600">스냅샷 표시 중</span>
+              ) : (
+                <>
+                  <span className="pill bg-blue-100 text-blue-700">신규 {newCount}건</span>
+                  <span className={`pill text-[10px] ${corrCount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+                    정정 {corrCount}건
+                  </span>
+                  {manualCount > 0 && (
+                    <span className="pill bg-purple-100 text-purple-700">수동 {manualCount}건</span>
+                  )}
+                  <span className="text-[10px] text-muted">미리보기 (저장 전)</span>
+                </>
+              )}
             </div>
             <input
               className="input py-1 text-xs w-52 ml-auto"
@@ -852,25 +1018,29 @@ export default function TimesheetGuidelineTab() {
           </div>
 
           {/* Legend */}
-          <div className="flex items-center gap-3 text-[10px] text-muted flex-wrap">
-            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-blue-100" /> 신규</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-100" /> 정정(신규 코드)</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-rose-100" /> 정정(이전 코드 삭제)</span>
-            <span className="ml-auto text-[10px]">셀값 = 투입시간(h) / 하루 8h 기준</span>
-          </div>
+          {!isSnapshotMode && (
+            <div className="flex items-center gap-3 text-[10px] text-muted flex-wrap">
+              <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-blue-100" /> 신규</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-100" /> 정정(신규 코드)</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-rose-100" /> 정정(이전 코드 삭제)</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-purple-100" /> 수동 입력</span>
+              <span className="ml-auto text-[10px]">셀 클릭 → 코드 직접 수정 (TSG-8)</span>
+            </div>
+          )}
 
           {/* Weekly accordion */}
           <div className="space-y-2">
             {weeks.map(week => {
               const isOpen = expandedWeeks.has(week.weekStart)
 
-              let wNew = 0, wCorr = 0
+              let wNew = 0, wCorr = 0, wManual = 0
               for (const person of activePeople) {
                 for (const col of week.columns) {
                   if (col.isHoliday) continue
-                  const cell = allCells.get(entryKey(person.id, col.date))
+                  const cell = effectiveCells.get(entryKey(person.id, col.date))
                   if (cell?.kind === 'new') wNew++
                   else if (cell?.kind === 'correction') wCorr++
+                  else if (cell?.kind === 'manual') wManual++
                 }
               }
 
@@ -885,14 +1055,14 @@ export default function TimesheetGuidelineTab() {
                     {isOpen ? <ChevronDown size={14} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} className="text-muted flex-shrink-0" />}
                     <span className="text-sm font-semibold text-gray-800">{week.label}</span>
                     {isLatestWeek && <span className="pill bg-brand-100 text-brand-700 text-[10px]">이번 주</span>}
-                    {wNew  > 0 && <span className="pill bg-blue-100 text-blue-700 text-[10px]">신규 {wNew}</span>}
-                    {wCorr > 0 && <span className="pill bg-amber-100 text-amber-700 text-[10px]">정정 {wCorr}</span>}
-                    {wNew === 0 && wCorr === 0 && <span className="text-xs text-muted">변경 없음</span>}
+                    {!isSnapshotMode && wNew > 0   && <span className="pill bg-blue-100 text-blue-700 text-[10px]">신규 {wNew}</span>}
+                    {!isSnapshotMode && wCorr > 0  && <span className="pill bg-amber-100 text-amber-700 text-[10px]">정정 {wCorr}</span>}
+                    {!isSnapshotMode && wManual > 0 && <span className="pill bg-purple-100 text-purple-700 text-[10px]">수동 {wManual}</span>}
+                    {!isSnapshotMode && wNew === 0 && wCorr === 0 && wManual === 0 && <span className="text-xs text-muted">변경 없음</span>}
                   </button>
 
                   {isOpen && (
                     <div className="overflow-x-auto">
-                      {/* [3단계] table width fixed; no width:100% */}
                       <table
                         className="border-t border-border"
                         style={{
@@ -924,7 +1094,7 @@ export default function TimesheetGuidelineTab() {
                         </thead>
                         <tbody>
                           {filteredPeople.map((person, personIdx) => {
-                            const codeRows = buildCodeRows(person.id, week, allCells)
+                            const codeRows = buildCodeRows(person.id, week, effectiveCells)
                             if (codeRows.length === 0) return null
 
                             const zebraRow = ZEBRA_ROW[personIdx % 2]
@@ -957,19 +1127,53 @@ export default function TimesheetGuidelineTab() {
                                       const bgCls =
                                         c.changeKind === 'new'      ? 'bg-blue-50' :
                                         c.changeKind === 'replaced' ? 'bg-amber-50' :
-                                        c.changeKind === 'removed'  ? 'bg-rose-50' : zebraRow
+                                        c.changeKind === 'removed'  ? 'bg-rose-50' :
+                                        c.changeKind === 'manual'   ? 'bg-purple-50' : zebraRow
 
                                       const textCls =
                                         c.changeKind === 'new'      ? 'text-blue-700 font-semibold' :
                                         c.changeKind === 'replaced' ? 'text-amber-700 font-semibold' :
                                         c.changeKind === 'removed'  ? 'text-rose-400' :
+                                        c.changeKind === 'manual'   ? 'text-purple-700 font-semibold' :
                                         'text-gray-700'
 
+                                      const isEditing =
+                                        editingCell?.personId === person.id &&
+                                        editingCell?.date === col.date
+
+                                      // Only allow editing on hasHours cells (not 'removed' markers)
+                                      const canEdit = c.hasHours && !isSnapshotMode
+
                                       return (
-                                        <td key={col.date} className={`text-center py-1.5 ${bgCls}`}>
-                                          <span className={`tabular-nums text-xs ${textCls}`}>
-                                            {c.hasHours ? '8' : c.changeKind === 'removed' ? '—' : ''}
-                                          </span>
+                                        <td
+                                          key={col.date}
+                                          className={`text-center py-1 px-0.5 ${bgCls} ${canEdit && !isEditing ? 'cursor-pointer' : ''}`}
+                                          title={canEdit && !isEditing ? '클릭하여 코드 수정' : undefined}
+                                          onClick={() => {
+                                            if (!canEdit || isEditing) return
+                                            const currentCode = effectiveCells.get(entryKey(person.id, col.date))?.computed ?? row.code
+                                            startCellEdit(person.id, col.date, currentCode)
+                                          }}
+                                        >
+                                          {isEditing ? (
+                                            <input
+                                              type="text"
+                                              value={editInputValue}
+                                              onChange={e => setEditInputValue(e.target.value)}
+                                              onKeyDown={e => {
+                                                if (e.key === 'Enter') { e.preventDefault(); commitCellEdit() }
+                                                if (e.key === 'Escape') setEditingCell(null)
+                                              }}
+                                              onBlur={commitCellEdit}
+                                              autoFocus
+                                              className="w-full text-[10px] font-mono border border-purple-400 rounded px-1 py-0 focus:outline-none bg-white text-purple-900"
+                                              onClick={e => e.stopPropagation()}
+                                            />
+                                          ) : (
+                                            <span className={`tabular-nums text-xs ${textCls}`}>
+                                              {c.hasHours ? '8' : c.changeKind === 'removed' ? '—' : ''}
+                                            </span>
+                                          )}
                                         </td>
                                       )
                                     })}
@@ -978,7 +1182,7 @@ export default function TimesheetGuidelineTab() {
                               </Fragment>
                             )
                           })}
-                          {filteredPeople.every(p => buildCodeRows(p.id, week, allCells).length === 0) && (
+                          {filteredPeople.every(p => buildCodeRows(p.id, week, effectiveCells).length === 0) && (
                             <tr>
                               <td colSpan={week.columns.length + 1} className="px-3 py-4 text-center text-xs text-muted">
                                 {nameSearch ? '검색 결과 없음' : '해당 주 데이터 없음'}
