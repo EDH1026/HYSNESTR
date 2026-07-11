@@ -410,7 +410,7 @@ function usePersonData(personId: string, asOfStr: string) {
     return computeLedger(personId, { workItems, assignments, accruals, isHoliday, today: asOf })
   }, [personId, workItems, assignments, accruals, isHoliday, asOf, isLoading])
 
-  return { isLoading, ledger, adjustments, workItems }
+  return { isLoading, ledger, adjustments, workItems, isHoliday }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -763,7 +763,7 @@ function StatutorySection({
 
 function SettlementTab({ person }: { person: Person }) {
   const [asOfStr, setAsOfStr] = useState(numToStr(today()))
-  const { isLoading, ledger, adjustments, workItems } = usePersonData(person.id, asOfStr)
+  const { isLoading, ledger, adjustments, workItems, isHoliday } = usePersonData(person.id, asOfStr)
 
   const weekendSubAccrued = useMemo(() =>
     (ledger?.accruals ?? [])
@@ -786,8 +786,9 @@ function SettlementTab({ person }: { person: Person }) {
       teamActualAccrued:  ledger.actualAccrued,
       totalPaidUsed:      ledger.actualUsed,
       unpaidPeriods:      ledger.unpaid,
+      isHoliday,
     })
-  }, [ledger, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr, person.hire_date])
+  }, [ledger, adjustments, weekendSubAccrued, specialLeaveAccrued, asOfStr, person.hire_date, isHoliday])
 
   const workItemById = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
   const accrualById  = useMemo(

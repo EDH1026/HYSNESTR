@@ -10,6 +10,8 @@
  *   예) 2022-07-01 → FY23, 2023-01-01 → FY23
  */
 
+import { isWeekend, dateToNum, numToStr } from '@/lib/date'
+
 // ── 공용 날짜 헬퍼 ────────────────────────────────────────────
 
 function r1(n: number): number {
@@ -56,6 +58,37 @@ function yearsOfEmployment(hireDate: string, grantDate: string): number {
   return Math.max(0, years)
 }
 
+// ── AL-2f 80% 출근율 헬퍼 ────────────────────────────────────
+
+function countWorkdaysInRange(
+  startStr: string,
+  endStr:   string,
+  isHol:    (n: number) => boolean,
+): number {
+  const s = dateToNum(startStr)
+  const e = dateToNum(endStr)
+  let count = 0
+  for (let n = s; n <= e; n++) {
+    if (!isWeekend(n) && !isHol(n)) count++
+  }
+  return count
+}
+
+function countUnpaidWorkdays(
+  periodStart:  string,
+  periodEndInc: string,
+  unpaidPeriods: { start: string; end: string }[],
+  isHol:         (n: number) => boolean,
+): number {
+  let total = 0
+  for (const up of unpaidPeriods) {
+    const intStart = up.start > periodStart  ? up.start  : periodStart
+    const intEnd   = up.end   < periodEndInc ? up.end    : periodEndInc
+    if (intStart <= intEnd) total += countWorkdaysInRange(intStart, intEnd, isHol)
+  }
+  return total
+}
+
 // ── 공개 타입 ─────────────────────────────────────────────────
 
 /** 신입사원 휴가: hire_date 이후 첫 11개월 매월 개근 (단일 항목, FY 분리 없음) */
@@ -92,10 +125,12 @@ export function computeStatutoryLeave(
   asOfDate:   string,
   opts?: {
     unpaidPeriods?: { start: string; end: string }[]
+    isHoliday?:     (n: number) => boolean
   },
 ): StatutoryLeaveItem[] {
   const items: StatutoryLeaveItem[] = []
   const unpaidPeriods = opts?.unpaidPeriods ?? []
+  const isHol         = opts?.isHoliday ?? (() => false)
 
   // 신입사원 휴가: 입사 후 첫 11개월
   if (unpaidPeriods.length > 0) {
@@ -182,16 +217,34 @@ export function computeStatutoryLeave(
     while (true) {
       const date = addYears(hireDate, n)
       if (date > asOfDate) break
-      const bonus = Math.min(10, Math.floor((n - 1) / 2))
-      const days  = 15 + bonus
+      const bonus      = Math.min(10, Math.floor((n - 1) / 2))
+      const normalDays = 15 + bonus
+      let   days       = normalDays
+      let   formula    = bonus > 0
+        ? `${n}주년: 기본15일+가산${bonus}일=${normalDays}일`
+        : `${n}주년: 기본15일`
+
+      // AL-2f: 80% 출근율 체크 (무급 기간이 있을 때만)
+      if (unpaidPeriods.length > 0) {
+        const periodStart   = addYears(hireDate, n - 1)
+        const periodEndInc  = numToStr(dateToNum(date) - 1)
+        const totalWD       = countWorkdaysInRange(periodStart, periodEndInc, isHol)
+        const unpaidWD      = countUnpaidWorkdays(periodStart, periodEndInc, unpaidPeriods, isHol)
+        if (totalWD > 0) {
+          const rate = (totalWD - unpaidWD) / totalWD
+          if (rate < 0.8) {
+            days    = normalDays * rate   // 소수점 그대로, 반올림 없음
+            formula += ` × 출근율${(rate * 100).toFixed(1)}%`
+          }
+        }
+      }
+
       items.push({
         kind:    'annual',
         date,
         fyLabel: fyLabelOf(date),
         days,
-        formula: bonus > 0
-          ? `${n}주년: 기본15일+가산${bonus}일=${days}일`
-          : `${n}주년: 기본15일`,
+        formula,
       })
       n++
     }

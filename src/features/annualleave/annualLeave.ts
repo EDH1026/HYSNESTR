@@ -79,6 +79,7 @@ export function computeAnnualLeaveSettlement(
     teamActualAccrued:    number
     totalPaidUsed:        number
     unpaidPeriods?:       { start: string; end: string }[]
+    isHoliday?:           (n: number) => boolean
   },
 ): AnnualLeaveSettlementResult {
   const {
@@ -89,6 +90,7 @@ export function computeAnnualLeaveSettlement(
     teamActualAccrued,
     totalPaidUsed,
     unpaidPeriods,
+    isHoliday,
   } = opts
 
   const adjustmentsTotal = r1(
@@ -103,7 +105,7 @@ export function computeAnnualLeaveSettlement(
   let statutory           = 0
 
   if (hireDate) {
-    anniversaryItems    = computeStatutoryLeave(hireDate, 'anniversary', asOfDate, { unpaidPeriods })
+    anniversaryItems    = computeStatutoryLeave(hireDate, 'anniversary', asOfDate, { unpaidPeriods, isHoliday })
     anniversarySubtotal = r1(sumStatutoryLeave(anniversaryItems))
     statutory           = r1(anniversarySubtotal + adjustmentsTotal)
   } else {
