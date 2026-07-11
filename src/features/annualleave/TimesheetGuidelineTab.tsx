@@ -523,16 +523,6 @@ export default function TimesheetGuidelineTab() {
     () => workingDaysList(windowStartNum, latestMonNum - 1, isHoliday),
     [windowStartNum, latestMonNum, isHoliday],
   )
-  // v2.62: working days in the current week (Mon..Fri of latestMonNum week)
-  const currentWeekWorkingDaySet = useMemo(
-    () => new Set(workingDaysList(latestMonNum, windowEndNum, isHoliday)),
-    [latestMonNum, windowEndNum, isHoliday],
-  )
-  // Is the current week already saved ("반영")? Used by the confirm modal.
-  const hasSavedCurrentWeek = useMemo(
-    () => (snapshotRows ?? []).some(r => currentWeekWorkingDaySet.has(r.date)),
-    [snapshotRows, currentWeekWorkingDaySet],
-  )
   const weeks = useMemo(
     () => computeWeeks(windowStartNum, windowEndNum, isHoliday),
     [windowStartNum, windowEndNum, isHoliday],
@@ -559,6 +549,17 @@ export default function TimesheetGuidelineTab() {
     enabled:   !dataLoading,
     staleTime: 0,
   })
+
+  // v2.62: working days in the current week (Mon..Fri of latestMonNum week)
+  const currentWeekWorkingDaySet = useMemo(
+    () => new Set(workingDaysList(latestMonNum, windowEndNum, isHoliday)),
+    [latestMonNum, windowEndNum, isHoliday],
+  )
+  // Is the current week already saved ("반영")? Used by the confirm modal.
+  const hasSavedCurrentWeek = useMemo(
+    () => (snapshotRows ?? []).some(r => currentWeekWorkingDaySet.has(r.date)),
+    [snapshotRows, currentWeekWorkingDaySet],
+  )
 
   const snapshotVersion = useMemo(() => {
     if (!snapshotRows?.length) return null
