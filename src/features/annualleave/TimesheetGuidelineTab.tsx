@@ -1,9 +1,8 @@
 /**
- * TimesheetGuidelineTab — AL-12/13/14/15
- * 주차별(×인력별) 매트릭스 형식으로 타임시트 코드 지침을 표시한다.
- * 최신 주 위에, 최근 1-2주 기본 펼침, 이전 주 기본 접힘.
+ * TimesheetGuidelineTab — AL-12/13/14/15/16
+ * 코드-행 × 날짜-열 × 시간 매트릭스. 인력별 그룹, 주차별 아코디언.
  */
-import { useState, useMemo, useCallback, useRef, useEffect, type ChangeEvent } from 'react'
+import { useState, useMemo, useCallback, useRef, useEffect, Fragment } from 'react'
 import {
   Loader2, Play, Download, Save, AlertTriangle, RefreshCw,
   ChevronDown, ChevronRight,
@@ -25,8 +24,8 @@ import type { Person, Rank } from '@/types'
 
 // ── Constants ─────────────────────────────────────────────────
 
-const WINDOW_PAST  = 14   // 2 weeks back
-const WINDOW_AHEAD = 42   // 6 weeks forward  (8 weeks total)
+const WINDOW_PAST  = 14
+const WINDOW_AHEAD = 42
 const DAY_NAMES    = ['월', '화', '수', '목', '금'] as const
 
 const RANK_ORDER: Record<Rank, number> = {
@@ -42,16 +41,24 @@ interface CellData {
   kind:        'new' | 'correction' | 'unchanged'
 }
 
+type ChangeKind = 'new' | 'replaced' | 'removed' | 'unchanged'
+
+interface CodeRowData {
+  code:        string
+  provisional: boolean
+  cells:       Map<string, { hasHours: boolean; changeKind: ChangeKind }>
+}
+
 interface ColInfo {
-  date:      string    // "YYYY-MM-DD"
+  date:      string
   label:     string    // "월 7/6"
   isHoliday: boolean
-  inWindow:  boolean   // within [windowStart, windowEnd]
+  inWindow:  boolean
 }
 
 interface WeekInfo {
-  weekStart: string   // "YYYY-MM-DD" (Monday)
-  label:     string   // "7/6(월) ~ 7/10(금)"
+  weekStart: string
+  label:     string    // "7/6(월) ~ 7/10(금)"
   columns:   ColInfo[]
 }
 
@@ -71,7 +78,7 @@ function computeWeeks(
   isHoliday:      (n: number) => boolean,
 ): WeekInfo[] {
   const weeks: WeekInfo[] = []
-  let monNum = weekStart(windowStartNum)
+  let monNum    = weekStart(windowStartNum)
   const lastMon = weekStart(windowEndNum)
 
   while (monNum <= lastMon) {
@@ -93,8 +100,7 @@ function computeWeeks(
     })
     monNum += 7
   }
-
-  return weeks.reverse()  // latest week first
+  return weeks.reverse()
 }
 
 function sortPeople(people: Person[]): Person[] {
@@ -102,6 +108,62 @@ function sortPeople(people: Person[]): Person[] {
     const rc = (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99)
     return rc !== 0 ? rc : a.name.localeCompare(b.name, 'ko')
   })
+}
+
+/** Build code-row data for one person in one week. */
+function buildCodeRows(
+  personId: string,
+  week:     WeekInfo,
+  allCells: Map<string, CellData>,
+): CodeRowData[] {
+  // code → { provisional, cells }
+  const codeMap = new Map<string, { provisional: boolean; cells: Map<string, { hasHours: boolean; changeKind: ChangeKind }> }>()
+
+  const ensure = (code: string) => {
+    if (!codeMap.has(code)) codeMap.set(code, { provisional: false, cells: new Map() })
+    return codeMap.get(code)!
+  }
+
+  for (const col of week.columns) {
+    if (!col.inWindow || col.isHoliday) continue
+    const cell = allCells.get(entryKey(personId, col.date))
+    if (!cell) continue
+
+    // Computed code fills this cell
+    const cur = ensure(cell.computed)
+    if (cell.provisional) cur.provisional = true
+    const ck: ChangeKind =
+      cell.kind === 'new'        ? 'new' :
+      cell.kind === 'correction' ? 'replaced' : 'unchanged'
+    cur.cells.set(col.date, { hasHours: true, changeKind: ck })
+
+    // Old code that was replaced — show as "disappeared"
+    if (cell.kind === 'correction' && cell.existing && cell.existing !== cell.computed) {
+      ensure(cell.existing).cells.set(col.date, { hasHours: false, changeKind: 'removed' })
+    }
+  }
+
+  if (codeMap.size === 0) return []
+
+  return [...codeMap.entries()]
+    .sort(([a], [b]) => {
+      if (a === 'unassigned') return 1
+      if (b === 'unassigned') return -1
+      return a.localeCompare(b)
+    })
+    .map(([code, info]) => ({ code, ...info }))
+}
+
+/** Format Supabase/unknown errors into a human-readable string (AL-16). */
+function formatError(e: unknown): string {
+  if (e instanceof Error) return e.message
+  if (typeof e === 'object' && e !== null) {
+    const obj = e as Record<string, unknown>
+    const parts = [obj.message, obj.details, obj.hint]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    if (parts.length) return parts.join(' — ')
+  }
+  return '저장 중 알 수 없는 오류가 발생했습니다.'
 }
 
 // ── HTML export ────────────────────────────────────────────────
@@ -113,42 +175,54 @@ function generateGuidelineHtml(
   windowStart: string,
   windowEnd:   string,
   todayStr:    string,
-  overrides:   Record<string, string>,
 ): string {
   const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
   const sorted    = sortPeople(people)
 
+  const CK_BG: Record<ChangeKind, string> = {
+    new:       'background:#eff6ff;color:#1d4ed8',
+    replaced:  'background:#fffbeb;color:#b45309',
+    removed:   'background:#fff1f2;color:#e11d48',
+    unchanged: '',
+  }
+
   const weekSections = weeks.map(week => {
     const colHeaders = week.columns.map(col =>
-      `<th class="${col.isHoliday ? 'holiday' : ''}">${escHtml(col.label)}${col.isHoliday && col.inWindow ? '<br><small>(공휴일)</small>' : ''}</th>`
+      `<th class="${!col.inWindow ? 'out-win' : col.isHoliday ? 'holiday' : ''}">${escHtml(col.label)}${col.isHoliday && col.inWindow ? '<br><small>공휴일</small>' : ''}</th>`
     ).join('')
 
-    const rows = sorted.map(person => {
-      const cells = week.columns.map(col => {
-        if (!col.inWindow) return `<td class="out-of-window"></td>`
-        if (col.isHoliday)  return `<td class="holiday">—</td>`
-        const key  = entryKey(person.id, col.date)
-        const cell = allCells.get(key)
-        if (!cell) return `<td></td>`
-        const ov   = overrides[key]?.trim()
-        const code = ov || cell.computed
-        const prov = cell.provisional && !ov
-        if (cell.kind === 'new') {
-          return `<td class="new-entry">${escHtml(code)}${prov ? ' ⚠' : ''}</td>`
-        }
-        if (cell.kind === 'correction') {
-          return `<td class="correction"><del>${escHtml(cell.existing ?? '')}</del> → ${escHtml(code)}${prov ? ' ⚠' : ''}</td>`
-        }
-        return `<td class="mono-sm">${escHtml(code)}</td>`
-      }).join('')
-      return `<tr><td class="person-cell"><strong>${escHtml(person.name)}</strong><br><span class="rank">${escHtml(person.rank)}</span></td>${cells}</tr>`
-    }).join('')
+    const rows: string[] = []
+
+    for (const person of sorted) {
+      const codeRows = buildCodeRows(person.id, week, allCells)
+      if (codeRows.length === 0) continue
+
+      rows.push(`<tr class="person-hdr"><td colspan="${week.columns.length + 1}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
+
+      for (const row of codeRows) {
+        const cells = week.columns.map(col => {
+          if (!col.inWindow) return `<td class="out-win"></td>`
+          if (col.isHoliday)  return `<td class="holiday">—</td>`
+          const c = row.cells.get(col.date)
+          if (!c) return `<td></td>`
+          const style = CK_BG[c.changeKind] ? ` style="${CK_BG[c.changeKind]}"` : ''
+          const txt   = c.hasHours ? '8' : c.changeKind === 'removed' ? '—' : ''
+          return `<td class="num"${style}>${escHtml(txt)}</td>`
+        }).join('')
+        const prov = row.provisional ? ' ⚠' : ''
+        rows.push(`<tr><td class="code-lbl">${escHtml(row.code)}${prov}</td>${cells}</tr>`)
+      }
+    }
+
+    if (rows.length === 0) {
+      rows.push(`<tr><td colspan="${week.columns.length + 1}" class="empty">해당 항목 없음</td></tr>`)
+    }
 
     return `<section>
 <h2>${escHtml(week.label)}</h2>
 <table>
-<thead><tr><th class="person-cell">이름</th>${colHeaders}</tr></thead>
-<tbody>${rows}</tbody>
+  <thead><tr><th>코드</th>${colHeaders}</tr></thead>
+  <tbody>${rows.join('')}</tbody>
 </table>
 </section>`
   })
@@ -160,14 +234,12 @@ function generateGuidelineHtml(
 <title>타임시트 지침 — ${escHtml(todayStr)}</title>
 <style>
 ${HTML_EXPORT_CSS}
-.new-entry { background:#eff6ff; color:#1d4ed8; font-family:monospace; }
-.correction { background:#fffbeb; }
-.correction del { color:#9ca3af; }
-.holiday { background:#f9fafb; color:#9ca3af; text-align:center; }
-.out-of-window { background:#fafafa; }
-.person-cell { min-width:80px; }
-.mono-sm { font-family:monospace; font-size:11px; }
+.person-hdr td { background:#f1f5f9; font-size:12px; padding:4px 8px; }
 .rank { font-size:10px; color:#6b7280; }
+.code-lbl { font-family:monospace; font-size:11px; min-width:130px; }
+.num { text-align:center; font-family:monospace; }
+.holiday { background:#f9fafb; color:#9ca3af; text-align:center; }
+.out-win { background:#fafafa; }
 </style>
 </head>
 <body>
@@ -223,18 +295,18 @@ export default function TimesheetGuidelineTab() {
     [allPeople],
   )
 
-  // ── Local state ───────────────────────────────────────────
+  // ── State ──────────────────────────────────────────────────
 
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSaving,     setIsSaving]     = useState(false)
   const [genError,     setGenError]     = useState<string | null>(null)
   const [allCells,     setAllCells]     = useState<Map<string, CellData>>(new Map())
-  const [overrides,    setOverrides]    = useState<Record<string, string>>({})
   const [savedAt,      setSavedAt]      = useState<string | null>(null)
+  const [savedCount,   setSavedCount]   = useState(0)
   const [generated,    setGenerated]    = useState(false)
   const [nameSearch,   setNameSearch]   = useState('')
 
-  // Accordion — default: first 2 weeks (latest) expanded after generation
+  // Accordion: default expand first 2 weeks after generation
   const [expandedWeeks, setExpandedWeeks] = useState<Set<string>>(new Set())
   const expandInitRef = useRef(false)
 
@@ -263,10 +335,6 @@ export default function TimesheetGuidelineTab() {
     }
     return sortPeople(out)
   }, [activePeople, nameSearch])
-
-  const handleOverride = useCallback((key: string, v: string) => {
-    setOverrides(prev => ({ ...prev, [key]: v }))
-  }, [])
 
   const { newCount, corrCount } = useMemo(() => {
     let n = 0, c = 0
@@ -350,7 +418,6 @@ export default function TimesheetGuidelineTab() {
         snapMap.set(entryKey(row.person_id, row.date), row.code)
       }
 
-      // Build unified cell map (includes unchanged for matrix display)
       const cells = new Map<string, CellData>()
       for (const person of activePeople) {
         for (const dateStr of workingDays) {
@@ -358,7 +425,7 @@ export default function TimesheetGuidelineTab() {
           const comp = computed.get(key)
           if (!comp) continue
           const existing = snapMap.get(key) ?? null
-          const kind: 'new' | 'correction' | 'unchanged' =
+          const kind: CellData['kind'] =
             existing === null      ? 'new' :
             existing !== comp.code ? 'correction' : 'unchanged'
           cells.set(key, { computed: comp.code, provisional: comp.provisional, existing, kind })
@@ -366,18 +433,18 @@ export default function TimesheetGuidelineTab() {
       }
 
       setAllCells(cells)
-      setOverrides({})
       setSavedAt(null)
+      setSavedCount(0)
       setGenerated(true)
-      expandInitRef.current = false  // re-init accordion on re-generate
+      expandInitRef.current = false
     } catch (e) {
-      setGenError(e instanceof Error ? e.message : '생성 실패')
+      setGenError(formatError(e))
     } finally {
       setIsGenerating(false)
     }
   }
 
-  // ── Save ──────────────────────────────────────────────────
+  // ── Save (AL-16) ──────────────────────────────────────────
 
   async function handleSave() {
     setIsSaving(true)
@@ -388,10 +455,8 @@ export default function TimesheetGuidelineTab() {
 
       for (const [key, cell] of allCells.entries()) {
         const [personId, date] = key.split('|')
-        const ov     = overrides[key]?.trim()
-        const code   = ov || cell.computed
-        const detail = cell.provisional && !ov ? '(임시 — 추후 정정 필요)' : null
-        rows.push({ person_id: personId, date, code, detail, run_at: runAt })
+        const detail = cell.provisional ? '(임시 — 추후 정정 필요)' : null
+        rows.push({ person_id: personId, date, code: cell.computed, detail, run_at: runAt })
       }
 
       if (rows.length > 0) {
@@ -401,15 +466,17 @@ export default function TimesheetGuidelineTab() {
         if (upsertErr) throw upsertErr
       }
 
+      // Cleanup: remove entries that have left the window
       const { error: delErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .delete()
         .lt('date', windowStart)
       if (delErr) throw delErr
 
+      setSavedCount(rows.length)
       setSavedAt(new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))
     } catch (e) {
-      setGenError(e instanceof Error ? e.message : '저장 실패')
+      setGenError(formatError(e))
     } finally {
       setIsSaving(false)
     }
@@ -434,7 +501,7 @@ export default function TimesheetGuidelineTab() {
             <>
               <button
                 onClick={() => triggerDownload(
-                  generateGuidelineHtml(weeks, filteredPeople, allCells, windowStart, windowEnd, todayStr, overrides),
+                  generateGuidelineHtml(weeks, filteredPeople, allCells, windowStart, windowEnd, todayStr),
                   `타임시트지침_${todayStr}.html`,
                 )}
                 className="btn-secondary text-xs py-1 gap-1"
@@ -448,7 +515,7 @@ export default function TimesheetGuidelineTab() {
               >
                 {isSaving
                   ? <><Loader2 size={13} className="animate-spin" /> 저장 중…</>
-                  : <><Save size={13} /> {newCount + corrCount}건 저장</>}
+                  : <><Save size={13} /> {allCells.size}건 저장</>}
               </button>
             </>
           )}
@@ -472,58 +539,69 @@ export default function TimesheetGuidelineTab() {
         </div>
       )}
 
+      {/* AL-16: human-readable error */}
       {genError && (
         <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 flex items-center gap-2">
-          <AlertTriangle size={13} className="flex-shrink-0" /> {genError}
+          <AlertTriangle size={13} className="flex-shrink-0" />
+          {genError}
         </div>
       )}
 
+      {/* AL-16: save success with count + time */}
       {savedAt && (
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-          저장 완료 — {savedAt}
+          {savedCount}건 저장됨 — {savedAt}
         </div>
       )}
 
       {!generated && !isGenerating && (
         <div className="rounded-md border border-border bg-surface-50 px-4 py-10 text-center">
           <p className="text-sm text-muted">"지침 생성" 버튼을 눌러 타임시트 코드 지침을 산출하세요.</p>
-          <p className="text-xs text-muted mt-1">8주 윈도우 내 전 인원의 일자별 코드를 주차별 매트릭스로 표시합니다.</p>
+          <p className="text-xs text-muted mt-1">8주 윈도우 내 전 인원의 코드를 주차별로 분석합니다.</p>
         </div>
       )}
 
       {generated && (
         <>
-          {/* Summary bar + search */}
+          {/* Summary + search */}
           <div className="flex items-center gap-3 flex-wrap border-b border-border pb-3">
-            <span className="pill bg-blue-100 text-blue-700 text-[10px]">신규 {newCount}건</span>
-            <span className={`pill text-[10px] ${corrCount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
-              정정 {corrCount}건
-            </span>
-            <div className="ml-auto flex items-center gap-2">
-              <input
-                className="input py-1 text-xs w-52"
-                placeholder="이름 검색… (AND/OR 지원)"
-                value={nameSearch}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setNameSearch(e.target.value)}
-              />
-              {nameSearch && (
-                <button onClick={() => setNameSearch('')} className="text-xs text-muted hover:text-gray-700">
-                  초기화
-                </button>
-              )}
-              <button
-                onClick={() =>
-                  setExpandedWeeks(
-                    expandedWeeks.size === weeks.length
-                      ? new Set()
-                      : new Set(weeks.map(w => w.weekStart))
-                  )
-                }
-                className="text-xs text-brand-600 hover:underline whitespace-nowrap"
-              >
-                {expandedWeeks.size === weeks.length ? '전체 접기' : '전체 펼치기'}
-              </button>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="pill bg-blue-100 text-blue-700">신규 {newCount}건</span>
+              <span className={`pill text-[10px] ${corrCount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>
+                정정 {corrCount}건
+              </span>
             </div>
+            <input
+              className="input py-1 text-xs w-52 ml-auto"
+              placeholder="이름 검색… (AND/OR 지원)"
+              value={nameSearch}
+              onChange={e => setNameSearch(e.target.value)}
+            />
+            {nameSearch && (
+              <button onClick={() => setNameSearch('')} className="text-xs text-muted hover:text-gray-700">
+                초기화
+              </button>
+            )}
+            <button
+              onClick={() =>
+                setExpandedWeeks(
+                  expandedWeeks.size === weeks.length
+                    ? new Set()
+                    : new Set(weeks.map(w => w.weekStart))
+                )
+              }
+              className="text-xs text-brand-600 hover:underline whitespace-nowrap"
+            >
+              {expandedWeeks.size === weeks.length ? '전체 접기' : '전체 펼치기'}
+            </button>
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center gap-3 text-[10px] text-muted flex-wrap">
+            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-blue-100" /> 신규</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-100" /> 정정(신규 코드)</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-rose-100" /> 정정(이전 코드 삭제)</span>
+            <span className="text-[10px] ml-auto">셀값 = 투입시간(h) / 하루 8h 기준</span>
           </div>
 
           {/* Weekly accordion sections */}
@@ -531,7 +609,7 @@ export default function TimesheetGuidelineTab() {
             {weeks.map(week => {
               const isOpen = expandedWeeks.has(week.weekStart)
 
-              // Count new/corr for this week across ALL people (for header badge)
+              // Count for badge
               let wNew = 0, wCorr = 0
               for (const person of activePeople) {
                 for (const col of week.columns) {
@@ -544,7 +622,6 @@ export default function TimesheetGuidelineTab() {
 
               return (
                 <div key={week.weekStart} className="rounded-lg border border-border overflow-hidden">
-                  {/* Section header */}
                   <button
                     onClick={() => toggleWeek(week.weekStart)}
                     className="w-full flex items-center gap-2 px-4 py-2.5 bg-surface-50 hover:bg-surface-100 transition-colors text-left select-none"
@@ -560,20 +637,19 @@ export default function TimesheetGuidelineTab() {
                     )}
                   </button>
 
-                  {/* Matrix table */}
                   {isOpen && (
                     <div className="overflow-x-auto">
                       <table className="w-full text-xs border-t border-border">
                         <thead>
                           <tr className="bg-surface-50 border-b border-border">
-                            <th className="px-3 py-2 text-left font-medium text-muted whitespace-nowrap sticky left-0 bg-surface-50 z-10 min-w-[90px]">
-                              이름
+                            <th className="px-3 py-2 text-left font-medium text-muted w-36 sticky left-0 bg-surface-50 z-10">
+                              코드
                             </th>
                             {week.columns.map(col => (
                               <th
                                 key={col.date}
                                 className={[
-                                  'px-2 py-2 text-center font-medium min-w-[80px]',
+                                  'px-2 py-2 text-center font-medium w-16',
                                   !col.inWindow  ? 'text-gray-300 bg-gray-50/50' :
                                   col.isHoliday  ? 'text-gray-400 bg-gray-50' :
                                   'text-gray-700',
@@ -587,85 +663,77 @@ export default function TimesheetGuidelineTab() {
                             ))}
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-border/40">
-                          {filteredPeople.length === 0 ? (
-                            <tr>
-                              <td colSpan={6} className="px-3 py-4 text-center text-muted">검색 결과 없음</td>
-                            </tr>
-                          ) : filteredPeople.map(person => (
-                            <tr key={person.id} className="hover:bg-surface-50/40">
-                              {/* Name cell — sticky */}
-                              <td className="px-3 py-1.5 sticky left-0 bg-white z-10 border-r border-border/40">
-                                <div className="font-medium text-gray-800 truncate max-w-[84px]">{person.name}</div>
-                                <div className="text-[10px] text-muted">{person.rank}</div>
-                              </td>
-
-                              {week.columns.map(col => {
-                                // Outside window
-                                if (!col.inWindow) {
-                                  return (
-                                    <td key={col.date} className="px-2 py-1.5 bg-gray-50/40" />
-                                  )
-                                }
-                                // Holiday
-                                if (col.isHoliday) {
-                                  return (
-                                    <td key={col.date} className="px-2 py-1.5 bg-gray-50 text-center text-[10px] text-muted">—</td>
-                                  )
-                                }
-
-                                const key  = entryKey(person.id, col.date)
-                                const cell = allCells.get(key)
-
-                                if (!cell) {
-                                  return <td key={col.date} className="px-2 py-1.5" />
-                                }
-
-                                const ov  = overrides[key] ?? ''
-                                const prov = cell.provisional && !ov.trim()
-
-                                return (
+                        <tbody>
+                          {filteredPeople.map(person => {
+                            const codeRows = buildCodeRows(person.id, week, allCells)
+                            if (codeRows.length === 0) return null
+                            return (
+                              <Fragment key={person.id}>
+                                {/* Person group header */}
+                                <tr className="bg-slate-100/60 border-t border-border/60">
                                   <td
-                                    key={col.date}
-                                    className={[
-                                      'px-2 py-1.5 align-top',
-                                      cell.kind === 'new'        ? 'bg-blue-50' :
-                                      cell.kind === 'correction' ? 'bg-amber-50' : '',
-                                    ].join(' ')}
+                                    colSpan={week.columns.length + 1}
+                                    className="px-3 py-1 sticky left-0 bg-slate-100/60"
                                   >
-                                    {/* Correction: show old code struck-out */}
-                                    {cell.kind === 'correction' && (
-                                      <div className="font-mono text-[9px] text-gray-400 line-through leading-tight">
-                                        {cell.existing}
-                                      </div>
-                                    )}
-
-                                    {/* Current computed (or override) code */}
-                                    <div className={[
-                                      'font-mono text-xs leading-tight flex items-center gap-0.5',
-                                      cell.kind === 'new'        ? 'text-blue-700' :
-                                      cell.kind === 'correction' ? 'text-amber-700' :
-                                      'text-gray-700',
-                                    ].join(' ')}>
-                                      {ov.trim() || cell.computed}
-                                      {prov && <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" aria-label="임시 코드" />}
-                                    </div>
-
-                                    {/* Override input for new / correction cells */}
-                                    {(cell.kind === 'new' || cell.kind === 'correction') && (
-                                      <input
-                                        type="text"
-                                        className="mt-0.5 w-full border border-border/60 rounded px-1 py-0 text-[10px] font-mono bg-white/80 focus:outline-none focus:ring-1 focus:ring-brand-400"
-                                        placeholder="수정 코드"
-                                        value={ov}
-                                        onChange={(e: ChangeEvent<HTMLInputElement>) => handleOverride(key, e.target.value)}
-                                      />
-                                    )}
+                                    <span className="font-semibold text-gray-700">{person.name}</span>
+                                    <span className="ml-1.5 text-[10px] text-muted">{person.rank}</span>
                                   </td>
-                                )
-                              })}
+                                </tr>
+                                {/* Code rows */}
+                                {codeRows.map(row => (
+                                  <tr key={row.code} className="border-b border-border/30 hover:bg-surface-50/40">
+                                    {/* Code label — sticky left */}
+                                    <td className="px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 bg-white z-10 border-r border-border/30">
+                                      <span className="flex items-center gap-1">
+                                        {row.code}
+                                        {row.provisional && (
+                                          <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" aria-label="임시 코드" />
+                                        )}
+                                      </span>
+                                    </td>
+                                    {/* Day cells */}
+                                    {week.columns.map(col => {
+                                      if (!col.inWindow) {
+                                        return <td key={col.date} className="bg-gray-50/40" />
+                                      }
+                                      if (col.isHoliday) {
+                                        return <td key={col.date} className="bg-gray-50 text-center text-[10px] text-muted">—</td>
+                                      }
+
+                                      const c = row.cells.get(col.date)
+                                      if (!c) return <td key={col.date} />
+
+                                      const bg =
+                                        c.changeKind === 'new'      ? 'bg-blue-50' :
+                                        c.changeKind === 'replaced' ? 'bg-amber-50' :
+                                        c.changeKind === 'removed'  ? 'bg-rose-50' : ''
+
+                                      const textCls =
+                                        c.changeKind === 'new'      ? 'text-blue-700 font-semibold' :
+                                        c.changeKind === 'replaced' ? 'text-amber-700 font-semibold' :
+                                        c.changeKind === 'removed'  ? 'text-rose-400' :
+                                        'text-gray-700'
+
+                                      return (
+                                        <td key={col.date} className={`text-center py-1.5 ${bg}`}>
+                                          <span className={`tabular-nums text-xs ${textCls}`}>
+                                            {c.hasHours ? '8' : c.changeKind === 'removed' ? '—' : ''}
+                                          </span>
+                                        </td>
+                                      )
+                                    })}
+                                  </tr>
+                                ))}
+                              </Fragment>
+                            )
+                          })}
+                          {filteredPeople.every(p => buildCodeRows(p.id, week, allCells).length === 0) && (
+                            <tr>
+                              <td colSpan={week.columns.length + 1} className="px-3 py-4 text-center text-muted">
+                                {nameSearch ? '검색 결과 없음' : '해당 주 데이터 없음'}
+                              </td>
                             </tr>
-                          ))}
+                          )}
                         </tbody>
                       </table>
                     </div>
