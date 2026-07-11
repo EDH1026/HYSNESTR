@@ -400,16 +400,20 @@ function EditCodeModal({ wi, onClose, onSaved }: { wi: WorkItem; onClose: () => 
   )
 }
 
-function ResetConfirmModal({ pastDayCount, onConfirm, onClose }: { pastDayCount: number; onConfirm: () => void; onClose: () => void }) {
+function ResetConfirmModal({ dayCount, includesCurrentWeek, onConfirm, onClose }: { dayCount: number; includesCurrentWeek: boolean; onConfirm: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 bg-black/25 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-xl shadow-xl p-5 w-96 space-y-4" onClick={e => e.stopPropagation()}>
         <div className="flex items-start gap-3">
           <RotateCcw size={18} className="text-amber-500 flex-shrink-0 mt-0.5" />
           <div>
-            <h4 className="text-sm font-semibold text-gray-800">과거 스냅샷 초기화</h4>
+            <h4 className="text-sm font-semibold text-gray-800">스냅샷 초기화</h4>
             <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
-              최신 주를 제외한 과거 7주(<strong>{pastDayCount}</strong>영업일)의 스냅샷을 현재 배정 데이터 기준으로 재설정합니다. 정정 지시 없이 바로 덮어씁니다.
+              <strong>{dayCount}</strong>영업일의 스냅샷을 현재 배정 데이터 기준으로 재설정합니다.
+              {includesCurrentWeek
+                ? ' (최신 주도 이미 반영된 상태이므로 대상에 포함됩니다.)'
+                : ' (최신 주는 아직 반영되지 않아 대상에서 제외됩니다.)'}
+              {' '}정정 지시 없이 바로 덮어씁니다.
             </p>
             <p className="text-xs font-medium text-amber-700 mt-2">계속할까요?</p>
           </div>
@@ -518,6 +522,16 @@ export default function TimesheetGuidelineTab() {
   const pastWorkingDays = useMemo(
     () => workingDaysList(windowStartNum, latestMonNum - 1, isHoliday),
     [windowStartNum, latestMonNum, isHoliday],
+  )
+  // v2.62: working days in the current week (Mon..Fri of latestMonNum week)
+  const currentWeekWorkingDaySet = useMemo(
+    () => new Set(workingDaysList(latestMonNum, windowEndNum, isHoliday)),
+    [latestMonNum, windowEndNum, isHoliday],
+  )
+  // Is the current week already saved ("반영")? Used by the confirm modal.
+  const hasSavedCurrentWeek = useMemo(
+    () => (snapshotRows ?? []).some(r => currentWeekWorkingDaySet.has(r.date)),
+    [snapshotRows, currentWeekWorkingDaySet],
   )
   const weeks = useMemo(
     () => computeWeeks(windowStartNum, windowEndNum, isHoliday),
@@ -732,15 +746,41 @@ export default function TimesheetGuidelineTab() {
     setResetMsg(null)
     setDiagMessage(null)
 
-    // v2.59: expectedCount uses per-date P-1 check (hire_date/termination_date),
-    // so 'upcoming' or mid-window-terminated people are excluded from days outside
-    // their employment period — matching exactly what computeCodes now generates.
-    const expectedCount = activePeople.reduce((sum, p) =>
-      sum + pastWorkingDays.filter(d => isEmployedOnDate(p, d)).length, 0)
-    console.log(`[TSG 초기화] 시작 — 기대 행수: ${expectedCount} (P-1 per-date 적용, ${activePeople.length}명 × ~${pastWorkingDays.length}일)`)
-
     try {
-      const { computed, rowErrors, skippedPeople } = computeCodes(pastWorkingDays)
+      // ── v2.62: Dynamic target range ──────────────────────────────
+      // (a) dates that already have snapshot rows in the 8-week window
+      // (b) past working days with no snapshot rows (bootstrap targets)
+      // Target = (a) ∪ (b)
+      // Current week is excluded ONLY when it has never been saved ("반영").
+      const { data: savedDateRows, error: fetchSavedErr } = await (supabase as any)
+        .from('timesheet_guideline_snapshot')
+        .select('date')
+        .gte('date', windowStart)
+        .lte('date', windowEnd)
+        .limit(50000)
+      if (fetchSavedErr) throw new Error(`스냅샷 날짜 조회 실패: ${formatError(fetchSavedErr)}`)
+
+      const savedDates = new Set<string>((savedDateRows ?? []).map((r: any) => r.date as string))
+
+      // If any working day in the current week is saved, include the whole current week.
+      const currentWeekEverSaved = [...currentWeekWorkingDaySet].some(d => savedDates.has(d))
+      const targetWorkingDays = allWorkingDays.filter(d =>
+        !currentWeekWorkingDaySet.has(d) || currentWeekEverSaved
+      )
+
+      const targetEnd = targetWorkingDays.length > 0
+        ? targetWorkingDays[targetWorkingDays.length - 1]
+        : numToStr(latestMonNum - 1)
+
+      const expectedCount = activePeople.reduce((sum, p) =>
+        sum + targetWorkingDays.filter(d => isEmployedOnDate(p, d)).length, 0)
+      console.log(
+        `[TSG 초기화] 시작 — 대상 ${targetWorkingDays.length}영업일 ` +
+        `(최신 주 ${currentWeekEverSaved ? '포함' : '제외'}), ` +
+        `기대 행수: ${expectedCount} (${activePeople.length}명 × P-1 per-date 적용)`
+      )
+
+      const { computed, rowErrors, skippedPeople } = computeCodes(targetWorkingDays)
 
       // Expose TSG-1 errors before DB operations so they're visible even if insert fails
       if (rowErrors.length > 0 || skippedPeople.length > 0) {
@@ -765,9 +805,9 @@ export default function TimesheetGuidelineTab() {
       })
       console.log(`[TSG 초기화] 계산 완료 — ${rows.length}행 생성 (기대 ${expectedCount}행)`)
 
-      // Delete-then-insert for past window (atomic replace)
-      const pastEnd = numToStr(latestMonNum - 1)
-      await deleteSnapshotRange(windowStart, pastEnd)
+      // Delete the entire 8-week window then insert only target-day rows.
+      // Deleting beyond targetEnd is safe: non-target current-week days have no rows.
+      await deleteSnapshotRange(windowStart, windowEnd)
       await batchInsertSnapshot(rows)
 
       // Diagnostic verification: recount rows and find missing (person, date) pairs
@@ -776,7 +816,7 @@ export default function TimesheetGuidelineTab() {
         .from('timesheet_guideline_snapshot')
         .select('*', { count: 'exact', head: true })
         .gte('date', windowStart)
-        .lte('date', pastEnd)
+        .lte('date', targetEnd)
 
       if (!cntErr) {
         verifiedOk = actualCount === expectedCount
@@ -786,12 +826,12 @@ export default function TimesheetGuidelineTab() {
             .from('timesheet_guideline_snapshot')
             .select('person_id, date')
             .gte('date', windowStart)
-            .lte('date', pastEnd)
+            .lte('date', targetEnd)
             .limit(50000)
           const actualSet = new Set((actualRows ?? []).map((r: any) => `${r.person_id}|${r.date}`))
           const missing: { name: string; date: string }[] = []
           for (const p of activePeople) {
-            for (const d of pastWorkingDays) {
+            for (const d of targetWorkingDays) {
               if (!isEmployedOnDate(p, d)) continue
               if (!actualSet.has(`${p.id}|${d}`)) missing.push({ name: p.name, date: d })
             }
@@ -1488,7 +1528,12 @@ export default function TimesheetGuidelineTab() {
 
       {/* Modals */}
       {showResetModal && (
-        <ResetConfirmModal pastDayCount={pastWorkingDays.length} onConfirm={handleReset} onClose={() => setShowResetModal(false)} />
+        <ResetConfirmModal
+          dayCount={hasSavedCurrentWeek ? allWorkingDays.length : pastWorkingDays.length}
+          includesCurrentWeek={hasSavedCurrentWeek}
+          onConfirm={handleReset}
+          onClose={() => setShowResetModal(false)}
+        />
       )}
       {editingWi && (
         <EditCodeModal wi={editingWi} onClose={() => setEditingWi(null)} onSaved={() => setEditingWi(null)} />
