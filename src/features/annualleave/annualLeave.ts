@@ -145,22 +145,25 @@ export function computeTimesheetFigures(
     adjustments: Pick<AnnualLeaveAdjustment, 'date' | 'direction' | 'days'>[]
     usages:      LedgerUsageEntry[]
     accruals:    LedgerAccrualEntry[]
+    fyLabel?:    number   // AL-7: if provided, scope ①~④ to this FY
   },
 ): TimesheetFigures {
-  const { hireDate, adjustments, usages, accruals } = opts
+  const { hireDate, adjustments, usages, accruals, fyLabel: explicitFY } = opts
   const asOfYear  = parseInt(asOfDate.slice(0, 4), 10)
   const asOfMonth = parseInt(asOfDate.slice(5, 7), 10)
 
-  // FY 기준: month>=7 → FY starts this July; month<7 → FY started last July
-  const fyStartYear = asOfMonth >= 7 ? asOfYear : asOfYear - 1
-  const fyStart     = `${fyStartYear}-07-01`
+  // FY boundaries — use explicit fyLabel if provided, else derive from asOfDate
+  const fyLabel       = explicitFY ?? (asOfMonth >= 7 ? asOfYear + 1 : asOfYear)
+  const fyStart       = `${fyLabel - 1}-07-01`
+  const fyEnd         = `${fyLabel}-06-30`
+  const effectiveDate = asOfDate <= fyEnd ? asOfDate : fyEnd
 
   // ① 해당 FY 법정연차 누적치 (7/1 리셋, 이월 없음)
   //   hireDate 있으면 pure function; 없으면 FY 기간 내 adjustments만 집계
-  const probationAndAnnual = hireDate ? sumStatutoryLeaveFY(hireDate, asOfDate) : 0
+  const probationAndAnnual = hireDate ? sumStatutoryLeaveFY(hireDate, effectiveDate) : 0
   const fyAdjustments = r1(
     adjustments
-      .filter(a => a.date >= fyStart && a.date <= asOfDate)
+      .filter(a => a.date >= fyStart && a.date <= effectiveDate)
       .reduce((s, a) => s + adjContrib(a), 0),
   )
   const statutoryThisYear = r1(probationAndAnnual + fyAdjustments)
@@ -168,27 +171,27 @@ export function computeTimesheetFigures(
   // Accrual lookup by id — needed for ③
   const accrualById = new Map(accruals.map(a => [a.id, a]))
 
-  // Usages on/before asOfDate
-  const usagesOnOrBefore = usages.filter(u => u.start <= asOfDate)
+  // Usages within this FY up to effectiveDate
+  const usagesInFY = usages.filter(u => u.start >= fyStart && u.start <= effectiveDate)
 
   // ② 프로젝트휴가 기 사용분
   const projectLeaveUsed = r1(
-    usagesOnOrBefore
+    usagesInFY
       .filter(u => u.type === '프로젝트휴가')
       .reduce((s, u) => s + u.days, 0),
   )
 
   // ③ 지정휴가 사용 중 FIFO 차감 원천이 '프로젝트휴가'인 일수
   const designatedFromProject = r1(
-    usagesOnOrBefore
+    usagesInFY
       .filter(u => u.type === '지정휴가')
       .flatMap(u => u.deductions)
       .filter(d => accrualById.get(d.accrualId)?.type === '프로젝트휴가')
       .reduce((s, d) => s + d.days, 0),
   )
 
-  // ④ 지정휴가 선사용분: LV-12 running balance 기준 — 마지막 지정휴가 사용 시점의 잔액이 음수면 그 절댓값
-  const jieongEntries = usagesOnOrBefore
+  // ④ 지정휴가 선사용분: 해당 FY 마지막 지정휴가 사용 시점의 잔액이 음수면 그 절댓값
+  const jieongEntries = usagesInFY
     .filter(u => u.type === '지정휴가' && !u.isManual && u.days > 0)
     .sort((a, b) => a.end.localeCompare(b.end) || a.start.localeCompare(b.start))
   const designatedShortfall = r1(

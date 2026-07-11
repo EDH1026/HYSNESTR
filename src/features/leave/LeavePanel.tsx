@@ -57,7 +57,7 @@ function generateLeaveLedgerHtml(
   // ── FY-grouped accrual rows ─────────────────────────────────
   const accrualLines: string[] = []
   if (ledger.accruals.length === 0) {
-    accrualLines.push('<tr><td colspan="6" class="empty">내역 없음</td></tr>')
+    accrualLines.push('<tr><td colspan="4" class="empty">내역 없음</td></tr>')
   } else {
     const byFY = new Map<number, LedgerAccrualEntry[]>()
     for (const e of ledger.accruals) {
@@ -68,24 +68,19 @@ function generateLeaveLedgerHtml(
     for (const [fy, entries] of [...byFY.entries()].sort(([a], [b]) => a - b)) {
       const sub  = entries.reduce((s, e) => s + e.days, 0)
       const fyYY = String(fy).slice(-2)
-      accrualLines.push(`<tr class="fy-hdr"><td colspan="6">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
+      accrualLines.push(`<tr class="fy-hdr"><td colspan="4">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
       for (const e of entries) {
         const wi  = e.sourceId ? wiMap.get(e.sourceId) : undefined
         const src = wi
           ? escHtml(wiSourceLabel(wi, e.sourceId!))
           : (!e.isAuto && e.note ? escHtml(e.note) : '—')
-        const tag = e.isAuto
-          ? '<span class="pill pill-gray">자동</span>'
-          : '<span class="pill pill-green">수동</span>'
         accrualLines.push(`<tr>
           <td class="mono">${escHtml(e.date)}</td>
           <td><span class="pill pill-blue">${escHtml(e.type)}</span></td>
           <td>${src}</td>
-          <td class="num pos">+${escHtml(e.days)}</td>
-          <td class="num">${escHtml(e.remaining)}</td>
-          <td>${tag}</td></tr>`)
+          <td class="num pos">+${escHtml(e.days)}</td></tr>`)
       }
-      accrualLines.push(`<tr class="fy-sub"><td colspan="5">소계</td><td class="num pos">+${sub}</td></tr>`)
+      accrualLines.push(`<tr class="fy-sub"><td colspan="3">소계</td><td class="num pos">+${sub}</td></tr>`)
     }
   }
   const totalAccrued = ledger.accruals.reduce((s, e) => s + e.days, 0)
@@ -93,7 +88,7 @@ function generateLeaveLedgerHtml(
   // ── FY-grouped usage rows ───────────────────────────────────
   const usageLines: string[] = []
   if (ledger.usages.length === 0) {
-    usageLines.push('<tr><td colspan="5" class="empty">내역 없음</td></tr>')
+    usageLines.push('<tr><td colspan="4" class="empty">내역 없음</td></tr>')
   } else {
     const byFY = new Map<number, LedgerUsageEntry[]>()
     for (const u of ledger.usages) {
@@ -104,7 +99,7 @@ function generateLeaveLedgerHtml(
     for (const [fy, entries] of [...byFY.entries()].sort(([a], [b]) => a - b)) {
       const sub  = entries.reduce((s, u) => s + u.days, 0)
       const fyYY = String(fy).slice(-2)
-      usageLines.push(`<tr class="fy-hdr"><td colspan="5">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
+      usageLines.push(`<tr class="fy-hdr"><td colspan="4">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
       for (const u of entries) {
         const period = u.start === u.end ? escHtml(u.start) : `${escHtml(u.start)}~${escHtml(u.end)}`
         const deducParts = u.deductions.map(d => {
@@ -123,10 +118,9 @@ function generateLeaveLedgerHtml(
           <td class="mono">${period}</td>
           <td>${typeTag}</td>
           <td class="num">${escHtml(u.days)}일</td>
-          <td>${deducText}${deficit}</td>
-          <td class="num">${u.deficit < 0 ? `<span class="neg">−${-u.deficit}일</span>` : u.deficit > 0 ? `<span class="pos">+${u.deficit}일</span>` : `0일`}</td></tr>`)
+          <td>${deducText}${deficit}</td></tr>`)
       }
-      usageLines.push(`<tr class="fy-sub"><td colspan="4">소계</td><td class="num">${sub}일</td></tr>`)
+      usageLines.push(`<tr class="fy-sub"><td colspan="3">소계</td><td class="num">${sub}일</td></tr>`)
     }
   }
 
@@ -143,6 +137,75 @@ function generateLeaveLedgerHtml(
   <table>
     <thead><tr><th>기간</th><th>유형</th><th>영업일</th></tr></thead>
     <tbody>${unpaidLines.join('')}</tbody>
+  </table>
+</section>` : ''
+
+  // ── Combined history ─────────────────────────────────────────
+  const combinedRaw: { kind: string; date: string; period: string; type: string; source: string; change: number; balance: number }[] = []
+  for (const e of ledger.accruals) {
+    const wi  = e.sourceId ? wiMap.get(e.sourceId) : undefined
+    const src = wi ? wiSourceLabel(wi, e.sourceId!) : (!e.isAuto && e.note ? e.note : '—')
+    combinedRaw.push({ kind: 'accrual', date: e.date, period: e.date, type: e.type, source: src, change: e.days, balance: 0 })
+  }
+  for (const u of ledger.usages) {
+    const period     = u.start === u.end ? u.start : `${u.start}~${u.end}`
+    const deducParts = u.deductions.map(d => {
+      const acc = accrualById.get(d.accrualId)
+      if (!acc) return ''
+      const wi  = acc.sourceId ? wiMap.get(acc.sourceId) : undefined
+      return wi ? wiSourceLabel(wi, acc.sourceId!) : (acc.note ?? '범용')
+    }).filter(Boolean)
+    combinedRaw.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(' / ') || '—', change: -u.days, balance: 0 })
+  }
+  for (const u of ledger.unpaid) {
+    const period = u.start === u.end ? u.start : `${u.start}~${u.end}`
+    combinedRaw.push({ kind: 'unpaid', date: u.start, period, type: u.type, source: '—', change: 0, balance: 0 })
+  }
+  combinedRaw.sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1
+    if (a.kind === 'accrual' && b.kind !== 'accrual') return -1
+    if (a.kind !== 'accrual' && b.kind === 'accrual') return 1
+    return 0
+  })
+  let runBal = 0
+  for (const e of combinedRaw) { runBal += e.change; e.balance = runBal }
+  const combinedByFY = new Map<number, typeof combinedRaw>()
+  for (const e of combinedRaw) {
+    const fy = fyFromDate(e.date)
+    if (!combinedByFY.has(fy)) combinedByFY.set(fy, [])
+    combinedByFY.get(fy)!.push(e)
+  }
+  const combinedLines: string[] = []
+  for (const [fy, entries] of [...combinedByFY.entries()].sort(([a], [b]) => a - b)) {
+    const fyYY = String(fy).slice(-2)
+    combinedLines.push(`<tr class="fy-hdr"><td colspan="6">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
+    for (const e of entries) {
+      const kindPill = e.kind === 'accrual'
+        ? `<span class="pill pill-blue">적립</span>`
+        : e.kind === 'usage'
+          ? `<span class="pill pill-violet">사용</span>`
+          : `<span class="pill pill-gray">무급</span>`
+      const changeStr = e.change > 0 ? `+${e.change}` : e.change < 0 ? `${e.change}` : '—'
+      const changeCls = e.change > 0 ? 'pos' : e.change < 0 ? 'neg' : ''
+      const balCls    = e.balance < 0 ? 'neg' : e.balance > 0 ? 'pos' : ''
+      combinedLines.push(`<tr>
+        <td class="mono">${escHtml(e.period)}</td>
+        <td>${kindPill}</td>
+        <td><span class="pill pill-gray">${escHtml(e.type)}</span></td>
+        <td>${escHtml(e.source)}</td>
+        <td class="num ${changeCls}">${changeStr}</td>
+        <td class="num ${balCls}">${e.balance}</td></tr>`)
+    }
+    const finalBal = entries[entries.length - 1].balance
+    const fBalCls  = finalBal < 0 ? 'neg' : finalBal > 0 ? 'pos' : ''
+    combinedLines.push(`<tr class="fy-sub"><td colspan="5">FY${fyYY} 말 잔액</td><td class="num ${fBalCls}">${finalBal}</td></tr>`)
+  }
+  const combinedSection = combinedRaw.length > 0 ? `
+<section>
+  <h2>통합 이력</h2>
+  <table>
+    <thead><tr><th>날짜/기간</th><th>구분</th><th>유형</th><th>원천</th><th>일수(±)</th><th>잔액</th></tr></thead>
+    <tbody>${combinedLines.join('')}</tbody>
   </table>
 </section>` : ''
 
@@ -168,21 +231,21 @@ function generateLeaveLedgerHtml(
 <section>
   <h2>적립 이력</h2>
   <table>
-    <thead><tr><th>날짜</th><th>유형</th><th>원천</th><th>적립</th><th>잔여</th><th>구분</th></tr></thead>
+    <thead><tr><th>날짜</th><th>유형</th><th>원천</th><th>일수</th></tr></thead>
     <tbody>${accrualLines.join('')}</tbody>
-    <tfoot><tr><td colspan="5">전체 합계</td><td class="num pos">+${totalAccrued}</td></tr></tfoot>
+    <tfoot><tr><td colspan="3">전체 합계</td><td class="num pos">+${totalAccrued}</td></tr></tfoot>
   </table>
 </section>
 
 <section>
   <h2>사용 이력 (유급)</h2>
   <table>
-    <thead><tr><th>기간</th><th>유형</th><th>사용일</th><th>차감 원천</th><th>Balance</th></tr></thead>
+    <thead><tr><th>기간</th><th>유형</th><th>일수</th><th>원천</th></tr></thead>
     <tbody>${usageLines.join('')}</tbody>
-    <tfoot><tr><td colspan="4">전체 합계</td><td class="num">${ledger.totalUsed}일</td></tr></tfoot>
+    <tfoot><tr><td colspan="3">전체 합계</td><td class="num">${ledger.totalUsed}일</td></tr></tfoot>
   </table>
 </section>
-${unpaidSection}
+${unpaidSection}${combinedSection}
 <section>
   <h2>총계</h2>
   <div class="sb">
@@ -486,12 +549,61 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
   }, [ledger])
 
   // FY accordion open/close state
-  const [expandedAccrualFYs, setExpandedAccrualFYs] = useState(() => new Set<number>())
-  const [expandedUsageFYs,   setExpandedUsageFYs]   = useState(() => new Set<number>())
-  const toggleAccrualFY = useCallback((fy: number) =>
+  const [expandedAccrualFYs,  setExpandedAccrualFYs]  = useState(() => new Set<number>())
+  const [expandedUsageFYs,    setExpandedUsageFYs]    = useState(() => new Set<number>())
+  const [expandedCombinedFYs, setExpandedCombinedFYs] = useState(() => new Set<number>())
+  const toggleAccrualFY  = useCallback((fy: number) =>
     setExpandedAccrualFYs(p => { const s = new Set(p); s.has(fy) ? s.delete(fy) : s.add(fy); return s }), [])
-  const toggleUsageFY = useCallback((fy: number) =>
+  const toggleUsageFY    = useCallback((fy: number) =>
     setExpandedUsageFYs(p => { const s = new Set(p); s.has(fy) ? s.delete(fy) : s.add(fy); return s }), [])
+  const toggleCombinedFY = useCallback((fy: number) =>
+    setExpandedCombinedFYs(p => { const s = new Set(p); s.has(fy) ? s.delete(fy) : s.add(fy); return s }), [])
+
+  // Combined history (accruals + usages + unpaid, sorted by date; accruals first on same date)
+  const combinedHistory = useMemo(() => {
+    if (!ledger) return [] as { kind: 'accrual' | 'usage' | 'unpaid'; date: string; period: string; type: string; source: string; change: number; balance: number }[]
+    const accrualById = new Map(ledger.accruals.map(a => [a.id, a]))
+    type CH = { kind: 'accrual' | 'usage' | 'unpaid'; date: string; period: string; type: string; source: string; change: number; balance: number }
+    const rows: CH[] = []
+    for (const e of ledger.accruals) {
+      const wi  = e.sourceId ? wiMap.get(e.sourceId) : undefined
+      const src = wi ? wiSourceLabel(wi, e.sourceId!) : (!e.isAuto && e.note ? e.note : '—')
+      rows.push({ kind: 'accrual', date: e.date, period: e.date, type: e.type, source: src, change: e.days, balance: 0 })
+    }
+    for (const u of ledger.usages) {
+      const period     = u.start === u.end ? u.start : `${u.start} ~ ${u.end}`
+      const deducParts = u.deductions.map(d => {
+        const acc = accrualById.get(d.accrualId)
+        if (!acc) return ''
+        const wi  = acc.sourceId ? wiMap.get(acc.sourceId) : undefined
+        return wi ? wiSourceLabel(wi, acc.sourceId!) : (acc.note ?? '범용')
+      }).filter(Boolean)
+      rows.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(' / ') || '—', change: -u.days, balance: 0 })
+    }
+    for (const u of ledger.unpaid) {
+      const period = u.start === u.end ? u.start : `${u.start} ~ ${u.end}`
+      rows.push({ kind: 'unpaid', date: u.start, period, type: u.type, source: '—', change: 0, balance: 0 })
+    }
+    rows.sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1
+      if (a.kind === 'accrual' && b.kind !== 'accrual') return -1
+      if (a.kind !== 'accrual' && b.kind === 'accrual') return 1
+      return 0
+    })
+    let bal = 0
+    for (const r of rows) { bal += r.change; r.balance = bal }
+    return rows
+  }, [ledger, wiMap])
+
+  const combinedFYGroups = useMemo(() => {
+    const map = new Map<number, typeof combinedHistory>()
+    for (const e of combinedHistory) {
+      const fy = fyFromDate(e.date)
+      if (!map.has(fy)) map.set(fy, [])
+      map.get(fy)!.push(e)
+    }
+    return [...map.entries()].sort(([a], [b]) => a - b)
+  }, [combinedHistory])
 
   const handleDownload = useCallback(() => {
     if (!ledger) return
@@ -636,8 +748,6 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                     <col className="w-36" />
                     <col />
                     <col className="w-14" />
-                    <col className="w-14" />
-                    <col className="w-16" />
                     {canEditThis && <col className="w-7" />}
                   </colgroup>
                   <thead>
@@ -645,16 +755,14 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                       <th className="px-3 py-2 text-left font-medium whitespace-nowrap">날짜</th>
                       <th className="px-3 py-2 text-left font-medium">유형</th>
                       <th className="px-3 py-2 text-left font-medium">원천</th>
-                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">적립</th>
-                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">잔여</th>
-                      <th className="px-3 py-2 text-center font-medium">구분</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">일수</th>
                       {canEditThis && <th className="px-2 py-2 w-7" />}
                     </tr>
                   </thead>
                   <tbody>
                     {accrualGroups.map(([fy, entries]) => {
                       const sub     = entries.reduce((s, e) => s + e.days, 0)
-                      const colSpan = canEditThis ? 7 : 6
+                      const colSpan = canEditThis ? 5 : 4
                       const isOpen  = expandedAccrualFYs.has(fy)
                       return (
                         <Fragment key={fy}>
@@ -684,14 +792,6 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                   : (!e.isAuto && e.note ? e.note : '—')}
                               </td>
                               <td className="px-3 py-2 text-right font-medium">+{e.days}</td>
-                              <td className="px-3 py-2 text-right">
-                                <span className={e.remaining === 0 ? 'text-muted line-through' : 'font-medium'}>{e.remaining}</span>
-                              </td>
-                              <td className="px-3 py-2 text-center">
-                                {e.isAuto
-                                  ? <span className="pill bg-surface-100 text-muted text-[10px]">자동</span>
-                                  : <span className="pill bg-emerald-100 text-emerald-700 text-[10px]">수동</span>}
-                              </td>
                               {canEditThis && (
                                 <td className="px-2 py-2">
                                   {!e.isAuto && (
@@ -711,7 +811,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                             <tr className="bg-surface-50/80 border-b border-border">
                               <td colSpan={3} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
                               <td className="px-3 py-1.5 text-right text-[11px] font-semibold text-brand-700">+{sub}</td>
-                              <td colSpan={canEditThis ? 3 : 2} />
+                              {canEditThis && <td />}
                             </tr>
                           )}
                         </Fragment>
@@ -724,7 +824,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                       <td className="px-3 py-2 text-right font-bold text-brand-700">
                         +{ledger.accruals.reduce((s, e) => s + e.days, 0)}
                       </td>
-                      <td colSpan={canEditThis ? 3 : 2} />
+                      {canEditThis && <td />}
                     </tr>
                   </tfoot>
                 </table>
@@ -776,23 +876,21 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                     <col className="w-36" />
                     <col className="w-14" />
                     <col />
-                    <col className="w-14" />
                     {canEditThis && <col className="w-7" />}
                   </colgroup>
                   <thead>
                     <tr className="bg-surface-50 border-b border-border text-muted">
                       <th className="px-3 py-2 text-left font-medium whitespace-nowrap">기간</th>
                       <th className="px-3 py-2 text-left font-medium">유형</th>
-                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">사용일</th>
-                      <th className="px-3 py-2 text-left font-medium">차감 원천</th>
-                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">Balance</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">일수</th>
+                      <th className="px-3 py-2 text-left font-medium">원천</th>
                       {canEditThis && <th className="px-2 py-2 w-7" />}
                     </tr>
                   </thead>
                   <tbody>
                     {usageGroups.map(([fy, entries]) => {
                       const sub     = entries.reduce((s, u) => s + u.days, 0)
-                      const colSpan = canEditThis ? 6 : 5
+                      const colSpan = canEditThis ? 5 : 4
                       const isOpen  = expandedUsageFYs.has(fy)
                       return (
                         <Fragment key={fy}>
@@ -811,7 +909,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                             </td>
                           </tr>
                           {isOpen && entries.map(u => (
-                            <tr key={u.assignmentId} className={`border-b border-border/40 ${u.deficit < 0 ? 'bg-red-50' : 'hover:bg-surface-50'}`}>
+                            <tr key={u.assignmentId} className="border-b border-border/40 hover:bg-surface-50">
                               <td className="px-3 py-2 font-mono">
                                 {u.isManual
                                   ? <span className="flex items-center gap-1.5">
@@ -842,13 +940,6 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                     </span>
                                 }
                               </td>
-                              <td className="px-3 py-2 text-right font-medium tabular-nums">
-                                {u.deficit < 0
-                                  ? <span className="text-red-600">−{-u.deficit}일</span>
-                                  : u.deficit > 0
-                                    ? <span className="text-emerald-600">+{u.deficit}일</span>
-                                    : <span className="text-muted">0일</span>}
-                              </td>
                               {canEditThis && (
                                 <td className="px-2 py-2">
                                   {u.isManual && (
@@ -868,7 +959,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                             <tr className="bg-surface-50/80 border-b border-border">
                               <td colSpan={2} className="px-3 py-1.5 text-[11px] text-right text-muted">소계</td>
                               <td className="px-3 py-1.5 text-right text-[11px] font-semibold">{sub}일</td>
-                              <td colSpan={canEditThis ? 3 : 2} />
+                              <td colSpan={canEditThis ? 2 : 1} />
                             </tr>
                           )}
                         </Fragment>
@@ -879,7 +970,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                     <tr className="bg-surface-50 border-t-2 border-border">
                       <td colSpan={2} className="px-3 py-2 text-xs font-semibold text-gray-700">전체 합계</td>
                       <td className="px-3 py-2 text-right font-bold text-gray-800">{ledger.totalUsed}일</td>
-                      <td colSpan={canEditThis ? 3 : 2} />
+                      <td colSpan={canEditThis ? 2 : 1} />
                     </tr>
                   </tfoot>
                 </table>
@@ -910,6 +1001,115 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                         <td className="px-3 py-2 text-right">{u.days}일</td>
                       </tr>
                     ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {/* ── Combined history ─────────────────────────── */}
+          {combinedFYGroups.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-semibold text-muted uppercase tracking-wide">통합 이력</h3>
+                {combinedFYGroups.length > 0 && (
+                  <button
+                    onClick={() => setExpandedCombinedFYs(
+                      expandedCombinedFYs.size === combinedFYGroups.length
+                        ? new Set()
+                        : new Set(combinedFYGroups.map(([fy]) => fy))
+                    )}
+                    className="text-[11px] text-brand-600 hover:underline"
+                  >
+                    {expandedCombinedFYs.size === combinedFYGroups.length ? '전체 접기' : '전체 펼치기'}
+                  </button>
+                )}
+              </div>
+              <div className="card p-0 overflow-hidden">
+                <table className="w-full text-xs">
+                  <colgroup>
+                    <col className="w-44" />
+                    <col className="w-16" />
+                    <col className="w-36" />
+                    <col />
+                    <col className="w-14" />
+                    <col className="w-14" />
+                  </colgroup>
+                  <thead>
+                    <tr className="bg-surface-50 border-b border-border text-muted">
+                      <th className="px-3 py-2 text-left font-medium whitespace-nowrap">날짜/기간</th>
+                      <th className="px-3 py-2 text-left font-medium">구분</th>
+                      <th className="px-3 py-2 text-left font-medium">유형</th>
+                      <th className="px-3 py-2 text-left font-medium">원천</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">일수(±)</th>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap">잔액</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {combinedFYGroups.map(([fy, entries]) => {
+                      const isOpen  = expandedCombinedFYs.has(fy)
+                      const finalBal = entries[entries.length - 1].balance
+                      return (
+                        <Fragment key={fy}>
+                          <tr
+                            className="bg-slate-100/70 border-y border-border/60 cursor-pointer select-none hover:bg-slate-200/60 transition-colors"
+                            onClick={() => toggleCombinedFY(fy)}
+                          >
+                            <td colSpan={6} className="px-3 py-1.5">
+                              <span className="flex items-center gap-1.5 text-[11px] font-semibold text-muted tracking-wide">
+                                {isOpen
+                                  ? <ChevronDown size={12} className="shrink-0" />
+                                  : <ChevronRight size={12} className="shrink-0" />}
+                                {fyRangeLabel(fy)}
+                                {!isOpen && (
+                                  <span className={`ml-auto font-semibold tabular-nums ${finalBal < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                                    잔액 {finalBal}일
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                          </tr>
+                          {isOpen && entries.map((e, idx) => (
+                            <tr key={idx} className="border-b border-border/40 hover:bg-surface-50">
+                              <td className="px-3 py-2 font-mono">{e.period}</td>
+                              <td className="px-3 py-2">
+                                {e.kind === 'accrual'
+                                  ? <span className="pill bg-brand-100 text-brand-700">적립</span>
+                                  : e.kind === 'usage'
+                                    ? <span className="pill bg-violet-100 text-violet-700">사용</span>
+                                    : <span className="pill bg-gray-100 text-gray-600">무급</span>}
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className={`pill ${e.kind === 'accrual' ? 'bg-brand-50 text-brand-600' : e.kind === 'usage' ? 'bg-violet-50 text-violet-600' : 'bg-gray-50 text-gray-500'}`}>
+                                  {e.type}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-muted text-[11px]">{e.source}</td>
+                              <td className="px-3 py-2 text-right font-medium tabular-nums">
+                                {e.change > 0
+                                  ? <span className="text-emerald-600">+{e.change}</span>
+                                  : e.change < 0
+                                    ? <span className="text-red-600">{e.change}</span>
+                                    : <span className="text-muted">—</span>}
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium tabular-nums">
+                                <span className={e.balance < 0 ? 'text-red-600' : e.balance > 0 ? 'text-emerald-700' : 'text-muted'}>
+                                  {e.balance}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                          {isOpen && (
+                            <tr className="bg-surface-50/80 border-b border-border">
+                              <td colSpan={5} className="px-3 py-1.5 text-[11px] text-right text-muted">FY{String(fy).slice(-2)} 말 잔액</td>
+                              <td className={`px-3 py-1.5 text-right text-[11px] font-semibold tabular-nums ${finalBal < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                                {finalBal}일
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>

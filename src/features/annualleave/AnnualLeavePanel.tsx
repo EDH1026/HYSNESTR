@@ -1159,7 +1159,19 @@ function SettlementTab({ person }: { person: Person }) {
 // ─────────────────────────────────────────────────────────────
 
 function TimesheetTab({ person }: { person: Person }) {
-  const [asOfStr, setAsOfStr] = useState(numToStr(today()))
+  const todayStr   = numToStr(today())
+  const todayYear  = parseInt(todayStr.slice(0, 4), 10)
+  const todayMonth = parseInt(todayStr.slice(5, 7), 10)
+  const currentFY  = todayMonth >= 7 ? todayYear + 1 : todayYear
+
+  const fyOptions: number[] = []
+  for (let fy = 2022; fy <= currentFY + 1; fy++) fyOptions.push(fy)
+
+  const [selectedFY, setSelectedFY] = useState(currentFY)
+
+  const fyEnd   = `${selectedFY}-06-30`
+  const asOfStr = todayStr <= fyEnd ? todayStr : fyEnd
+
   const { isLoading, ledger, adjustments } = usePersonData(person.id, asOfStr)
 
   const figures = useMemo(() => {
@@ -1169,22 +1181,27 @@ function TimesheetTab({ person }: { person: Person }) {
       adjustments,
       usages:      ledger.usages,
       accruals:    ledger.accruals,
+      fyLabel:     selectedFY,
     })
-  }, [ledger, adjustments, asOfStr, person.hire_date])
+  }, [ledger, adjustments, asOfStr, person.hire_date, selectedFY])
 
-  const asOfYear    = parseInt(asOfStr.slice(0, 4), 10)
-  const asOfMonth   = parseInt(asOfStr.slice(5, 7), 10)
-  const fyLabel     = asOfMonth >= 7 ? asOfYear + 1 : asOfYear
-  const fyStartYear = asOfMonth >= 7 ? asOfYear : asOfYear - 1
+  const fyYY = String(selectedFY).slice(-2)
 
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-3">
-        <label className="text-xs font-medium text-gray-700">기준일</label>
-        <input type="date" className="input py-1 text-xs w-36"
-          value={asOfStr} onChange={e => setAsOfStr(e.target.value)} />
+        <label className="text-xs font-medium text-gray-700">회계연도</label>
+        <select
+          className="input py-1 text-xs w-28"
+          value={selectedFY}
+          onChange={e => setSelectedFY(parseInt(e.target.value, 10))}
+        >
+          {fyOptions.map(fy => (
+            <option key={fy} value={fy}>FY{String(fy).slice(-2)}</option>
+          ))}
+        </select>
         <span className="text-xs text-muted">
-          → FY{fyLabel} ({fyStartYear}.07 ~ {fyLabel}.06)
+          {selectedFY - 1}.07 ~ {selectedFY}.06
         </span>
       </div>
 
@@ -1204,27 +1221,27 @@ function TimesheetTab({ person }: { person: Person }) {
         <div className="grid grid-cols-2 gap-3">
           <FigureCard
             num="①"
-            label={`FY${fyLabel} 법정연차·신입사원 휴가 누적`}
+            label={`FY${fyYY} 법정연차·신입사원 휴가 누적`}
             value={figures.statutoryThisYear}
-            hint={`FY${fyLabel}(${fyStartYear}.07~${fyLabel}.06) 발생분 합 + 보정 (7/1 리셋, 이월 없음)`}
+            hint={`FY${fyYY}(${selectedFY - 1}.07~${selectedFY}.06) 발생분 합 + 보정 (7/1 리셋, 이월 없음)`}
           />
           <FigureCard
             num="②"
-            label="프로젝트휴가 기 사용분"
+            label={`FY${fyYY} 프로젝트휴가 사용분`}
             value={figures.projectLeaveUsed}
-            hint="기준일까지 프로젝트휴가 유형 사용 영업일수"
+            hint={`FY${fyYY} 기간 중 프로젝트휴가 유형 사용 영업일수`}
           />
           <FigureCard
             num="③"
-            label="지정휴가 중 프로젝트휴가 원천"
+            label={`FY${fyYY} 지정휴가 중 프로젝트휴가 원천`}
             value={figures.designatedFromProject}
-            hint="지정휴가 사용 중 FIFO 차감 원천이 프로젝트휴가인 일수"
+            hint={`FY${fyYY} 지정휴가 사용 중 FIFO 차감 원천이 프로젝트휴가인 일수`}
           />
           <FigureCard
             num="④"
-            label="지정휴가 선사용분"
+            label={`FY${fyYY} 지정휴가 선사용분`}
             value={figures.designatedShortfall}
-            hint="지정휴가 FIFO shortfall 합 (적립 부족분 선사용)"
+            hint={`FY${fyYY} 마지막 지정휴가 사용 시점의 FIFO shortfall (적립 부족분 선사용)`}
             warn={figures.designatedShortfall > 0}
           />
         </div>
