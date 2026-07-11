@@ -98,12 +98,14 @@ function parseSnapKey(key: string): [string, string, string] {
 
 /**
  * P-1 per-date employment check.
- * Root cause fix (v2.59): activePeople includes 'upcoming' (hire_date in future)
- * and recently-resigned people whose termination_date falls inside the window.
- * Generating rows for those days inflates expectedCount and causes diagnosis mismatches.
+ * v2.59: 'upcoming' (hire_date in future) and terminated people are excluded
+ * from dates outside their employment period.
+ * v2.60 fix: 'active' people are NEVER excluded by hire_date — only 'upcoming'
+ * people (not yet started) are filtered. Applying hire_date to 'active' people
+ * incorrectly blanked out all weeks before the hire_date for recently-onboarded staff.
  */
 function isEmployedOnDate(person: Person, dateStr: string): boolean {
-  if (person.hire_date && person.hire_date > dateStr) return false
+  if (person.status === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
   if (person.termination_date && person.termination_date < dateStr) return false
   return true
 }
@@ -536,6 +538,7 @@ export default function TimesheetGuidelineTab() {
         .select('person_id, date, code, hours')
         .gte('date', windowStart)
         .lte('date', windowEnd)
+        .limit(50000)
       if (error) throw error
       return (data ?? []) as { person_id: string; date: string; code: string; hours: number }[]
     },
@@ -764,6 +767,7 @@ export default function TimesheetGuidelineTab() {
             .select('person_id, date')
             .gte('date', windowStart)
             .lte('date', pastEnd)
+            .limit(50000)
           const actualSet = new Set((actualRows ?? []).map((r: any) => `${r.person_id}|${r.date}`))
           const missing: { name: string; date: string }[] = []
           for (const p of activePeople) {
@@ -827,6 +831,7 @@ export default function TimesheetGuidelineTab() {
         .select('person_id, date, code, hours')
         .gte('date', windowStart)
         .lte('date', windowEnd)
+        .limit(50000)
       if (fetchErr) throw fetchErr
 
       const snapMap = new Map<string, number>()  // snapKey → hours
