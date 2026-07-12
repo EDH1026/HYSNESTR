@@ -247,15 +247,6 @@ async function batchInsertSnapshot(rows: object[], batchSize = 200): Promise<voi
   }
 }
 
-async function deletePersonSnapshot(personId: string, gte: string, lte: string): Promise<void> {
-  const { error } = await (supabase as any)
-    .from('timesheet_guideline_snapshot')
-    .delete()
-    .eq('person_id', personId)
-    .gte('date', gte)
-    .lte('date', lte)
-  if (error) throw error
-}
 
 // ── HTML export ────────────────────────────────────────────────
 
