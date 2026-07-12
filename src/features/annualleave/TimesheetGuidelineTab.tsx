@@ -703,6 +703,23 @@ export default function TimesheetGuidelineTab() {
     return out
   }, [allEntries, manualChanges])
 
+  // 실제로 insert될 행 수 (to_remove·hours=0 제외)
+  const saveRowCount = useMemo(() => {
+    let n = 0
+    for (const entry of effectiveEntries.values()) {
+      if (entry.kind !== 'to_remove' && entry.hours > 0) n++
+    }
+    return n
+  }, [effectiveEntries])
+
+  // 스냅샷 대비 변경사항이 1건이라도 있는지 (반영 버튼 활성화 조건)
+  const hasAnyChange = useMemo(() => {
+    for (const entry of effectiveEntries.values()) {
+      if (entry.kind !== 'unchanged') return true
+    }
+    return false
+  }, [effectiveEntries])
+
   // ── Shared: TSG-1 per-person compute helpers (v2.66) ──────────
   // TSG-2 핵심 불변식: 스냅샷·과거 수동 이력 참조 없음 — 라이브 데이터만 사용.
   // v2.66: 일괄 처리 제거 → 인력별 순차 처리를 위해 두 함수로 분리.
@@ -1024,10 +1041,38 @@ export default function TimesheetGuidelineTab() {
 
       await batchInsertSnapshot(rows)
 
+      // 저장 즉시 DB 건수 검증 — 의도 건수와 실제 저장 건수 일치 확인
+      const { count: actualSaved, error: verifyErr } = await (supabase as any)
+        .from('timesheet_guideline_snapshot')
+        .select('*', { count: 'exact', head: true })
+        .gte('date', windowStart)
+        .lte('date', windowEnd)
+      if (verifyErr) throw new Error(`저장 검증 실패: ${formatError(verifyErr)}`)
+
+      if (actualSaved !== rows.length) {
+        const { data: savedRows } = await (supabase as any)
+          .from('timesheet_guideline_snapshot')
+          .select('person_id, date, code')
+          .gte('date', windowStart)
+          .lte('date', windowEnd)
+          .limit(50000)
+        const savedSet = new Set((savedRows ?? []).map((r: any) => `${r.person_id}|${r.date}|${r.code}`))
+        const missing: string[] = []
+        for (const r of rows as { person_id: string; date: string; code: string }[]) {
+          if (!savedSet.has(`${r.person_id}|${r.date}|${r.code}`)) missing.push(`${r.date}(${r.code})`)
+        }
+        throw new Error(
+          `오류: ${rows.length}건 중 ${actualSaved}건만 저장됨` +
+          (missing.length > 0
+            ? ` — 누락: ${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ` 외 ${missing.length - 10}건` : ''}`
+            : '')
+        )
+      }
+
       await queryClient.invalidateQueries({ queryKey: SNAP_KEY })
       setManualChanges(new Map())
-      setIsSnapshotMode(true)   // 반영 완료 → 스냅샷 모드로 전환, useEffect가 새 데이터를 로드할 수 있게
-      setSavedCount(rows.length)
+      setIsSnapshotMode(true)
+      setSavedCount(actualSaved)
       setSavedAt(new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))
     } catch (e) {
       setGenError(formatError(e))
@@ -1234,11 +1279,11 @@ export default function TimesheetGuidelineTab() {
                 disabled={anyBusy} className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
                 <Download size={13} /> HTML 저장
               </button>
-              <button onClick={handleSave} disabled={isSaving || effectiveEntries.size === 0}
+              <button onClick={handleSave} disabled={isSaving || !hasAnyChange}
                 className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
                 {isSaving
                   ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
-                  : <><Save size={13} /> {effectiveEntries.size}건 반영</>}
+                  : <><Save size={13} /> {saveRowCount}건 반영</>}
               </button>
             </>
           )}
