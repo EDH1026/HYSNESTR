@@ -11,17 +11,19 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, Play, Download, Save, AlertTriangle, RefreshCw,
   ChevronDown, ChevronRight, Pencil, X, Check, RotateCcw, Plus,
+  BookOpen, Clock, FileText,
 } from 'lucide-react'
 import { useAllPeople }                       from '@/features/people/hooks'
 import { useAllAssignments }                  from '@/features/timeline/hooks'
 import { useAllAccruals }                     from '@/features/leave/hooks'
 import { useAllWorkItems, useUpdateWorkItem } from '@/features/workitems/hooks'
 import { useAllHolidays }                     from '@/features/admin/hooks'
-import { useAllAdjustments }                  from './hooks'
+import { useAllAdjustments, useGuidelineDocuments, useSaveGuidelineDocument } from './hooks'
+import type { GuidelineDocument }             from './hooks'
 import { computeLedger, buildHolidaySet }     from '@/features/leave/ledger'
 import { resolveTimesheetCode }               from './resolveTimesheetCode'
 import type { ResolveContext }                from './resolveTimesheetCode'
-import { today, numToStr, isWeekend, weekStart } from '@/lib/date'
+import { today, numToStr, dateToNum, isWeekend, weekStart } from '@/lib/date'
 import { parseSearchQuery }                   from '@/lib/searchQuery'
 import { supabase }                           from '@/lib/supabase'
 import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
@@ -274,7 +276,7 @@ async function fetchAllSnapshotRows(gte: string, lte: string, select = 'person_i
   return allRows
 }
 
-// ── HTML export ────────────────────────────────────────────────
+// ── HTML export (TSG-11: interactive accordion + dual-view) ────
 
 function generateGuidelineHtml(
   weeks:       WeekInfo[],
@@ -283,9 +285,13 @@ function generateGuidelineHtml(
   windowStart: string,
   windowEnd:   string,
   todayStr:    string,
+  docTitle?:   string,
 ): string {
   const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
   const sorted    = sortPeople(people)
+  const colW      = `width:${DAY_COL_W}px;text-align:center`
+  const tblW      = (nCols: number) => `${CODE_COL_W + nCols * DAY_COL_W}px`
+
   const CK_STYLE: Record<ChangeKind, string> = {
     new:       'background:#eff6ff;color:#1d4ed8',
     replaced:  'background:#fffbeb;color:#b45309',
@@ -294,8 +300,21 @@ function generateGuidelineHtml(
     manual:    'background:#f5f3ff;color:#7c3aed',
   }
 
-  const weekSections = weeks.map(week => {
-    const colW = `width:${DAY_COL_W}px;text-align:center`
+  function cellHtml(col: ColInfo, c: { hours: number; changeKind: ChangeKind } | undefined): string {
+    if (col.isHoliday) return `<td class="holiday" style="text-align:center">—</td>`
+    if (!c || c.changeKind === 'removed')
+      return c?.changeKind === 'removed'
+        ? `<td style="text-align:center;${CK_STYLE.removed}">—</td>`
+        : `<td></td>`
+    const style = CK_STYLE[c.changeKind]
+      ? ` style="${CK_STYLE[c.changeKind]};text-align:center;font-family:monospace"`
+      : ' style="text-align:center;font-family:monospace"'
+    return `<td${style}>${escHtml(String(c.hours))}</td>`
+  }
+
+  // ── 주→사람 view ───────────────────────────────────────────────
+  const wpSections = weeks.map((week, wi) => {
+    const sid = `wp${wi}`
     const colHeaders = week.columns.map(col =>
       `<th class="${col.isHoliday ? 'holiday' : ''}" style="${colW}">${escHtml(col.label)}${col.isHoliday ? '<br><small>공휴일</small>' : ''}</th>`
     ).join('')
@@ -306,52 +325,106 @@ function generateGuidelineHtml(
       const bg = pi % 2 === 0 ? '' : 'background:#f8fafc'
       rows.push(`<tr class="person-hdr" style="${bg}"><td colspan="${week.columns.length + 1}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
       for (const row of codeRows) {
-        const cells = week.columns.map(col => {
-          if (col.isHoliday) return `<td class="holiday" style="text-align:center">—</td>`
-          const c = row.cells.get(col.date)
-          if (!c || c.changeKind === 'removed') {
-            if (c?.changeKind === 'removed') return `<td style="text-align:center;${CK_STYLE.removed}">—</td>`
-            return `<td></td>`
-          }
-          const style = CK_STYLE[c.changeKind] ? ` style="${CK_STYLE[c.changeKind]};text-align:center;font-family:monospace"` : ' style="text-align:center;font-family:monospace"'
-          return `<td${style}>${escHtml(String(c.hours))}</td>`
-        }).join('')
-        const prov = row.provisional ? ' ⚠' : ''
-        const man = row.isManual ? ' [관리자]' : ''
-        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${prov}${man}</td>${cells}</tr>`)
+        const cells = week.columns.map(col => cellHtml(col, row.cells.get(col.date))).join('')
+        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`)
       }
     })
     if (rows.length === 0) rows.push(`<tr><td colspan="${week.columns.length + 1}" class="empty">해당 항목 없음</td></tr>`)
-    const tblW = `${CODE_COL_W + week.columns.length * DAY_COL_W}px`
     return `<section>
-<h2>${escHtml(week.label)}</h2>
-<table style="width:${tblW}">
-  <thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead>
-  <tbody>${rows.join('')}</tbody>
-</table>
+<div class="sec-hdr" onclick="tog('${sid}')"><span>${escHtml(week.label)}</span><span class="arr" id="a-${sid}">▼</span></div>
+<div class="sec-body" id="${sid}"><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
 </section>`
+  })
+
+  // ── 사람→주 view ───────────────────────────────────────────────
+  const pwSections: string[] = []
+  sorted.forEach((person, pi) => {
+    const hasAny = weeks.some(w => buildCodeRows(person.id, w.columns, entries).length > 0)
+    if (!hasAny) return
+    const sid = `pw${pi}`
+    const weekParts: string[] = []
+    for (const week of weeks) {
+      const codeRows = buildCodeRows(person.id, week.columns, entries)
+      if (codeRows.length === 0) continue
+      const colHeaders = week.columns.map(col =>
+        `<th class="${col.isHoliday ? 'holiday' : ''}" style="${colW}">${escHtml(col.label)}${col.isHoliday ? '<br><small>공휴일</small>' : ''}</th>`
+      ).join('')
+      const tableRows = codeRows.map(row => {
+        const cells = week.columns.map(col => cellHtml(col, row.cells.get(col.date))).join('')
+        return `<tr><td class="code-lbl">${escHtml(row.code)}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`
+      }).join('')
+      weekParts.push(`<div class="pw-week"><h4>${escHtml(week.label)}</h4><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${tableRows}</tbody></table></div>`)
+    }
+    pwSections.push(`<section>
+<div class="sec-hdr" onclick="tog('${sid}')"><span><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></span><span class="arr" id="a-${sid}">▼</span></div>
+<div class="sec-body" id="${sid}">${weekParts.join('')}</div>
+</section>`)
   })
 
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>타임시트 지침 — ${escHtml(todayStr)}</title>
+<title>${escHtml(docTitle ?? `타임시트 지침 — ${todayStr}`)}</title>
 <style>
 ${HTML_EXPORT_CSS}
+body{font-family:system-ui,sans-serif;max-width:1400px;margin:0 auto;padding:16px}
+.view-bar{display:flex;gap:8px;margin:12px 0 16px}
+.vbtn{padding:6px 16px;font-size:12px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;background:#f8fafc;color:#64748b}
+.vbtn.on{background:#eff6ff;color:#4f46e5;border-color:#c7d2fe;font-weight:600}
+section{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:8px}
+.sec-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#f8fafc;cursor:pointer;user-select:none;font-size:13px;font-weight:600;color:#1e293b}
+.sec-hdr:hover{background:#eff6ff}
+.arr{font-size:11px;color:#94a3b8;margin-left:8px}
+.sec-body.closed{display:none}
 .person-hdr td{font-size:12px;padding:5px 8px;border-top:2px solid #cbd5e1}
-.rank{font-size:10px;color:#6b7280}
-.code-lbl{font-family:monospace;font-size:11px;min-width:${CODE_COL_W}px}
+.rank{font-size:10px;color:#6b7280;font-weight:400}
+.code-lbl{font-family:monospace;font-size:11px;min-width:${CODE_COL_W}px;padding:4px 8px}
 .holiday{background:#f9fafb;color:#9ca3af}
+.empty{color:#94a3b8;text-align:center;padding:12px}
+.pw-week{padding:12px 16px 4px;border-bottom:1px solid #f1f5f9}
+.pw-week h4{font-size:11px;color:#64748b;margin:0 0 6px;font-weight:500}
+#view-pw{display:none}
+table{border-collapse:collapse;font-size:12px}
+td,th{border:1px solid #e2e8f0;padding:4px 6px}
+th{background:#f8fafc;font-weight:500;color:#475569}
 </style>
 </head>
 <body>
 <header>
-  <h1>타임시트 지침</h1>
-  <p class="meta">윈도우: ${escHtml(windowStart)} ~ ${escHtml(windowEnd)}</p>
-  <p class="meta">생성: ${escHtml(generated)}</p>
+  <h1 style="margin:0 0 4px;font-size:20px">${escHtml(docTitle ?? '타임시트 지침')}</h1>
+  <p class="meta" style="color:#64748b;font-size:12px;margin:2px 0">윈도우: ${escHtml(windowStart)} ~ ${escHtml(windowEnd)}</p>
+  <p class="meta" style="color:#64748b;font-size:12px;margin:2px 0">생성: ${escHtml(generated)}</p>
+  <div class="view-bar">
+    <button class="vbtn on" id="btn-wp" onclick="sv('wp')">주 → 사람</button>
+    <button class="vbtn"    id="btn-pw" onclick="sv('pw')">사람 → 주</button>
+  </div>
 </header>
-${weekSections.join('\n')}
+<div id="view-wp">${wpSections.join('\n')}</div>
+<div id="view-pw">${pwSections.join('\n')}</div>
+<script>
+function tog(id){
+  var b=document.getElementById(id),a=document.getElementById('a-'+id);
+  var c=b.classList.toggle('closed');
+  if(a)a.textContent=c?'▶':'▼';
+}
+function sv(m){
+  document.getElementById('view-wp').style.display=m==='wp'?'':'none';
+  document.getElementById('view-pw').style.display=m==='pw'?'':'none';
+  document.getElementById('btn-wp').className='vbtn'+(m==='wp'?' on':'');
+  document.getElementById('btn-pw').className='vbtn'+(m==='pw'?' on':'');
+}
+window.addEventListener('DOMContentLoaded',function(){
+  ['view-wp','view-pw'].forEach(function(vid){
+    var secs=document.querySelectorAll('#'+vid+'>section');
+    secs.forEach(function(s,i){
+      var body=s.querySelector('.sec-body');
+      var arr=s.querySelector('.arr');
+      if(i>=2){body.classList.add('closed');if(arr)arr.textContent='▶';}
+    });
+  });
+});
+</script>
 </body>
 </html>`
 }
@@ -653,6 +726,14 @@ export default function TimesheetGuidelineTab() {
     setExpandedPeople(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
   }, [])
 
+  // [TSG-12] Guideline document save + list + viewer
+  const { data: guidelineDocs = [], isLoading: isLoadingDocs } = useGuidelineDocuments()
+  const saveDocMutation = useSaveGuidelineDocument()
+  const [showDocList,  setShowDocList]  = useState(false)
+  const [viewingDoc,   setViewingDoc]   = useState<GuidelineDocument | null>(null)
+  const [isSavingDoc,  setIsSavingDoc]  = useState(false)
+  const [docSavedMsg,  setDocSavedMsg]  = useState<string | null>(null)
+
   // Tracks the dataUpdatedAt timestamp of the last snapshotRows we loaded.
   // Timestamp comparison is safer than reference identity — avoids skipping
   // a real refetch if TanStack Query happens to reuse the same array reference.
@@ -736,6 +817,34 @@ export default function TimesheetGuidelineTab() {
     }
     return false
   }, [effectiveEntries])
+
+  // ── [TSG-12] Document viewer display overrides ────────────────
+  // When viewingDoc is set, the matrix shows the doc's stored data instead of
+  // the live effectiveEntries. All rendering uses displayEntries / displayPeople / etc.
+
+  const viewingDocEntries = useMemo((): Map<string, SnapshotEntry> | null => {
+    if (!viewingDoc) return null
+    return new Map(viewingDoc.content.entries.map(([k, v]) => [k, v as SnapshotEntry]))
+  }, [viewingDoc])
+
+  const displayEntries = viewingDocEntries ?? effectiveEntries
+
+  const viewingDocPeople = useMemo((): Person[] | null => {
+    if (!viewingDoc) return null
+    return sortPeople(viewingDoc.content.people as Person[])
+  }, [viewingDoc])
+
+  const displayPeople = viewingDocPeople ?? filteredPeople
+
+  const viewingDocWeeks = useMemo((): WeekInfo[] | null => {
+    if (!viewingDoc) return null
+    const s = dateToNum(viewingDoc.window_start)
+    const e = dateToNum(viewingDoc.window_end)
+    return computeWeeks(s, e, isHoliday)
+  }, [viewingDoc, isHoliday])
+
+  const displayWeeks  = viewingDocWeeks  ?? weeks
+  const displayAllCols = useMemo(() => displayWeeks.flatMap(w => w.columns), [displayWeeks])
 
   // ── Shared: TSG-1 per-person compute helpers (v2.66) ──────────
   // TSG-2 핵심 불변식: 스냅샷·과거 수동 이력 참조 없음 — 라이브 데이터만 사용.
@@ -1009,19 +1118,6 @@ export default function TimesheetGuidelineTab() {
         }
       }
 
-      console.log('[TSG handlePreview] entries.size=', entries.size,
-        '| allComputed.size=', allComputed.size,
-        '| snapMap.size=', snapMap.size,
-        '| to_remove=', entries.size - allComputed.size,
-        '| skippedPeople=', skippedPeople.length)
-
-      if (skippedPeople.length > 0) {
-        console.log('[TSG handlePreview] skipped 상세:', skippedPeople.map(p => ({
-          name: p.personName,
-          error: p.error ?? JSON.stringify(p),
-        })))
-      }
-
       setAllEntries(entries)
       setSavedAt(null)
       setSavedCount(0)
@@ -1030,6 +1126,32 @@ export default function TimesheetGuidelineTab() {
       setGenError(formatError(e))
     } finally {
       setIsPreviewing(false)
+    }
+  }
+
+  // ── [TSG-12] 지침 문서 저장 ──────────────────────────────────
+  async function handleSaveDocument() {
+    if (!previewed || viewingDoc) return
+    setIsSavingDoc(true)
+    setDocSavedMsg(null)
+    try {
+      const content: GuidelineDocument['content'] = {
+        entries:     [...effectiveEntries.entries()].map(([k, v]) => [k, {
+          hours: v.hours, provisional: v.provisional, existingHours: v.existingHours, kind: v.kind,
+        }]),
+        people:      filteredPeople.map(p => ({
+          id: p.id, name: p.name, rank: p.rank, status: p.status,
+          hire_date: p.hire_date ?? null, termination_date: p.termination_date ?? null,
+        })),
+        windowStart, windowEnd,
+      }
+      const result = await saveDocMutation.mutateAsync({ window_start: windowStart, window_end: windowEnd, content })
+      const at = new Date(result.generated_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+      setDocSavedMsg(`저장 완료 — ${at}`)
+    } catch (e) {
+      setDocSavedMsg(`저장 실패: ${formatError(e)}`)
+    } finally {
+      setIsSavingDoc(false)
     }
   }
 
@@ -1288,21 +1410,53 @@ export default function TimesheetGuidelineTab() {
                 : <><Play size={13} /> 지침 생성</>}
           </button>
 
-          {previewed && (
+          {/* 저장된 지침 목록 토글 버튼 */}
+          <button onClick={() => { setShowDocList(v => !v); setViewingDoc(null) }}
+            className={`btn-secondary text-xs py-1 gap-1 ${showDocList ? 'bg-brand-50 border-brand-300 text-brand-700' : ''}`}>
+            <BookOpen size={13} /> 저장된 지침 {guidelineDocs.length > 0 ? `(${guidelineDocs.length})` : ''}
+          </button>
+
+          {previewed && !viewingDoc && (
             <>
               <button
                 onClick={() => triggerDownload(
-                  generateGuidelineHtml(weeks, filteredPeople, effectiveEntries, windowStart, windowEnd, todayStr),
+                  generateGuidelineHtml(displayWeeks, displayPeople, displayEntries, windowStart, windowEnd, todayStr),
                   `타임시트지침_${todayStr}.html`,
                 )}
                 disabled={anyBusy} className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
                 <Download size={13} /> HTML 저장
+              </button>
+              <button onClick={handleSaveDocument} disabled={anyBusy || isSavingDoc}
+                className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                {isSavingDoc
+                  ? <><Loader2 size={13} className="animate-spin" /> 저장 중…</>
+                  : <><FileText size={13} /> 이 지침 저장</>}
               </button>
               <button onClick={handleSave} disabled={isSaving || !hasAnyChange}
                 className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
                 {isSaving
                   ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
                   : <><Save size={13} /> {saveRowCount}건 반영</>}
+              </button>
+            </>
+          )}
+
+          {/* 저장된 지침 열람 중 */}
+          {viewingDoc && (
+            <>
+              <button
+                onClick={() => triggerDownload(
+                  generateGuidelineHtml(displayWeeks, displayPeople, displayEntries,
+                    viewingDoc.window_start, viewingDoc.window_end, todayStr,
+                    `타임시트 지침 — ${new Date(viewingDoc.generated_at).toLocaleDateString('ko-KR')}`),
+                  `타임시트지침_저장본_${viewingDoc.generated_at.slice(0, 10)}.html`,
+                )}
+                disabled={anyBusy} className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                <Download size={13} /> HTML 저장
+              </button>
+              <button onClick={() => { setViewingDoc(null); setShowDocList(true) }}
+                className="btn-secondary text-xs py-1 gap-1">
+                ← 목록으로
               </button>
             </>
           )}
@@ -1333,6 +1487,57 @@ export default function TimesheetGuidelineTab() {
       {savedAt && (
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
           {savedCount}건 반영됨 — {savedAt}
+        </div>
+      )}
+      {docSavedMsg && (
+        <div className={`rounded border px-3 py-2 text-xs ${docSavedMsg.startsWith('저장 실패') ? 'border-red-200 bg-red-50 text-red-700' : 'border-indigo-200 bg-indigo-50 text-indigo-700'}`}>
+          <FileText size={12} className="inline mr-1" />{docSavedMsg}
+        </div>
+      )}
+
+      {/* ── [TSG-12] 저장된 지침 목록 ──────────────────────────── */}
+      {showDocList && !viewingDoc && (
+        <div className="rounded-lg border border-border bg-surface-50 p-3 space-y-2">
+          <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
+            <BookOpen size={13} /> 저장된 지침 목록
+            <span className="text-muted font-normal ml-1">— "이 지침 저장"으로 기록된 시점별 스냅샷</span>
+          </div>
+          {isLoadingDocs && (
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <Loader2 size={12} className="animate-spin" /> 로딩 중…
+            </div>
+          )}
+          {!isLoadingDocs && guidelineDocs.length === 0 && (
+            <p className="text-xs text-muted">저장된 지침이 없습니다.</p>
+          )}
+          {!isLoadingDocs && guidelineDocs.map(doc => (
+            <div key={doc.id} className="flex items-center gap-3 bg-white rounded border border-border px-3 py-2 text-xs">
+              <Clock size={11} className="text-muted flex-shrink-0" />
+              <span className="font-medium text-gray-800">
+                {new Date(doc.generated_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
+              </span>
+              <span className="text-muted">{doc.window_start} ~ {doc.window_end}</span>
+              <span className="text-muted">{doc.content.entries.length}건</span>
+              <button
+                onClick={() => { setViewingDoc(doc); setShowDocList(false); setExpandedWeeks(new Set()); setExpandedPeople(new Set()) }}
+                className="ml-auto text-brand-600 hover:text-brand-700 font-medium">
+                열기 →
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 저장된 지침 열람 중 배너 */}
+      {viewingDoc && (
+        <div className="rounded border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-700 flex items-center gap-2">
+          <BookOpen size={12} className="flex-shrink-0" />
+          <span>저장된 지침 열람 중 —&nbsp;
+            <strong>{new Date(viewingDoc.generated_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</strong>
+            &nbsp;({viewingDoc.window_start} ~ {viewingDoc.window_end}) · 읽기 전용
+          </span>
+          <button onClick={() => { setViewingDoc(null); setShowDocList(true) }}
+            className="ml-auto underline hover:no-underline">목록으로</button>
         </div>
       )}
 
@@ -1393,7 +1598,7 @@ export default function TimesheetGuidelineTab() {
         </div>
       )}
 
-      {!previewed && !isPreviewing && !isLoading && (
+      {!previewed && !isPreviewing && !isLoading && !viewingDoc && (
         <div className="rounded-md border border-border bg-surface-50 px-4 py-10 text-center">
           <p className="text-sm text-muted">"지침 생성" 버튼을 눌러 이번 주 타임시트 코드 지침을 산출하세요.</p>
           <p className="text-xs text-muted mt-1">8주 창({windowStart} ~ {windowEnd}) 전체를 분석하며, 반영 전까지 스냅샷을 변경하지 않습니다.</p>
@@ -1401,7 +1606,7 @@ export default function TimesheetGuidelineTab() {
       )}
 
       {/* ── Matrix ─────────────────────────────────────────────── */}
-      {previewed && (
+      {(previewed || viewingDoc) && (
         <>
           {/* Controls row: summary + search + view toggle */}
           <div className="flex items-center gap-3 flex-wrap border-b border-border pb-3">
@@ -1465,20 +1670,20 @@ export default function TimesheetGuidelineTab() {
           {/* ══ [TSG-10] 주→사람 mode ══════════════════════════════ */}
           {viewMode === 'week-person' && (
             <div className="space-y-2">
-              {weeks.map(week => {
+              {displayWeeks.map(week => {
                 const isOpen = expandedWeeks.has(week.weekStart)
                 let wNew = 0, wCorr = 0, wManual = 0
-                for (const p of snapshotPeople) for (const col of week.columns) {
+                if (!viewingDoc) for (const p of snapshotPeople) for (const col of week.columns) {
                   if (col.isHoliday) continue
                   const prefix = `${p.id}||${col.date}||`
-                  for (const [key, entry] of effectiveEntries) {
+                  for (const [key, entry] of displayEntries) {
                     if (!key.startsWith(prefix)) continue
                     if (entry.kind === 'new') wNew++
                     else if (entry.kind === 'correction') wCorr++
                     else if (entry.kind === 'manual_edit' || entry.kind === 'manual_add') wManual++
                   }
                 }
-                const isLatest = week.weekStart === numToStr(latestMonNum)
+                const isLatest = !viewingDoc && week.weekStart === numToStr(latestMonNum)
                 return (
                   <div key={week.weekStart} className="rounded-lg border border-border overflow-hidden">
                     <button onClick={() => toggleWeek(week.weekStart)}
@@ -1486,10 +1691,10 @@ export default function TimesheetGuidelineTab() {
                       {isOpen ? <ChevronDown size={14} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} className="text-muted flex-shrink-0" />}
                       <span className="text-sm font-semibold text-gray-800">{week.label}</span>
                       {isLatest && <span className="pill bg-brand-100 text-brand-700 text-[10px]">이번 주</span>}
-                      {!isSnapshotMode && wNew > 0    && <span className="pill bg-blue-100 text-blue-700 text-[10px]">신규 {wNew}</span>}
-                      {!isSnapshotMode && wCorr > 0   && <span className="pill bg-amber-100 text-amber-700 text-[10px]">정정 {wCorr}</span>}
-                      {!isSnapshotMode && wManual > 0  && <span className="pill bg-purple-100 text-purple-700 text-[10px]">관리자 {wManual}</span>}
-                      {!isSnapshotMode && wNew === 0 && wCorr === 0 && wManual === 0 && <span className="text-xs text-muted">변경 없음</span>}
+                      {!isSnapshotMode && !viewingDoc && wNew > 0    && <span className="pill bg-blue-100 text-blue-700 text-[10px]">신규 {wNew}</span>}
+                      {!isSnapshotMode && !viewingDoc && wCorr > 0   && <span className="pill bg-amber-100 text-amber-700 text-[10px]">정정 {wCorr}</span>}
+                      {!isSnapshotMode && !viewingDoc && wManual > 0  && <span className="pill bg-purple-100 text-purple-700 text-[10px]">관리자 {wManual}</span>}
+                      {!isSnapshotMode && !viewingDoc && wNew === 0 && wCorr === 0 && wManual === 0 && <span className="text-xs text-muted">변경 없음</span>}
                     </button>
 
                     {isOpen && (
@@ -1512,12 +1717,12 @@ export default function TimesheetGuidelineTab() {
                             </tr>
                           </thead>
                           <tbody>
-                            {filteredPeople.map((person, pi) => {
-                              const codeRows = buildCodeRows(person.id, week.columns, effectiveEntries)
+                            {displayPeople.map((person, pi) => {
+                              const codeRows = buildCodeRows(person.id, week.columns, displayEntries)
                               if (codeRows.length === 0) return null
                               const zebraRow = ZEBRA_ROW[pi % 2]
                               const zebraHdr = ZEBRA_HDR[pi % 2]
-                              const isAddingCode = addCodeState?.personId === person.id && addCodeState.weekStart === week.weekStart
+                              const isAddingCode = !viewingDoc && addCodeState?.personId === person.id && addCodeState.weekStart === week.weekStart
 
                               return (
                                 <Fragment key={person.id}>
@@ -1526,7 +1731,7 @@ export default function TimesheetGuidelineTab() {
                                       <div className="flex items-center gap-2">
                                         <span className="font-semibold text-gray-700 text-xs">{person.name}</span>
                                         <span className="text-[10px] text-muted font-normal">{person.rank}</span>
-                                        {!isSnapshotMode && !isAddingCode && (
+                                        {!isSnapshotMode && !viewingDoc && !isAddingCode && (
                                           <button
                                             onClick={() => setAddCodeState({ personId: person.id, weekStart: week.weekStart, code: '', hours: {} })}
                                             className="ml-auto flex items-center gap-1 text-[10px] text-purple-600 hover:text-purple-800 font-medium">
@@ -1562,7 +1767,7 @@ export default function TimesheetGuidelineTab() {
                                 </Fragment>
                               )
                             })}
-                            {filteredPeople.every(p => buildCodeRows(p.id, week.columns, effectiveEntries).length === 0) && (
+                            {displayPeople.every(p => buildCodeRows(p.id, week.columns, displayEntries).length === 0) && (
                               <tr>
                                 <td colSpan={week.columns.length + 1} className="px-3 py-4 text-center text-xs text-muted">
                                   {nameSearch ? '검색 결과 없음' : '해당 주 데이터 없음'}
@@ -1582,15 +1787,15 @@ export default function TimesheetGuidelineTab() {
           {/* ══ [TSG-10] 사람→주 mode ══════════════════════════════ */}
           {viewMode === 'person-week' && (
             <div className="space-y-2">
-              {filteredPeople.map((person, pi) => {
-                const codeRows = buildCodeRows(person.id, allCols, effectiveEntries)
+              {displayPeople.map((person, pi) => {
+                const codeRows = buildCodeRows(person.id, displayAllCols, displayEntries)
                 if (codeRows.length === 0) return null
                 const isOpen = expandedPeople.has(person.id)
                 const zebraRow = ZEBRA_ROW[pi % 2]
 
-                // Count changes for this person
+                // Count changes for this person (only in live preview mode)
                 let pNew = 0, pCorr = 0, pManual = 0
-                for (const row of codeRows) for (const c of row.cells.values()) {
+                if (!viewingDoc) for (const row of codeRows) for (const c of row.cells.values()) {
                   if (c.changeKind === 'new') pNew++
                   else if (c.changeKind === 'replaced') pCorr++
                   else if (c.changeKind === 'manual') pManual++
@@ -1603,33 +1808,33 @@ export default function TimesheetGuidelineTab() {
                       {isOpen ? <ChevronDown size={14} className="text-muted flex-shrink-0" /> : <ChevronRight size={14} className="text-muted flex-shrink-0" />}
                       <span className="text-sm font-semibold text-gray-800">{person.name}</span>
                       <span className="text-xs text-muted">{person.rank}</span>
-                      {!isSnapshotMode && pNew > 0    && <span className="pill bg-blue-100 text-blue-700 text-[10px]">신규 {pNew}</span>}
-                      {!isSnapshotMode && pCorr > 0   && <span className="pill bg-amber-100 text-amber-700 text-[10px]">정정 {pCorr}</span>}
-                      {!isSnapshotMode && pManual > 0  && <span className="pill bg-purple-100 text-purple-700 text-[10px]">관리자 {pManual}</span>}
+                      {!isSnapshotMode && !viewingDoc && pNew > 0    && <span className="pill bg-blue-100 text-blue-700 text-[10px]">신규 {pNew}</span>}
+                      {!isSnapshotMode && !viewingDoc && pCorr > 0   && <span className="pill bg-amber-100 text-amber-700 text-[10px]">정정 {pCorr}</span>}
+                      {!isSnapshotMode && !viewingDoc && pManual > 0  && <span className="pill bg-purple-100 text-purple-700 text-[10px]">관리자 {pManual}</span>}
                     </button>
 
                     {isOpen && (
                       <div className="overflow-x-auto border-t border-border">
-                        <table style={{ tableLayout: 'fixed', width: `${CODE_COL_W + allCols.length * DAY_COL_W}px` }}>
+                        <table style={{ tableLayout: 'fixed', width: `${CODE_COL_W + displayAllCols.length * DAY_COL_W}px` }}>
                           <colgroup>
                             <col style={{ width: CODE_COL_W }} />
-                            {allCols.map(col => <col key={col.date} style={{ width: DAY_COL_W }} />)}
+                            {displayAllCols.map(col => <col key={col.date} style={{ width: DAY_COL_W }} />)}
                           </colgroup>
                           <thead>
                             {/* Week group header */}
                             <tr className="bg-surface-50 border-b border-border/50">
                               <th rowSpan={2} className="px-3 py-2 text-left text-xs font-medium text-muted sticky left-0 bg-surface-50 z-10 align-middle">코드</th>
-                              {weeks.map(week => (
+                              {displayWeeks.map(week => (
                                 <th key={week.weekStart} colSpan={week.columns.length}
                                   className="py-1 text-center text-[10px] font-medium text-gray-600 border-l border-border/30">
                                   {week.label}
-                                  {week.weekStart === numToStr(latestMonNum) && <span className="ml-1 text-[9px] text-brand-600">●</span>}
+                                  {!viewingDoc && week.weekStart === numToStr(latestMonNum) && <span className="ml-1 text-[9px] text-brand-600">●</span>}
                                 </th>
                               ))}
                             </tr>
                             {/* Day header */}
                             <tr className="bg-surface-50 border-b border-border">
-                              {allCols.map(col => (
+                              {displayAllCols.map(col => (
                                 <th key={col.date} className={['py-1 text-center text-[10px] font-medium border-l border-border/20', col.isHoliday ? 'text-gray-400 bg-gray-50' : 'text-gray-600'].join(' ')}>
                                   {col.label}
                                   {col.isHoliday && <div className="text-[8px] text-gray-400 font-normal">공휴</div>}
@@ -1647,7 +1852,7 @@ export default function TimesheetGuidelineTab() {
                                     {row.isManual && <span className="text-[9px] bg-purple-100 text-purple-700 rounded px-1">관리자</span>}
                                   </span>
                                 </td>
-                                {allCols.map(col => renderCell(person, col, row.code, row.cells.get(col.date), zebraRow))}
+                                {displayAllCols.map(col => renderCell(person, col, row.code, row.cells.get(col.date), zebraRow))}
                               </tr>
                             ))}
                           </tbody>
@@ -1657,7 +1862,7 @@ export default function TimesheetGuidelineTab() {
                   </div>
                 )
               })}
-              {filteredPeople.every(p => buildCodeRows(p.id, allCols, effectiveEntries).length === 0) && (
+              {displayPeople.every(p => buildCodeRows(p.id, displayAllCols, displayEntries).length === 0) && (
                 <div className="px-3 py-8 text-center text-xs text-muted">
                   {nameSearch ? '검색 결과 없음' : '데이터 없음'}
                 </div>

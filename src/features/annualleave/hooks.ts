@@ -84,6 +84,59 @@ export function useDeleteAdjustment() {
   })
 }
 
+// ── timesheet_guideline_documents (TSG-12) ───────────────────
+
+export interface GuidelineDocument {
+  id:           string
+  generated_at: string
+  generated_by: string | null
+  window_start: string
+  window_end:   string
+  content: {
+    entries:  [string, { hours: number; provisional: boolean; existingHours: number | null; kind: string }][]
+    people:   { id: string; name: string; rank: string; status: string; hire_date: string | null; termination_date: string | null }[]
+    windowStart: string
+    windowEnd:   string
+  }
+}
+
+export function useGuidelineDocuments() {
+  return useQuery({
+    queryKey: ['guideline_documents'] as const,
+    queryFn: async (): Promise<GuidelineDocument[]> => {
+      const { data, error } = await (supabase as any)
+        .from('timesheet_guideline_documents')
+        .select('id, generated_at, generated_by, window_start, window_end, content')
+        .order('generated_at', { ascending: false })
+        .limit(100)
+      if (error) throw error
+      return data ?? []
+    },
+  })
+}
+
+export function useSaveGuidelineDocument() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: {
+      window_start: string
+      window_end:   string
+      content:      GuidelineDocument['content']
+    }): Promise<{ id: string; generated_at: string }> => {
+      const { data, error } = await (supabase as any)
+        .from('timesheet_guideline_documents')
+        .insert(input)
+        .select('id, generated_at')
+        .single()
+      if (error) throw error
+      return data
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['guideline_documents'] })
+    },
+  })
+}
+
 // ── Audit helper (fire-and-forget) ───────────────────────────
 
 function logAudit(action: string, table: string, targetId: string) {
