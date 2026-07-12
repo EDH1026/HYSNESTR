@@ -420,7 +420,7 @@ function EditCodeModal({ wi, onClose, onSaved }: { wi: WorkItem; onClose: () => 
   )
 }
 
-function ResetConfirmModal({ dayCount, includesCurrentWeek, onConfirm, onClose }: { dayCount: number; includesCurrentWeek: boolean; onConfirm: () => void; onClose: () => void }) {
+function ResetConfirmModal({ dayCount, onConfirm, onClose }: { dayCount: number; onConfirm: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 bg-black/25 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-xl shadow-xl p-5 w-96 space-y-4" onClick={e => e.stopPropagation()}>
@@ -1595,7 +1595,6 @@ export default function TimesheetGuidelineTab() {
       {showResetModal && (
         <ResetConfirmModal
           dayCount={pastWorkingDays.length}
-          includesCurrentWeek={false}
           onConfirm={handleReset}
           onClose={() => setShowResetModal(false)}
         />
