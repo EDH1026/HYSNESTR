@@ -11,7 +11,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, Play, Download, Save, AlertTriangle, RefreshCw,
   ChevronDown, ChevronRight, Pencil, X, Check, RotateCcw, Plus,
-  BookOpen, Clock, FileText,
+  BookOpen, Clock, FileText, Trash2,
 } from 'lucide-react'
 import { useAllPeople }                       from '@/features/people/hooks'
 import { useAllAssignments }                  from '@/features/timeline/hooks'
@@ -534,6 +534,31 @@ function ResetConfirmModal({ dayCount, onConfirm, onClose }: { dayCount: number;
   )
 }
 
+function ApplyDocConfirmModal({ docAt, onConfirm, onClose }: { docAt: string; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/25 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl p-5 w-96 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3">
+          <Save size={18} className="text-brand-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <h4 className="text-sm font-semibold text-gray-800">저장된 지침 반영</h4>
+            <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
+              <strong>{docAt}</strong>에 저장된 지침을 스냅샷 기준값으로 확정합니다.
+            </p>
+            <p className="text-xs font-medium text-amber-700 mt-2">
+              이 지침을 반영하면 현재 저장된 다른 후보 지침들은 모두 삭제됩니다. 계속할까요?
+            </p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary text-xs py-1" onClick={onClose}>취소</button>
+          <button className="btn-primary text-xs py-1 gap-1" onClick={onConfirm}><Save size={12} /> 반영 실행</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Add-code inline form ───────────────────────────────────────
 
 function AddCodeForm({ state, weekCols, onConfirm, onCancel }: {
@@ -728,10 +753,12 @@ export default function TimesheetGuidelineTab() {
   // [TSG-12] Guideline document save + list + viewer
   const { data: guidelineDocs = [], isLoading: isLoadingDocs } = useGuidelineDocuments()
   const saveDocMutation = useSaveGuidelineDocument()
-  const [showDocList,  setShowDocList]  = useState(false)
-  const [viewingDoc,   setViewingDoc]   = useState<GuidelineDocument | null>(null)
-  const [isSavingDoc,  setIsSavingDoc]  = useState(false)
-  const [docSavedMsg,  setDocSavedMsg]  = useState<string | null>(null)
+  const [showDocList,      setShowDocList]      = useState(false)
+  const [viewingDoc,       setViewingDoc]       = useState<GuidelineDocument | null>(null)
+  const [isSavingDoc,      setIsSavingDoc]      = useState(false)
+  const [docSavedMsg,      setDocSavedMsg]      = useState<string | null>(null)
+  const [showApplyDocModal, setShowApplyDocModal] = useState(false)
+  const [isApplyingDoc,    setIsApplyingDoc]    = useState(false)
 
   // Tracks the dataUpdatedAt timestamp of the last snapshotRows we loaded.
   // Timestamp comparison is safer than reference identity — avoids skipping
@@ -1144,12 +1171,104 @@ export default function TimesheetGuidelineTab() {
       }
       const result = await saveDocMutation.mutateAsync({ window_start: windowStart, window_end: windowEnd, content })
       const at = new Date(result.generated_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+
+      // 5건 초과 시 가장 오래된 것부터 자동 삭제 (항상 최근 5건만 유지)
+      const { data: allDocs } = await (supabase as any)
+        .from('timesheet_guideline_documents')
+        .select('id, generated_at')
+        .order('generated_at', { ascending: true })
+      if (allDocs && allDocs.length > 5) {
+        const toDelete = (allDocs as { id: string }[]).slice(0, allDocs.length - 5).map(d => d.id)
+        await (supabase as any)
+          .from('timesheet_guideline_documents')
+          .delete()
+          .in('id', toDelete)
+        await queryClient.invalidateQueries({ queryKey: ['guideline_documents'] })
+      }
+
       setDocSavedMsg(`저장 완료 — ${at}`)
     } catch (e) {
       setDocSavedMsg(`저장 실패: ${formatError(e)}`)
     } finally {
       setIsSavingDoc(false)
     }
+  }
+
+  // ── [TSG-12] 저장된 지침 반영 (TSG-2③과 동일한 delete-then-insert) ──
+  async function handleApplyDocument() {
+    if (!viewingDoc) return
+    setShowApplyDocModal(false)
+    setIsApplyingDoc(true)
+    setGenError(null)
+    try {
+      const runAt = new Date().toISOString()
+      const docEntries = new Map(viewingDoc.content.entries.map(([k, v]) => [k, v as SnapshotEntry]))
+      const ws = viewingDoc.window_start
+      const we = viewingDoc.window_end
+      const rows: object[] = []
+      for (const [key, entry] of docEntries) {
+        if (entry.kind === 'to_remove') continue
+        if (entry.hours <= 0) continue
+        const [personId, date, code] = parseSnapKey(key)
+        rows.push({
+          person_id: personId, date, code,
+          hours: entry.hours,
+          detail: entry.kind === 'manual_edit' || entry.kind === 'manual_add'
+            ? '(관리자 수정)'
+            : entry.provisional ? '(임시 — 추후 정정 필요)' : null,
+          run_at: runAt,
+        })
+      }
+
+      await deleteSnapshotRange(ws, we)
+      const { error: delOldErr } = await (supabase as any)
+        .from('timesheet_guideline_snapshot')
+        .delete()
+        .lt('date', ws)
+      if (delOldErr) throw delOldErr
+      await batchInsertSnapshot(rows)
+
+      const { count: actualSaved, error: verifyErr } = await (supabase as any)
+        .from('timesheet_guideline_snapshot')
+        .select('*', { count: 'exact', head: true })
+        .gte('date', ws)
+        .lte('date', we)
+      if (verifyErr) throw new Error(`저장 검증 실패: ${formatError(verifyErr)}`)
+      if (actualSaved !== rows.length) {
+        throw new Error(`오류: ${rows.length}건 중 ${actualSaved}건만 저장됨`)
+      }
+
+      // 반영 성공 → 저장된 지침 문서 전체 삭제
+      const { error: delDocErr } = await (supabase as any)
+        .from('timesheet_guideline_documents')
+        .delete()
+        .gte('generated_at', '2000-01-01')
+      if (delDocErr) throw new Error(`지침 문서 삭제 실패: ${formatError(delDocErr)}`)
+
+      await queryClient.invalidateQueries({ queryKey: SNAP_KEY })
+      await queryClient.invalidateQueries({ queryKey: ['guideline_documents'] })
+      setViewingDoc(null)
+      setShowDocList(false)
+      setSavedCount(actualSaved)
+      setSavedAt(new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))
+    } catch (e) {
+      setGenError(formatError(e))
+    } finally {
+      setIsApplyingDoc(false)
+    }
+  }
+
+  // ── [TSG-12] 저장된 지침 문서 개별 삭제 ─────────────────────
+  async function handleDeleteDocument() {
+    if (!viewingDoc) return
+    const { error } = await (supabase as any)
+      .from('timesheet_guideline_documents')
+      .delete()
+      .eq('id', viewingDoc.id)
+    if (error) { setGenError(formatError(error)); return }
+    await queryClient.invalidateQueries({ queryKey: ['guideline_documents'] })
+    setViewingDoc(null)
+    setShowDocList(true)
   }
 
   // ── [3단계] 반영 (TSG-2③, delete-then-insert → 멱등성 보장) ──
@@ -1271,20 +1390,20 @@ export default function TimesheetGuidelineTab() {
   }, [effectiveEntries])
 
   // [TSG-9] Hours validation
+  // v2.77: 저장된 문서 열람 시 displayEntries/People/Weeks 기준으로 계산 (라이브 데이터 영향 없음)
   const [showAlerts, setShowAlerts] = useState(false)
   const hoursAlerts = useMemo(() => {
-    if (!previewed) return []
+    if (!previewed && !viewingDoc) return []
     const alerts: { personName: string; weekLabel: string; workdays: number; totalHours: number }[] = []
-    for (const week of weeks) {
-      for (const person of filteredPeople) {
-        // 그 주의 영업일 중 이 인력의 재직 기간과 겹치는 날만 카운트
+    for (const week of displayWeeks) {
+      for (const person of displayPeople) {
         const workdays = week.columns.filter(c => !c.isHoliday && isEmployedOnDate(person, c.date)).length
-        if (workdays === 0) continue  // 재직 교집합 없음 — 경고 대상 아님
+        if (workdays === 0) continue
         let totalHours = 0
         for (const col of week.columns) {
           if (col.isHoliday) continue
           const prefix = `${person.id}||${col.date}||`
-          for (const [key, entry] of effectiveEntries) {
+          for (const [key, entry] of displayEntries) {
             if (!key.startsWith(prefix)) continue
             if (entry.kind !== 'to_remove' && entry.hours > 0) totalHours += entry.hours
           }
@@ -1295,10 +1414,10 @@ export default function TimesheetGuidelineTab() {
       }
     }
     return alerts
-  }, [previewed, weeks, filteredPeople, effectiveEntries])
+  }, [previewed, viewingDoc, displayWeeks, displayPeople, displayEntries])
 
   // ── Cell render helper ────────────────────────────────────────
-  const anyBusy = isPreviewing || isResetting || isSaving
+  const anyBusy = isPreviewing || isResetting || isSaving || isApplyingDoc
   const isLoading = dataLoading || isLoadingSnapshot
 
   function renderCell(
@@ -1328,7 +1447,7 @@ export default function TimesheetGuidelineTab() {
       editCellState?.date === col.date &&
       editCellState?.code === code
 
-    const canEdit = !isSnapshotMode && c.changeKind !== 'removed'
+    const canEdit = !isSnapshotMode && !viewingDoc && c.changeKind !== 'removed'
 
     return (
       <td
@@ -1384,65 +1503,83 @@ export default function TimesheetGuidelineTab() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
-          <button onClick={() => setShowResetModal(true)} disabled={anyBusy || isLoading}
-            title="최신 주를 제외한 과거 7주를 현재 데이터로 재설정"
-            className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
-            {isResetting
-              ? <><Loader2 size={13} className="animate-spin" />
-                  {resetProgress
-                    ? `${resetProgress.done + 1}/${resetProgress.total} 처리 중…`
-                    : '초기화 중…'}
-                </>
-              : <><RotateCcw size={13} /> 초기화</>}
-          </button>
-
-          <button onClick={handlePreview} disabled={anyBusy || isLoading}
-            className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
-            {isPreviewing
-              ? <><Loader2 size={13} className="animate-spin" />
-                  {resetProgress
-                    ? `${resetProgress.done + 1}/${resetProgress.total} 계산 중…`
-                    : '생성 중…'}
-                </>
-              : previewed
-                ? <><RefreshCw size={13} /> 재생성</>
-                : <><Play size={13} /> 지침 생성</>}
-          </button>
-
-          {/* 저장된 지침 목록 토글 버튼 */}
-          <button onClick={() => { setShowDocList(v => !v); setViewingDoc(null) }}
-            className={`btn-secondary text-xs py-1 gap-1 ${showDocList ? 'bg-brand-50 border-brand-300 text-brand-700' : ''}`}>
-            <BookOpen size={13} /> 저장된 지침 {guidelineDocs.length > 0 ? `(${guidelineDocs.length})` : ''}
-          </button>
-
-          {previewed && !viewingDoc && (
+          {/* 라이브 워크플로우 버튼 — 저장된 지침 열람 중에는 숨김 */}
+          {!viewingDoc && (
             <>
-              <button
-                onClick={() => triggerDownload(
-                  generateGuidelineHtml(displayWeeks, displayPeople, displayEntries, windowStart, windowEnd, todayStr),
-                  `타임시트지침_${todayStr}.html`,
-                )}
-                disabled={anyBusy} className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
-                <Download size={13} /> HTML 저장
-              </button>
-              <button onClick={handleSaveDocument} disabled={anyBusy || isSavingDoc}
+              <button onClick={() => setShowResetModal(true)} disabled={anyBusy || isLoading}
+                title="최신 주를 제외한 과거 7주를 현재 데이터로 재설정"
                 className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
-                {isSavingDoc
-                  ? <><Loader2 size={13} className="animate-spin" /> 저장 중…</>
-                  : <><FileText size={13} /> 이 지침 저장</>}
+                {isResetting
+                  ? <><Loader2 size={13} className="animate-spin" />
+                      {resetProgress
+                        ? `${resetProgress.done + 1}/${resetProgress.total} 처리 중…`
+                        : '초기화 중…'}
+                    </>
+                  : <><RotateCcw size={13} /> 초기화</>}
               </button>
-              <button onClick={handleSave} disabled={isSaving || !hasAnyChange}
-                className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
-                {isSaving
-                  ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
-                  : <><Save size={13} /> {saveRowCount}건 반영</>}
+
+              <button onClick={handlePreview} disabled={anyBusy || isLoading}
+                className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                {isPreviewing
+                  ? <><Loader2 size={13} className="animate-spin" />
+                      {resetProgress
+                        ? `${resetProgress.done + 1}/${resetProgress.total} 계산 중…`
+                        : '생성 중…'}
+                    </>
+                  : previewed
+                    ? <><RefreshCw size={13} /> 재생성</>
+                    : <><Play size={13} /> 지침 생성</>}
               </button>
+
+              <button onClick={() => { setShowDocList(v => !v); setViewingDoc(null) }}
+                className={`btn-secondary text-xs py-1 gap-1 ${showDocList ? 'bg-brand-50 border-brand-300 text-brand-700' : ''}`}>
+                <BookOpen size={13} /> 저장된 지침 {guidelineDocs.length > 0 ? `(${guidelineDocs.length})` : ''}
+              </button>
+
+              {previewed && (
+                <>
+                  <button
+                    onClick={() => triggerDownload(
+                      generateGuidelineHtml(displayWeeks, displayPeople, displayEntries, windowStart, windowEnd, todayStr),
+                      `타임시트지침_${todayStr}.html`,
+                    )}
+                    disabled={anyBusy} className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                    <Download size={13} /> HTML 저장
+                  </button>
+                  <button onClick={handleSaveDocument} disabled={anyBusy || isSavingDoc}
+                    className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                    {isSavingDoc
+                      ? <><Loader2 size={13} className="animate-spin" /> 저장 중…</>
+                      : <><FileText size={13} /> 이 지침 저장</>}
+                  </button>
+                  <button onClick={handleSave} disabled={isSaving || !hasAnyChange}
+                    className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
+                    {isSaving
+                      ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
+                      : <><Save size={13} /> {saveRowCount}건 반영</>}
+                  </button>
+                </>
+              )}
             </>
           )}
 
-          {/* 저장된 지침 열람 중 */}
+          {/* 저장된 지침 열람 전용 버튼 */}
           {viewingDoc && (
             <>
+              <button
+                onClick={() => setShowApplyDocModal(true)}
+                disabled={isApplyingDoc}
+                className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
+                {isApplyingDoc
+                  ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
+                  : <><Save size={13} /> 이 지침 반영</>}
+              </button>
+              <button
+                onClick={handleDeleteDocument}
+                disabled={isApplyingDoc}
+                className="btn-danger text-xs py-1 gap-1 disabled:opacity-40">
+                <Trash2 size={13} /> 삭제
+              </button>
               <button
                 onClick={() => triggerDownload(
                   generateGuidelineHtml(displayWeeks, displayPeople, displayEntries,
@@ -1450,12 +1587,8 @@ export default function TimesheetGuidelineTab() {
                     `타임시트 지침 — ${new Date(viewingDoc.generated_at).toLocaleDateString('ko-KR')}`),
                   `타임시트지침_저장본_${viewingDoc.generated_at.slice(0, 10)}.html`,
                 )}
-                disabled={anyBusy} className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
-                <Download size={13} /> HTML 저장
-              </button>
-              <button onClick={() => { setViewingDoc(null); setShowDocList(true) }}
-                className="btn-secondary text-xs py-1 gap-1">
-                ← 목록으로
+                disabled={isApplyingDoc} className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                <Download size={13} /> HTML 내보내기
               </button>
             </>
           )}
@@ -1642,16 +1775,16 @@ export default function TimesheetGuidelineTab() {
 
             {viewMode === 'week-person' && (
               <button
-                onClick={() => setExpandedWeeks(expandedWeeks.size === weeks.length ? new Set() : new Set(weeks.map(w => w.weekStart)))}
+                onClick={() => setExpandedWeeks(expandedWeeks.size === displayWeeks.length ? new Set() : new Set(displayWeeks.map(w => w.weekStart)))}
                 className="text-xs text-brand-600 hover:underline whitespace-nowrap">
-                {expandedWeeks.size === weeks.length ? '전체 접기' : '전체 펼치기'}
+                {expandedWeeks.size === displayWeeks.length ? '전체 접기' : '전체 펼치기'}
               </button>
             )}
-            {viewMode === 'person-week' && !isSnapshotMode && (
+            {viewMode === 'person-week' && (!isSnapshotMode || viewingDoc) && (
               <button
-                onClick={() => setExpandedPeople(expandedPeople.size === filteredPeople.length ? new Set() : new Set(filteredPeople.map(p => p.id)))}
+                onClick={() => setExpandedPeople(expandedPeople.size === displayPeople.length ? new Set() : new Set(displayPeople.map(p => p.id)))}
                 className="text-xs text-brand-600 hover:underline whitespace-nowrap">
-                {expandedPeople.size === filteredPeople.length ? '전체 접기' : '전체 펼치기'}
+                {expandedPeople.size === displayPeople.length ? '전체 접기' : '전체 펼치기'}
               </button>
             )}
           </div>
@@ -1662,7 +1795,7 @@ export default function TimesheetGuidelineTab() {
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-100" /> 정정(신규 코드)</span>
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-rose-100" /> 정정(이전 코드 삭제)</span>
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-purple-100" /> 관리자 수정</span>
-              <span className="ml-auto text-[10px]">셀 클릭 → 시간 수정 (TSG-8)</span>
+              {!viewingDoc && <span className="ml-auto text-[10px]">셀 클릭 → 시간 수정 (TSG-8)</span>}
             </div>
           )}
 
@@ -1877,6 +2010,13 @@ export default function TimesheetGuidelineTab() {
           dayCount={pastWorkingDays.length}
           onConfirm={handleReset}
           onClose={() => setShowResetModal(false)}
+        />
+      )}
+      {showApplyDocModal && viewingDoc && (
+        <ApplyDocConfirmModal
+          docAt={new Date(viewingDoc.generated_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}
+          onConfirm={handleApplyDocument}
+          onClose={() => setShowApplyDocModal(false)}
         />
       )}
       {editingWi && (
