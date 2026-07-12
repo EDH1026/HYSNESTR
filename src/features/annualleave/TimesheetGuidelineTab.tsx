@@ -998,6 +998,19 @@ export default function TimesheetGuidelineTab() {
         }
       }
 
+      console.log('[TSG handlePreview] entries.size=', entries.size,
+        '| allComputed.size=', allComputed.size,
+        '| snapMap.size=', snapMap.size,
+        '| to_remove=', entries.size - allComputed.size,
+        '| skippedPeople=', skippedPeople.length)
+
+      if (skippedPeople.length > 0) {
+        console.log('[TSG handlePreview] skipped 상세:', skippedPeople.map(p => ({
+          name: p.personName,
+          error: p.error ?? JSON.stringify(p),
+        })))
+      }
+
       setAllEntries(entries)
       setSavedAt(null)
       setSavedCount(0)
