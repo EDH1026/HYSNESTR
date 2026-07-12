@@ -781,21 +781,19 @@ export default function TimesheetGuidelineTab() {
     setResetProgress(null)
 
     try {
-      const targetWorkingDays = pastWorkingDays
-      const pastEnd = numToStr(latestMonNum - 1)   // 이번 주 월요일 전날 (일요일)
+      const targetWorkingDays = allWorkingDays   // 이번 주 포함 전체 창
 
-      // 대상 범위 전체를 먼저 일괄 삭제 — 이전 버전이 남긴 고아 행 포함 정리.
-      // 이번 주(latestMonNum ~)는 범위 밖이므로 절대 삭제되지 않음.
+      // 대상 범위 전체를 먼저 일괄 삭제 (windowStart ~ windowEnd, 이번 주 포함).
       const { error: bulkDelErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .delete()
         .gte('date', windowStart)
-        .lte('date', pastEnd)
+        .lte('date', windowEnd)
       if (bulkDelErr) throw new Error(`대상 범위 일괄 삭제 실패: ${formatError(bulkDelErr)}`)
 
       console.log(
         `[TSG 초기화] 시작 — 대상 ${targetWorkingDays.length}영업일 ` +
-        `(이번 주 제외, 8주 창 이전 주만), ` +
+        `(8주 창 전체, 이번 주 포함), ` +
         `${snapshotPeople.length}명 순차 처리`
       )
 
@@ -830,13 +828,13 @@ export default function TimesheetGuidelineTab() {
         })
         if (rows.length > 0) await batchInsertSnapshot(rows)
 
-        // d. 저장 즉시 재조회 검증 (이번 주 제외 범위)
+        // d. 저장 즉시 재조회 검증
         const { count: actualCount, error: cntErr } = await (supabase as any)
           .from('timesheet_guideline_snapshot')
           .select('*', { count: 'exact', head: true })
           .eq('person_id', person.id)
           .gte('date', windowStart)
-          .lte('date', pastEnd)
+          .lte('date', windowEnd)
         if (cntErr) throw new Error(`[검증 오류] ${person.name} 재조회 실패: ${formatError(cntErr)}`)
 
         const expectedForPerson = computed.size
@@ -847,7 +845,7 @@ export default function TimesheetGuidelineTab() {
             .select('date, code')
             .eq('person_id', person.id)
             .gte('date', windowStart)
-            .lte('date', pastEnd)
+            .lte('date', windowEnd)
             .limit(50000)
           const actualSet = new Set((actualRows ?? []).map((r: any) => `${r.date}|${r.code}`))
           const missingItems: string[] = []
