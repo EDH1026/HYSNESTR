@@ -1077,9 +1077,10 @@ export default function TimesheetGuidelineTab() {
     if (!previewed) return []
     const alerts: { personName: string; weekLabel: string; workdays: number; totalHours: number }[] = []
     for (const week of weeks) {
-      const workdays = week.columns.filter(c => !c.isHoliday).length
-      if (workdays === 0) continue
       for (const person of filteredPeople) {
+        // 그 주의 영업일 중 이 인력의 재직 기간과 겹치는 날만 카운트
+        const workdays = week.columns.filter(c => !c.isHoliday && isEmployedOnDate(person, c.date)).length
+        if (workdays === 0) continue  // 재직 교집합 없음 — 경고 대상 아님
         let totalHours = 0
         for (const col of week.columns) {
           if (col.isHoliday) continue
