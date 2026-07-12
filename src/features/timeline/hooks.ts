@@ -80,10 +80,11 @@ export function useCreateAssignment() {
     mutationFn: async (input: CreateAssignmentInput): Promise<Assignment> => {
       const { data, error } = await supabase
         .from('assignments')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .insert({
           ...input,
           weekend_dates: input.weekend_dates ?? [],
-        })
+        } as any)
         .select()
         .single()
       if (error) throw error
@@ -110,7 +111,8 @@ export function useUpdateAssignment() {
     }: UpdateAssignmentInput & { id: string }): Promise<Assignment> => {
       const { data, error } = await supabase
         .from('assignments')
-        .update(patch)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .update(patch as any)
         .eq('id', id)
         .select()
         .single()

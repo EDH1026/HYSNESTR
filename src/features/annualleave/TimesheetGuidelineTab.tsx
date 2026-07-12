@@ -9,7 +9,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect, Fragment, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Loader2, Play, Download, Save, AlertTriangle, RefreshCw,
+  Loader2, Download, Save, AlertTriangle, RefreshCw,
   ChevronDown, ChevronRight, Pencil, X, Check, RotateCcw, Plus,
   BookOpen, Clock, FileText, Trash2,
 } from 'lucide-react'

@@ -99,7 +99,7 @@ export interface Assignment {
   start: string               // YYYY-MM-DD
   end_date: string            // YYYY-MM-DD
   note: string | null
-  daily_hours: number | null  // Partner 다중 배정 시 하루 투입시간 (TSG-14, PRD v2.78)
+  daily_hours?: number | null  // Partner 다중 배정 시 하루 투입시간 (TSG-14, PRD v2.78)
 }
 
 /**
