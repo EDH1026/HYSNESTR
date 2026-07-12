@@ -45,6 +45,7 @@ function validatePeopleRows(rows: PersonRow[]): RowError[] {
   for (const r of rows) {
     const e: string[] = []
     if (!r.name)                           e.push('이름(name) 필수')
+    else if (r.name !== r.name.normalize('NFC')) e.push('이름 유니코드 정규화 필요 (NFC 아님)')
     if (!r.rank)                           e.push('직급(rank) 필수')
     else if (!VALID_RANKS.has(r.rank))     e.push(`직급 유효값: ${[...VALID_RANKS].join('|')} (입력: "${r.rank}")`)
     if (r.lpn && !LPN_RE.test(r.lpn))     e.push(`LPN 형식: 5자리 숫자 (입력: "${r.lpn}")`)
@@ -125,7 +126,7 @@ async function commitPeople(rows: PersonRow[], upsertOnLPN: boolean): Promise<Co
 
   for (const r of rows) {
     const payload: Record<string, unknown> = {
-      name:             r.name,
+      name:             r.name.trim().normalize('NFC'),
       rank:             r.rank as Rank,
       role:             r.role  || '',
       lpn:              r.lpn   || null,

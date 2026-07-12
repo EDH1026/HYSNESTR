@@ -60,7 +60,7 @@ export default function PersonModal({ person, readOnly, onClose }: Props) {
     e.preventDefault()
     setErr(null)
     const payload = {
-      name:             form.name,
+      name:             form.name.trim().normalize('NFC'),
       rank:             form.rank,
       role:             form.role,
       lpn:              form.lpn.trim() || null,
