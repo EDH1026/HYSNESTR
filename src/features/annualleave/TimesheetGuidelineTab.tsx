@@ -582,7 +582,7 @@ export default function TimesheetGuidelineTab() {
   // ── Snapshot query (TSG-2⑥) ───────────────────────────────────
   const SNAP_KEY = ['tsg_snapshot_v2', windowStart, windowEnd] as const
 
-  const { data: snapshotRows, isLoading: isLoadingSnapshot } = useQuery({
+  const { data: snapshotRows, isLoading: isLoadingSnapshot, dataUpdatedAt } = useQuery({
     queryKey: SNAP_KEY,
     queryFn:  async () => {
       const { data, error } = await (supabase as any)
@@ -636,24 +636,24 @@ export default function TimesheetGuidelineTab() {
     setExpandedPeople(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
   }, [])
 
-  // Tracks the last snapshotRows reference we loaded into allEntries.
-  // Using reference identity (not a boolean) so background refetches after
-  // handleReset always trigger a re-sync from the fresh DB data. (v2.61)
-  const lastLoadedSnapRef = useRef<typeof snapshotRows>(undefined)
+  // Tracks the dataUpdatedAt timestamp of the last snapshotRows we loaded.
+  // Timestamp comparison is safer than reference identity — avoids skipping
+  // a real refetch if TanStack Query happens to reuse the same array reference.
+  const lastLoadedAtRef = useRef<number>(0)
 
   // Load/re-load snapshot into allEntries whenever a new snapshotRows arrives.
   // Guards:
   //  - skip if still loading initial data
-  //  - skip if same reference (no new data)
+  //  - skip if this fetch is not newer than the last one we processed
   //  - skip if user has unsaved manual changes (don't overwrite edits)
   //  - skip if user is viewing a live preview (not snapshot mode)
   useEffect(() => {
     if (dataLoading || isLoadingSnapshot || snapshotRows === undefined) return
-    if (snapshotRows === lastLoadedSnapRef.current) return
+    if (dataUpdatedAt <= lastLoadedAtRef.current) return
     if (manualChanges.size > 0) return
     if (isPreviewing) return
     if (previewed && !isSnapshotMode) return   // user is reviewing preview results
-    lastLoadedSnapRef.current = snapshotRows
+    lastLoadedAtRef.current = dataUpdatedAt
     if (snapshotRows.length === 0) return
     const entries = new Map<string, SnapshotEntry>()
     for (const row of snapshotRows) {
@@ -668,7 +668,7 @@ export default function TimesheetGuidelineTab() {
     setPreviewed(true)
     setIsSnapshotMode(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshotRows, dataLoading, isLoadingSnapshot, manualChanges.size, isPreviewing, previewed, isSnapshotMode])
+  }, [dataUpdatedAt, snapshotRows, dataLoading, isLoadingSnapshot, manualChanges.size, isPreviewing, previewed, isSnapshotMode])
 
   // Accordion: expand first 2 weeks after preview
   const [expandedWeeks, setExpandedWeeks] = useState<Set<string>>(new Set())
@@ -883,7 +883,7 @@ export default function TimesheetGuidelineTab() {
       setManualChanges(new Map())
       setPreviewed(true)
       setIsSnapshotMode(true)
-      lastLoadedSnapRef.current = snapshotRows
+      lastLoadedAtRef.current = dataUpdatedAt   // 현재 시점 타임스탬프 고정 — 이후 refetch만 통과
 
       await queryClient.invalidateQueries({ queryKey: SNAP_KEY })
       setResetMsg(`초기화 완료 — ${totalSaved}건 저장 · ${snapshotPeople.length}명 처리`)
@@ -1009,8 +1009,9 @@ export default function TimesheetGuidelineTab() {
 
       await batchInsertSnapshot(rows)
 
-      void queryClient.invalidateQueries({ queryKey: SNAP_KEY })
+      await queryClient.invalidateQueries({ queryKey: SNAP_KEY })
       setManualChanges(new Map())
+      setIsSnapshotMode(true)   // 반영 완료 → 스냅샷 모드로 전환, useEffect가 새 데이터를 로드할 수 있게
       setSavedCount(rows.length)
       setSavedAt(new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }))
     } catch (e) {
