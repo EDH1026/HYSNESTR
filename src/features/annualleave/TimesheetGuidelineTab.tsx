@@ -781,9 +781,12 @@ export default function TimesheetGuidelineTab() {
     setResetProgress(null)
 
     try {
-      const targetWorkingDays = allWorkingDays   // 이번 주 포함 전체 창
+      // 삭제: windowEnd까지(이번 주 포함) — 낡은 반영 데이터 잔존 방지
+      // 재계산: pastWorkingDays(이번 주 제외) — 이번 주는 빈 칸으로 남김
+      const pastEnd        = numToStr(latestMonNum - 1)
+      const thisWeekStart  = numToStr(latestMonNum)
+      const targetWorkingDays = pastWorkingDays
 
-      // 대상 범위 전체를 먼저 일괄 삭제 (windowStart ~ windowEnd, 이번 주 포함).
       const { error: bulkDelErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .delete()
@@ -792,8 +795,8 @@ export default function TimesheetGuidelineTab() {
       if (bulkDelErr) throw new Error(`대상 범위 일괄 삭제 실패: ${formatError(bulkDelErr)}`)
 
       console.log(
-        `[TSG 초기화] 시작 — 대상 ${targetWorkingDays.length}영업일 ` +
-        `(8주 창 전체, 이번 주 포함), ` +
+        `[TSG 초기화] 시작 — 삭제 범위 ${windowStart}~${windowEnd}, ` +
+        `재계산 범위 ${windowStart}~${pastEnd} (${targetWorkingDays.length}영업일), ` +
         `${snapshotPeople.length}명 순차 처리`
       )
 
@@ -828,24 +831,24 @@ export default function TimesheetGuidelineTab() {
         })
         if (rows.length > 0) await batchInsertSnapshot(rows)
 
-        // d. 저장 즉시 재조회 검증
-        const { count: actualCount, error: cntErr } = await (supabase as any)
+        // d-1. 재계산 범위(windowStart ~ pastEnd) 검증: 기대 행수와 일치하는지
+        const { count: pastCount, error: cntErr } = await (supabase as any)
           .from('timesheet_guideline_snapshot')
           .select('*', { count: 'exact', head: true })
           .eq('person_id', person.id)
           .gte('date', windowStart)
-          .lte('date', windowEnd)
+          .lte('date', pastEnd)
         if (cntErr) throw new Error(`[검증 오류] ${person.name} 재조회 실패: ${formatError(cntErr)}`)
 
         const expectedForPerson = computed.size
-        if (actualCount !== expectedForPerson) {
+        if (pastCount !== expectedForPerson) {
           // e. 즉시 중단 — 누락 날짜·코드 식별
           const { data: actualRows } = await (supabase as any)
             .from('timesheet_guideline_snapshot')
             .select('date, code')
             .eq('person_id', person.id)
             .gte('date', windowStart)
-            .lte('date', windowEnd)
+            .lte('date', pastEnd)
             .limit(50000)
           const actualSet = new Set((actualRows ?? []).map((r: any) => `${r.date}|${r.code}`))
           const missingItems: string[] = []
@@ -854,11 +857,23 @@ export default function TimesheetGuidelineTab() {
             if (!actualSet.has(`${date}|${code}`)) missingItems.push(`${date}(${code})`)
           }
           throw new Error(
-            `[검증 실패] ${person.name}: 기대 ${expectedForPerson}행, 실제 ${actualCount}행` +
+            `[검증 실패] ${person.name}: 기대 ${expectedForPerson}행, 실제 ${pastCount}행` +
             (missingItems.length > 0
               ? ` — 누락: ${missingItems.slice(0, 5).join(', ')}${missingItems.length > 5 ? ` 외 ${missingItems.length - 5}건` : ''}`
               : '')
           )
+        }
+
+        // d-2. 이번 주(thisWeekStart ~ windowEnd) 행이 0개인지 검증
+        const { count: thisWeekCount, error: twErr } = await (supabase as any)
+          .from('timesheet_guideline_snapshot')
+          .select('*', { count: 'exact', head: true })
+          .eq('person_id', person.id)
+          .gte('date', thisWeekStart)
+          .lte('date', windowEnd)
+        if (twErr) throw new Error(`[검증 오류] ${person.name} 이번 주 재조회 실패: ${formatError(twErr)}`)
+        if (thisWeekCount !== 0) {
+          throw new Error(`[검증 실패] ${person.name}: 이번 주 행이 ${thisWeekCount}개 남아있음 (0이어야 함)`)
         }
 
         for (const [key, comp] of computed) {
