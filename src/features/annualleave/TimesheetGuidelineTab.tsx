@@ -247,6 +247,16 @@ async function batchInsertSnapshot(rows: object[], batchSize = 200): Promise<voi
   }
 }
 
+async function deletePersonSnapshot(personId: string, gte: string, lte: string): Promise<void> {
+  const { error } = await (supabase as any)
+    .from('timesheet_guideline_snapshot')
+    .delete()
+    .eq('person_id', personId)
+    .gte('date', gte)
+    .lte('date', lte)
+  if (error) throw error
+}
+
 // ── HTML export ────────────────────────────────────────────────
 
 function generateGuidelineHtml(
@@ -553,6 +563,34 @@ export default function TimesheetGuidelineTab() {
     [allPeople, windowStart, windowEnd]
   )
 
+  // v2.66 §6: 동명이인 person_id 중복 점검.
+  // 이름 끝에 숫자 접미사가 붙은 인력을 찾아 기본 이름별로 그룹화하고,
+  // 같은 그룹 내 person_id 중복 여부를 확인한다.
+  const duplicatePersonIdWarnings = useMemo(() => {
+    const baseMap = new Map<string, Person[]>()
+    for (const p of allPeople) {
+      const m = p.name.trim().match(/^(.*?)(\d+)$/)
+      if (!m) continue
+      const base = m[1].trim()
+      if (!base) continue
+      if (!baseMap.has(base)) baseMap.set(base, [])
+      baseMap.get(base)!.push(p)
+    }
+    const duplicates: { baseName: string; people: Person[] }[] = []
+    for (const [baseName, people] of baseMap) {
+      const uniqueIds = new Set(people.map(p => p.id))
+      if (uniqueIds.size < people.length) {
+        duplicates.push({ baseName, people })
+        console.error(`[TSG 동명이인 경고] ${baseName}: person_id 중복 발견! ` +
+          people.map(p => `${p.name}=${p.id.slice(0, 8)}`).join(', '))
+      } else {
+        console.log(`[TSG 동명이인 확인] ${baseName}: ` +
+          people.map(p => `${p.name}(${p.id.slice(0, 8)})`).join(', ') + ' — person_id 고유 ✓')
+      }
+    }
+    return duplicates
+  }, [allPeople])
+
   // ── Snapshot query (TSG-2⑥) ───────────────────────────────────
   const SNAP_KEY = ['tsg_snapshot_v2', windowStart, windowEnd] as const
 
@@ -590,6 +628,7 @@ export default function TimesheetGuidelineTab() {
 
   // ── State ─────────────────────────────────────────────────────
   const isResettingRef = useRef(false)   // in-flight guard; survives re-renders (v2.61)
+  const [resetProgress, setResetProgress] = useState<{ current: string; done: number; total: number } | null>(null)
   const [isPreviewing,   setIsPreviewing]   = useState(false)
   const [isResetting,    setIsResetting]    = useState(false)
   const [isSaving,       setIsSaving]       = useState(false)
@@ -686,80 +725,73 @@ export default function TimesheetGuidelineTab() {
     return out
   }, [allEntries, manualChanges])
 
-  // ── Shared: TSG-1 compute for given days ─────────────────────
-  // TSG-2 핵심 불변식: 스냅샷·과거 수동 이력 참조 없음 — 라이브 데이터만 사용
-  // v2.59: per-row try-catch (에러를 삼키지 않고 로그 + 화면 노출),
-  //        per-date P-1 check (hire_date/termination_date 범위 이탈 날짜 제외)
-  function computeCodes(days: string[]): {
-    computed:   Map<string, { hours: number; provisional: boolean }>
-    rowErrors:  { personName: string; personId: string; date: string; error: string }[]
-    skippedPeople: { personName: string; personId: string; error: string }[]
-  } {
-    const byPerson = {
-      asgn: new Map<string, typeof allAssignments>(),
-      accr: new Map<string, typeof allAccruals>(),
-      adj:  new Map<string, typeof allAdjustments>(),
-    }
+  // ── Shared: TSG-1 per-person compute helpers (v2.66) ──────────
+  // TSG-2 핵심 불변식: 스냅샷·과거 수동 이력 참조 없음 — 라이브 데이터만 사용.
+  // v2.66: 일괄 처리 제거 → 인력별 순차 처리를 위해 두 함수로 분리.
+
+  function buildByPersonMaps() {
+    const asgn = new Map<string, typeof allAssignments>()
+    const accr = new Map<string, typeof allAccruals>()
+    const adj  = new Map<string, typeof allAdjustments>()
     for (const a of allAssignments) {
-      if (!byPerson.asgn.has(a.person_id)) byPerson.asgn.set(a.person_id, [])
-      byPerson.asgn.get(a.person_id)!.push(a)
+      if (!asgn.has(a.person_id)) asgn.set(a.person_id, [])
+      asgn.get(a.person_id)!.push(a)
     }
     for (const a of allAccruals) {
-      if (!byPerson.accr.has(a.person_id)) byPerson.accr.set(a.person_id, [])
-      byPerson.accr.get(a.person_id)!.push(a)
+      if (!accr.has(a.person_id)) accr.set(a.person_id, [])
+      accr.get(a.person_id)!.push(a)
     }
     for (const a of allAdjustments) {
-      if (!byPerson.adj.has(a.person_id)) byPerson.adj.set(a.person_id, [])
-      byPerson.adj.get(a.person_id)!.push(a)
+      if (!adj.has(a.person_id)) adj.set(a.person_id, [])
+      adj.get(a.person_id)!.push(a)
     }
-
-    const computed    = new Map<string, { hours: number; provisional: boolean }>()
-    const rowErrors:  { personName: string; personId: string; date: string; error: string }[] = []
-    const skippedPeople: { personName: string; personId: string; error: string }[] = []
-
-    for (const person of snapshotPeople) {
-      const pa = byPerson.asgn.get(person.id) ?? []
-      const pc = byPerson.accr.get(person.id) ?? []
-      const pj = byPerson.adj.get(person.id)  ?? []
-
-      // per-person: computeLedger can throw for unusual assignment/accrual state
-      let ledger: ReturnType<typeof computeLedger>
-      try {
-        ledger = computeLedger(person.id, { workItems: allWorkItems, assignments: pa, accruals: pc, isHoliday, today: windowEndNum })
-      } catch (e) {
-        const msg = formatError(e)
-        console.error(`[TSG 초기화 오류] computeLedger — ${person.name} (${person.id}): ${msg}`, e)
-        skippedPeople.push({ personName: person.name, personId: person.id, error: msg })
-        continue  // skip all dates for this person, log and move on
-      }
-
-      const ctx: ResolveContext = { allPeople, assignments: pa, allAssignments, workItems: allWorkItems, isHoliday, ledger, adjustments: pj, hireDate: person.hire_date }
-
-      for (const dateStr of days) {
-        // P-1 per-date employment validity (v2.59 root cause fix)
-        // 'upcoming' people (hire_date > dateStr) and terminated people
-        // (termination_date < dateStr) must not generate snapshot rows for out-of-range dates.
-        if (!isEmployedOnDate(person, dateStr)) continue
-
-        try {
-          const result = resolveTimesheetCode(person, dateStr, ctx)
-          computed.set(snapKey(person.id, dateStr, result.code), { hours: 8, provisional: result.provisional ?? false })
-        } catch (e) {
-          const msg = formatError(e)
-          console.error(`[TSG 초기화 오류] resolveTimesheetCode — ${person.name} (${person.id}) ${dateStr}: ${msg}`, e)
-          rowErrors.push({ personName: person.name, personId: person.id, date: dateStr, error: msg })
-          // Insert an error-code row so the (person, date) slot is NOT silently missing.
-          computed.set(snapKey(person.id, dateStr, '(계산오류)'), { hours: 0, provisional: true })
-        }
-      }
-    }
-
-    return { computed, rowErrors, skippedPeople }
+    return { asgn, accr, adj }
   }
 
-  // ── [1단계] 초기화 with diagnostics ──────────────────────────
+  function computeCodesForPerson(
+    person: Person,
+    days:   string[],
+    maps:   ReturnType<typeof buildByPersonMaps>,
+  ): {
+    computed:    Map<string, { hours: number; provisional: boolean }>
+    rowErrors:   { date: string; error: string }[]
+    ledgerError: string | null
+  } {
+    const pa = maps.asgn.get(person.id) ?? []
+    const pc = maps.accr.get(person.id) ?? []
+    const pj = maps.adj.get(person.id)  ?? []
+
+    let ledger: ReturnType<typeof computeLedger>
+    try {
+      ledger = computeLedger(person.id, { workItems: allWorkItems, assignments: pa, accruals: pc, isHoliday, today: windowEndNum })
+    } catch (e) {
+      const msg = formatError(e)
+      console.error(`[TSG computeLedger 오류] ${person.name} (${person.id}): ${msg}`, e)
+      return { computed: new Map(), rowErrors: [], ledgerError: msg }
+    }
+
+    const ctx: ResolveContext = { allPeople, assignments: pa, allAssignments, workItems: allWorkItems, isHoliday, ledger, adjustments: pj, hireDate: person.hire_date }
+    const computed  = new Map<string, { hours: number; provisional: boolean }>()
+    const rowErrors: { date: string; error: string }[] = []
+
+    for (const dateStr of days) {
+      if (!isEmployedOnDate(person, dateStr)) continue
+      try {
+        const result = resolveTimesheetCode(person, dateStr, ctx)
+        computed.set(snapKey(person.id, dateStr, result.code), { hours: 8, provisional: result.provisional ?? false })
+      } catch (e) {
+        const msg = formatError(e)
+        console.error(`[TSG resolveTimesheetCode 오류] ${person.name} (${person.id}) ${dateStr}: ${msg}`, e)
+        rowErrors.push({ date: dateStr, error: msg })
+        computed.set(snapKey(person.id, dateStr, '(계산오류)'), { hours: 0, provisional: true })
+      }
+    }
+
+    return { computed, rowErrors, ledgerError: null }
+  }
+
+  // ── [1단계] 초기화 — 인력별 순차 처리 (v2.66) ─────────────────
   async function handleReset() {
-    // v2.61: concurrent execution guard — prevents overlapping resets
     if (isResettingRef.current) return
     isResettingRef.current = true
 
@@ -768,13 +800,10 @@ export default function TimesheetGuidelineTab() {
     setGenError(null)
     setResetMsg(null)
     setDiagMessage(null)
+    setResetProgress(null)
 
     try {
-      // ── v2.62: Dynamic target range ──────────────────────────────
-      // (a) dates that already have snapshot rows in the 8-week window
-      // (b) past working days with no snapshot rows (bootstrap targets)
-      // Target = (a) ∪ (b)
-      // Current week is excluded ONLY when it has never been saved ("반영").
+      // v2.62: dynamic target range — saved dates ∪ unsaved past dates
       const { data: savedDateRows, error: fetchSavedErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .select('date')
@@ -784,154 +813,110 @@ export default function TimesheetGuidelineTab() {
       if (fetchSavedErr) throw new Error(`스냅샷 날짜 조회 실패: ${formatError(fetchSavedErr)}`)
 
       const savedDates = new Set<string>((savedDateRows ?? []).map((r: any) => r.date as string))
-
-      // If any working day in the current week is saved, include the whole current week.
       const currentWeekEverSaved = [...currentWeekWorkingDaySet].some(d => savedDates.has(d))
       const targetWorkingDays = allWorkingDays.filter(d =>
         !currentWeekWorkingDaySet.has(d) || currentWeekEverSaved
       )
 
-      const targetEnd = targetWorkingDays.length > 0
-        ? targetWorkingDays[targetWorkingDays.length - 1]
-        : numToStr(latestMonNum - 1)
-
-      // v2.63 diagnostic: log any person whose effective day count differs from
-      // the full target. This surfaces hire_date / termination_date mismatches
-      // early so the root cause is visible in the console before any DB writes.
-      // Also checks for numeric-suffix names (potential duplicate person_id issues).
-      const fullDayCount = targetWorkingDays.length
-      const numericSuffixRe = /\d+$/
-      for (const p of snapshotPeople) {
-        const personDays = targetWorkingDays.filter(d => isEmployedOnDate(p, d))
-        const isShort = personDays.length < fullDayCount
-        const hasNumSuffix = numericSuffixRe.test(p.name.trim())
-        if (isShort || hasNumSuffix) {
-          const firstMissing = isShort ? targetWorkingDays.find(d => !personDays.includes(d)) : undefined
-          const reason = isShort
-            ? (p.status === 'resigned' && p.termination_date
-                ? `termination_date=${p.termination_date}`
-                : p.status === 'upcoming' && p.hire_date
-                  ? `hire_date=${p.hire_date}`
-                  : '이유불명(DB 확인 필요)')
-            : '이름 접미사 숫자 — 동명이인 여부 확인 필요'
-          console.warn(
-            `[TSG 초기화 진단] ${p.name} (id=${p.id}): ` +
-            `대상일 ${personDays.length}/${fullDayCount} ` +
-            `status=${p.status} hire_date=${p.hire_date ?? 'null'} ` +
-            `termination_date=${p.termination_date ?? 'null'} ` +
-            `첫 누락일=${firstMissing ?? '없음'} 원인=${reason}`
-          )
-        }
-      }
-
-      const expectedCount = snapshotPeople.reduce((sum, p) =>
-        sum + targetWorkingDays.filter(d => isEmployedOnDate(p, d)).length, 0)
       console.log(
         `[TSG 초기화] 시작 — 대상 ${targetWorkingDays.length}영업일 ` +
         `(최신 주 ${currentWeekEverSaved ? '포함' : '제외'}), ` +
-        `기대 행수: ${expectedCount} (snapshotPeople ${snapshotPeople.length}명 × P-1 per-date)`
+        `${snapshotPeople.length}명 순차 처리`
       )
 
-      const { computed, rowErrors, skippedPeople } = computeCodes(targetWorkingDays)
+      const maps  = buildByPersonMaps()
+      const runAt = new Date().toISOString()
+      const allComputedEntries = new Map<string, SnapshotEntry>()
+      const diagLines: string[] = []
+      let totalSaved = 0
 
-      // Expose TSG-1 errors before DB operations so they're visible even if insert fails
-      if (rowErrors.length > 0 || skippedPeople.length > 0) {
-        const lines: string[] = []
-        if (skippedPeople.length > 0) {
-          lines.push(`computeLedger 실패 ${skippedPeople.length}명:`)
-          skippedPeople.forEach(s => lines.push(`  • ${s.personName}: ${s.error}`))
+      for (let i = 0; i < snapshotPeople.length; i++) {
+        const person = snapshotPeople[i]
+        setResetProgress({ current: person.name, done: i, total: snapshotPeople.length })
+
+        // b. 이 인력의 대상 영업일 (P-1 재직 판정)
+        const personDays = targetWorkingDays.filter(d => isEmployedOnDate(person, d))
+
+        const { computed, rowErrors, ledgerError } = computeCodesForPerson(person, personDays, maps)
+
+        if (ledgerError) {
+          diagLines.push(`• ${person.name}: computeLedger 실패 — ${ledgerError}`)
+          continue  // DB 행 건드리지 않고 다음 인력으로
         }
         if (rowErrors.length > 0) {
-          lines.push(`resolveTimesheetCode 실패 ${rowErrors.length}건:`)
-          rowErrors.slice(0, 10).forEach(r => lines.push(`  • ${r.personName} ${r.date}: ${r.error}`))
-          if (rowErrors.length > 10) lines.push(`  … 외 ${rowErrors.length - 10}건 (콘솔 확인)`)
+          diagLines.push(`• ${person.name}: 날짜별 오류 ${rowErrors.length}건 (콘솔 참조)`)
+          console.warn(`[TSG 초기화] ${person.name} 날짜별 오류:`, rowErrors)
         }
-        console.warn('[TSG 초기화 TSG-1 오류]', { rowErrors, skippedPeople })
-        setDiagMessage(`[TSG-1 오류 ${rowErrors.length + skippedPeople.length}건]\n${lines.join('\n')}`)
-      }
 
-      const runAt = new Date().toISOString()
-      const rows = [...computed.entries()].map(([key, comp]) => {
-        const [personId, date, code] = parseSnapKey(key)
-        return { person_id: personId, date, code, hours: comp.hours, detail: comp.provisional ? '(임시)' : null, run_at: runAt }
-      })
-      console.log(`[TSG 초기화] 계산 완료 — ${rows.length}행 생성 (기대 ${expectedCount}행)`)
+        // a. 이 인력의 창 전체 기존 행 삭제
+        await deletePersonSnapshot(person.id, windowStart, windowEnd)
 
-      // Delete the entire 8-week window then insert only target-day rows.
-      // Deleting beyond targetEnd is safe: non-target current-week days have no rows.
-      await deleteSnapshotRange(windowStart, windowEnd)
-      await batchInsertSnapshot(rows)
+        // c. 계산 결과 저장
+        const rows = [...computed.entries()].map(([key, comp]) => {
+          const [personId, date, code] = parseSnapKey(key)
+          return { person_id: personId, date, code, hours: comp.hours, detail: comp.provisional ? '(임시)' : null, run_at: runAt }
+        })
+        if (rows.length > 0) await batchInsertSnapshot(rows)
 
-      // Diagnostic verification: recount rows and find missing (person, date) pairs
-      let verifiedOk = false
-      const { count: actualCount, error: cntErr } = await (supabase as any)
-        .from('timesheet_guideline_snapshot')
-        .select('*', { count: 'exact', head: true })
-        .gte('date', windowStart)
-        .lte('date', targetEnd)
+        // d. 저장 즉시 재조회 검증
+        const { count: actualCount, error: cntErr } = await (supabase as any)
+          .from('timesheet_guideline_snapshot')
+          .select('*', { count: 'exact', head: true })
+          .eq('person_id', person.id)
+          .gte('date', windowStart)
+          .lte('date', windowEnd)
+        if (cntErr) throw new Error(`[검증 오류] ${person.name} 재조회 실패: ${formatError(cntErr)}`)
 
-      if (!cntErr) {
-        verifiedOk = actualCount === expectedCount
-        console.log(`[TSG 초기화 검증] 기대: ${expectedCount}행, 실제: ${actualCount}행`)
-        if (!verifiedOk) {
+        const expectedForPerson = computed.size
+        if (actualCount !== expectedForPerson) {
+          // e. 즉시 중단 — 누락 날짜·코드 식별
           const { data: actualRows } = await (supabase as any)
             .from('timesheet_guideline_snapshot')
-            .select('person_id, date')
+            .select('date, code')
+            .eq('person_id', person.id)
             .gte('date', windowStart)
-            .lte('date', targetEnd)
+            .lte('date', windowEnd)
             .limit(50000)
-          const actualSet = new Set((actualRows ?? []).map((r: any) => `${r.person_id}|${r.date}`))
-          const missing: { name: string; date: string }[] = []
-          for (const p of snapshotPeople) {
-            for (const d of targetWorkingDays) {
-              if (!isEmployedOnDate(p, d)) continue
-              if (!actualSet.has(`${p.id}|${d}`)) missing.push({ name: p.name, date: d })
-            }
+          const actualSet = new Set((actualRows ?? []).map((r: any) => `${r.date}|${r.code}`))
+          const missingItems: string[] = []
+          for (const [key] of computed) {
+            const [, date, code] = parseSnapKey(key)
+            if (!actualSet.has(`${date}|${code}`)) missingItems.push(`${date}(${code})`)
           }
-          if (missing.length > 0) {
-            console.warn('[TSG 초기화 검증] 누락된 행:', missing.slice(0, 20))
-            const preview = missing.slice(0, 5).map(m => `${m.name} ${m.date}`).join(', ')
-            setDiagMessage(prev =>
-              `${prev ? prev + '\n' : ''}[검증] 기대 ${expectedCount}행, 실제 ${actualCount}행 — 누락 ${missing.length}건: ${preview}${missing.length > 5 ? ' …' : ''}`
-            )
-          }
+          throw new Error(
+            `[검증 실패] ${person.name}: 기대 ${expectedForPerson}행, 실제 ${actualCount}행` +
+            (missingItems.length > 0
+              ? ` — 누락: ${missingItems.slice(0, 5).join(', ')}${missingItems.length > 5 ? ` 외 ${missingItems.length - 5}건` : ''}`
+              : '')
+          )
         }
+
+        for (const [key, comp] of computed) {
+          allComputedEntries.set(key, { hours: comp.hours, provisional: comp.provisional, existingHours: comp.hours, kind: 'unchanged' })
+        }
+        totalSaved += rows.length
+        console.log(`[TSG 초기화] ${i + 1}/${snapshotPeople.length} ${person.name} — ${rows.length}행 저장 ✓`)
       }
 
-      // Purge rows older than current window
+      setResetProgress({ current: '완료', done: snapshotPeople.length, total: snapshotPeople.length })
+
+      // 창 밖 구 항목 삭제
       const { error: delOldErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .delete()
         .lt('date', windowStart)
       if (delOldErr) console.warn('[TSG 초기화] 구 항목 삭제 실패:', delOldErr)
 
-      // v2.61: immediately update UI state from computed rows so the table reflects
-      // the reset result without waiting for the cache to refetch.
-      const freshEntries = new Map<string, SnapshotEntry>()
-      for (const [key, comp] of computed.entries()) {
-        freshEntries.set(key, {
-          hours:         comp.hours,
-          provisional:   comp.provisional,
-          existingHours: comp.hours,
-          kind:          'unchanged',
-        })
-      }
-      setAllEntries(freshEntries)
+      if (diagLines.length > 0) setDiagMessage(`[초기화 주의 사항]\n${diagLines.join('\n')}`)
+
+      setAllEntries(allComputedEntries)
       setManualChanges(new Map())
       setPreviewed(true)
       setIsSnapshotMode(true)
-      // Stamp lastLoadedSnapRef with the current (stale) reference so that when the
-      // background refetch below brings a new reference, the effect re-syncs from DB.
       lastLoadedSnapRef.current = snapshotRows
 
-      // await ensures the cache is updated before the loading spinner disappears;
-      // the effect will then re-sync allEntries from the authoritative DB data.
       await queryClient.invalidateQueries({ queryKey: SNAP_KEY })
-
-      const verifyLabel = verifiedOk
-        ? `기대 ${expectedCount}건 일치 ✓`
-        : `기대 ${expectedCount}건, 실제 ${actualCount ?? '?'}건 불일치`
-      setResetMsg(`초기화 완료 — ${rows.length}건 저장 · ${verifyLabel}`)
+      setResetMsg(`초기화 완료 — ${totalSaved}건 저장 · ${snapshotPeople.length}명 처리`)
     } catch (e) {
       setGenError(formatError(e))
     } finally {
@@ -940,7 +925,7 @@ export default function TimesheetGuidelineTab() {
     }
   }
 
-  // ── [2단계] 지침 생성 (순수 계산 → 스냅샷 비교, 미반영) ───────
+  // ── [2단계] 지침 생성 — 인력별 순차 처리 (v2.66) ─────────────
   async function handlePreview() {
     setIsSnapshotMode(false)
     setManualChanges(new Map())
@@ -950,20 +935,40 @@ export default function TimesheetGuidelineTab() {
     setGenError(null)
     setResetMsg(null)
     setDiagMessage(null)
+    setResetProgress(null)
     expandInitRef.current = false
-    try {
-      // TSG-1: pure computation — no snapshot access
-      const { computed, rowErrors, skippedPeople } = computeCodes(allWorkingDays)
 
-      if (rowErrors.length > 0 || skippedPeople.length > 0) {
+    try {
+      const maps       = buildByPersonMaps()
+      const allComputed = new Map<string, { hours: number; provisional: boolean }>()
+      const allRowErrors: { personName: string; personId: string; date: string; error: string }[] = []
+      const skippedPeople: { personName: string; personId: string; error: string }[] = []
+
+      for (let i = 0; i < snapshotPeople.length; i++) {
+        const person = snapshotPeople[i]
+        setResetProgress({ current: person.name, done: i, total: snapshotPeople.length })
+
+        const { computed, rowErrors, ledgerError } = computeCodesForPerson(person, allWorkingDays, maps)
+
+        if (ledgerError) {
+          skippedPeople.push({ personName: person.name, personId: person.id, error: ledgerError })
+          continue
+        }
+        for (const [k, v] of computed) allComputed.set(k, v)
+        for (const e of rowErrors) allRowErrors.push({ personName: person.name, personId: person.id, ...e })
+      }
+
+      setResetProgress({ current: '완료', done: snapshotPeople.length, total: snapshotPeople.length })
+
+      if (allRowErrors.length > 0 || skippedPeople.length > 0) {
         const lines: string[] = []
         if (skippedPeople.length > 0) lines.push(`computeLedger 실패 ${skippedPeople.length}명: ${skippedPeople.map(s => s.personName).join(', ')}`)
-        if (rowErrors.length > 0) lines.push(`resolveTimesheetCode 실패 ${rowErrors.length}건 (콘솔 확인)`)
-        console.warn('[TSG 지침 생성 TSG-1 오류]', { rowErrors, skippedPeople })
+        if (allRowErrors.length > 0) lines.push(`resolveTimesheetCode 실패 ${allRowErrors.length}건 (콘솔 확인)`)
+        console.warn('[TSG 지침 생성 TSG-1 오류]', { allRowErrors, skippedPeople })
         setDiagMessage(lines.join('\n'))
       }
 
-      // Fetch current snapshot for comparison
+      // 현재 스냅샷과 비교
       const { data: snapRows, error: fetchErr } = await (supabase as any)
         .from('timesheet_guideline_snapshot')
         .select('person_id, date, code, hours')
@@ -972,26 +977,21 @@ export default function TimesheetGuidelineTab() {
         .limit(50000)
       if (fetchErr) throw fetchErr
 
-      const snapMap = new Map<string, number>()  // snapKey → hours
+      const snapMap = new Map<string, number>()
       for (const row of snapRows ?? []) {
         snapMap.set(snapKey(row.person_id, row.date, row.code), row.hours ?? 8)
       }
 
-      // Build allEntries by comparing computed vs snapshot
       const entries = new Map<string, SnapshotEntry>()
-
-      // 1. All computed entries
-      for (const [key, comp] of computed) {
+      for (const [key, comp] of allComputed) {
         const existingHours = snapMap.get(key) ?? null
         const kind: SnapshotEntry['kind'] =
-          existingHours === null      ? 'new' :
+          existingHours === null       ? 'new' :
           existingHours !== comp.hours ? 'correction' : 'unchanged'
         entries.set(key, { hours: comp.hours, provisional: comp.provisional, existingHours, kind })
       }
-
-      // 2. Snapshot entries not in computed → to_remove
       for (const [key, hours] of snapMap) {
-        if (!computed.has(key)) {
+        if (!allComputed.has(key)) {
           entries.set(key, { hours: 0, provisional: false, existingHours: hours, kind: 'to_remove' })
         }
       }
@@ -1216,14 +1216,22 @@ export default function TimesheetGuidelineTab() {
             title="최신 주를 제외한 과거 7주를 현재 데이터로 재설정"
             className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
             {isResetting
-              ? <><Loader2 size={13} className="animate-spin" /> 초기화 중…</>
+              ? <><Loader2 size={13} className="animate-spin" />
+                  {resetProgress
+                    ? `${resetProgress.done + 1}/${resetProgress.total} 처리 중…`
+                    : '초기화 중…'}
+                </>
               : <><RotateCcw size={13} /> 초기화</>}
           </button>
 
           <button onClick={handlePreview} disabled={anyBusy || isLoading}
             className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
             {isPreviewing
-              ? <><Loader2 size={13} className="animate-spin" /> 생성 중…</>
+              ? <><Loader2 size={13} className="animate-spin" />
+                  {resetProgress
+                    ? `${resetProgress.done + 1}/${resetProgress.total} 계산 중…`
+                    : '생성 중…'}
+                </>
               : previewed
                 ? <><RefreshCw size={13} /> 재생성</>
                 : <><Play size={13} /> 지침 생성</>}
@@ -1274,6 +1282,36 @@ export default function TimesheetGuidelineTab() {
       {savedAt && (
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
           {savedCount}건 반영됨 — {savedAt}
+        </div>
+      )}
+
+      {/* 실시간 처리 진행 표시 */}
+      {anyBusy && resetProgress && resetProgress.current !== '완료' && (
+        <div className="rounded border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-700 flex items-center gap-2">
+          <Loader2 size={12} className="animate-spin flex-shrink-0" />
+          <span>
+            {resetProgress.done + 1}/{resetProgress.total} — 처리 중: <strong>{resetProgress.current}</strong>
+          </span>
+          <div className="ml-auto h-1.5 w-32 bg-brand-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-brand-500 rounded-full transition-all"
+              style={{ width: `${((resetProgress.done + 1) / resetProgress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 동명이인 person_id 중복 경고 */}
+      {duplicatePersonIdWarnings.length > 0 && (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 space-y-1">
+          <div className="flex items-center gap-1.5 font-semibold">
+            <AlertTriangle size={12} /> person_id 중복 발견 — DB 수정 필요
+          </div>
+          {duplicatePersonIdWarnings.map(({ baseName, people }) => (
+            <div key={baseName} className="text-[11px] text-red-600">
+              {baseName}: {people.map(p => `${p.name}(${p.id.slice(0, 8)})`).join(' / ')}
+            </div>
+          ))}
         </div>
       )}
 
