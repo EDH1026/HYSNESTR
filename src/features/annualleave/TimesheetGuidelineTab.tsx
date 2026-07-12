@@ -634,7 +634,6 @@ export default function TimesheetGuidelineTab() {
     () => computeWeeks(windowStartNum, windowEndNum, isHoliday),
     [windowStartNum, windowEndNum, isHoliday],
   )
-  const allCols = useMemo(() => weeks.flatMap(w => w.columns), [weeks])
 
   // v2.64: people who were active at ANY point in the 8-week window.
   // Includes resigned staff who left mid-window (termination_date ≥ windowStart)
@@ -833,8 +832,6 @@ export default function TimesheetGuidelineTab() {
     if (!viewingDoc) return null
     return sortPeople(viewingDoc.content.people as Person[])
   }, [viewingDoc])
-
-  const displayPeople = viewingDocPeople ?? filteredPeople
 
   const viewingDocWeeks = useMemo((): WeekInfo[] | null => {
     if (!viewingDoc) return null
@@ -1260,6 +1257,8 @@ export default function TimesheetGuidelineTab() {
     }
     return sortPeople(out)
   }, [snapshotPeople, nameSearch])
+
+  const displayPeople = viewingDocPeople ?? filteredPeople
 
   const { newCount, corrCount, manualCount } = useMemo(() => {
     let n = 0, c = 0, m = 0
