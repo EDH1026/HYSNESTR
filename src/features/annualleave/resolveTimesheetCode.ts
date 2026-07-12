@@ -8,8 +8,12 @@
  * 4. 특별휴가 → "특별휴가"
  * 5. 프로젝트휴가·포상·지연보상·지정휴가 → A vs S 비교 (AL-7 ②③④ 재사용)
  * 6. 프로젝트 배정 → engagement_number (없으면 provisional flag)
+ *    Partner + 다중 프로젝트 배정: daily_hours 기준 분할 (TSG-14, PRD v2.78)
  * 7. 제안 배정 → 배정된 Partner의 nbd_code
  * 8. 그 외 → "unassigned"
+ *
+ * 반환: TimesheetCodeResult[] (항상 배열)
+ *   단일 코드면 길이 1, Partner 다중 분할이면 길이 ≥2
  */
 
 import { dateToNum } from '@/lib/date'
@@ -22,6 +26,7 @@ import type { Person, Assignment, WorkItem, AnnualLeaveAdjustment } from '@/type
 export interface TimesheetCodeResult {
   code:         string
   provisional?: boolean   // "대체 코드(추후 정정)" flag
+  hours?:       number    // undefined → caller treats as 8h
 }
 
 // ── Context ───────────────────────────────────────────────────
@@ -49,11 +54,11 @@ export function resolveTimesheetCode(
   _person: Person,
   dateStr: string,
   ctx:     ResolveContext,
-): TimesheetCodeResult {
+): TimesheetCodeResult[] {
   const dayNum = dateToNum(dateStr)
 
   // Priority 1: Holiday
-  if (ctx.isHoliday(dayNum)) return { code: '휴일' }
+  if (ctx.isHoliday(dayNum)) return [{ code: '휴일' }]
 
   // Assignments covering this date
   const onDate = ctx.assignments.filter(a =>
@@ -62,7 +67,7 @@ export function resolveTimesheetCode(
 
   // Priority 2: Unpaid leave
   if (onDate.some(a => a.kind === 'leave' && (a.leave_type === '리프레시' || a.leave_type === '휴직'))) {
-    return { code: '무급휴가' }
+    return [{ code: '무급휴가' }]
   }
 
   // Priority 3: 주말/휴일대체
@@ -73,17 +78,16 @@ export function resolveTimesheetCode(
       for (const d of usage.deductions) {
         if (d.sourceId) {
           const wi = ctx.workItems.find(w => w.id === d.sourceId)
-          if (wi?.engagement_number) return { code: wi.engagement_number }
+          if (wi?.engagement_number) return [{ code: wi.engagement_number }]
         }
       }
     }
-    // Source not traceable — provisional
-    return { code: '(주말대체 원천 미확인)', provisional: true }
+    return [{ code: '(주말대체 원천 미확인)', provisional: true }]
   }
 
   // Priority 4: 특별휴가
   if (onDate.some(a => a.kind === 'leave' && a.leave_type === '특별휴가')) {
-    return { code: '특별휴가' }
+    return [{ code: '특별휴가' }]
   }
 
   // Priority 5: vacation leave types — compare A (statutory) vs S (cumulative ②③④)
@@ -104,21 +108,62 @@ export function resolveTimesheetCode(
     const A = figs.statutoryThisYear
     const S = figs.projectLeaveUsed + figs.designatedFromProject + figs.designatedShortfall
 
-    if (A >= S) return { code: '휴가' }
+    if (A >= S) return [{ code: '휴가' }]
 
-    // A < S: vacation exceeds statutory entitlement → bill to most recent project code
     const code = mostRecentEngagementCode(ctx.assignments, ctx.workItems, dateStr)
-    return code ? { code } : { code: '휴가' }
+    return code ? [{ code }] : [{ code: '휴가' }]
   }
 
   // Priority 6 & 7: work assignment
-  const workAsgn = onDate.find(a => a.kind === 'work')
+  const workAsgns = onDate.filter(a => a.kind === 'work')
+
+  // ── Partner 다중 프로젝트 분할 (TSG-14) ─────────────────────
+  // 조건: Partner + 프로젝트 배정 2개 이상 + 1개 이상에 daily_hours 설정
+  if (_person.rank === 'Partner' && workAsgns.length >= 2) {
+    const projectAsgns = workAsgns.filter(a => {
+      const wi = ctx.workItems.find(w => w.id === a.work_item_id)
+      return wi?.type === 'project'
+    })
+    const withHours = projectAsgns.filter(a => (a.daily_hours ?? 0) > 0)
+
+    if (projectAsgns.length >= 2 && withHours.length > 0) {
+      const results: TimesheetCodeResult[] = []
+      let totalH = 0
+
+      for (const wa of withHours) {
+        const wi = ctx.workItems.find(w => w.id === wa.work_item_id)!
+        const code = wi.engagement_number
+          ?? (wi.temp_engagement_code ?? '(코드 미정)')
+        results.push({
+          code,
+          hours:       wa.daily_hours!,
+          provisional: wi.engagement_number ? undefined : true,
+        })
+        totalH += wa.daily_hours!
+      }
+
+      // 합이 8h 미만이면 차액을 NBD 코드로 보충
+      const remaining = Math.round((8 - totalH) * 10) / 10
+      if (remaining > 0) {
+        results.push({
+          code:        _person.nbd_code ?? '(NBD코드 없음)',
+          hours:       remaining,
+          provisional: _person.nbd_code ? undefined : true,
+        })
+      }
+
+      return results
+    }
+  }
+
+  // ── 단일 배정 경로 ────────────────────────────────────────────
+  const workAsgn = workAsgns[0]
   if (workAsgn?.work_item_id) {
     const wi = ctx.workItems.find(w => w.id === workAsgn.work_item_id)
     if (wi?.type === 'project') {
-      if (wi.engagement_number)    return { code: wi.engagement_number }
-      if (wi.temp_engagement_code) return { code: wi.temp_engagement_code, provisional: true }
-      return { code: '(코드 미정)', provisional: true }
+      if (wi.engagement_number)    return [{ code: wi.engagement_number }]
+      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, provisional: true }]
+      return [{ code: '(코드 미정)', provisional: true }]
     }
     if (wi?.type === 'proposal') {
       const partnerCodes = ctx.allPeople
@@ -131,13 +176,13 @@ export function resolveTimesheetCode(
         .map(p => p.nbd_code)
         .filter((c): c is string => !!c)
 
-      if (partnerCodes.length) return { code: partnerCodes.join(', ') }
-      return { code: '(NBD코드 없음)', provisional: true }
+      if (partnerCodes.length) return [{ code: partnerCodes.join(', ') }]
+      return [{ code: '(NBD코드 없음)', provisional: true }]
     }
   }
 
   // Priority 8: unassigned
-  return { code: 'unassigned' }
+  return [{ code: 'unassigned' }]
 }
 
 // ── Internal helpers ──────────────────────────────────────────

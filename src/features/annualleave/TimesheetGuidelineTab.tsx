@@ -277,6 +277,7 @@ async function fetchAllSnapshotRows(gte: string, lte: string, select = 'person_i
 }
 
 // ── HTML export (TSG-11: interactive accordion + dual-view) ────
+// v2.78: fix sv() 뷰 전환 버그, 기본 전체 접힘, 요약 배지·범례·섹션 배지 추가
 
 function generateGuidelineHtml(
   weeks:       WeekInfo[],
@@ -287,17 +288,27 @@ function generateGuidelineHtml(
   todayStr:    string,
   docTitle?:   string,
 ): string {
-  const generated = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
-  const sorted    = sortPeople(people)
-  const colW      = `width:${DAY_COL_W}px;text-align:center`
-  const tblW      = (nCols: number) => `${CODE_COL_W + nCols * DAY_COL_W}px`
+  const generated       = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+  const sorted          = sortPeople(people)
+  const colW            = `width:${DAY_COL_W}px;text-align:center`
+  const tblW            = (nCols: number) => `${CODE_COL_W + nCols * DAY_COL_W}px`
+  const latestWeekStart = numToStr(weekStart(dateToNum(todayStr)))
+
+  // 전체 변경 건수
+  let htmlNew = 0, htmlCorr = 0, htmlManual = 0
+  for (const e of entries.values()) {
+    if (e.kind === 'new') htmlNew++
+    else if (e.kind === 'correction') htmlCorr++
+    else if (e.kind === 'manual_edit' || e.kind === 'manual_add') htmlManual++
+  }
+  const hasChanges = htmlNew > 0 || htmlCorr > 0 || htmlManual > 0
 
   const CK_STYLE: Record<ChangeKind, string> = {
-    new:       'background:#eff6ff;color:#1d4ed8',
-    replaced:  'background:#fffbeb;color:#b45309',
-    removed:   'background:#fff1f2;color:#e11d48',
+    new:       'background:#dbeafe;color:#1d4ed8',
+    replaced:  'background:#fef3c7;color:#b45309',
+    removed:   'background:#ffe4e6;color:#e11d48',
     unchanged: '',
-    manual:    'background:#f5f3ff;color:#7c3aed',
+    manual:    'background:#f3e8ff;color:#7c3aed',
   }
 
   function cellHtml(col: ColInfo, c: { hours: number; changeKind: ChangeKind } | undefined): string {
@@ -312,9 +323,32 @@ function generateGuidelineHtml(
     return `<td${style}>${escHtml(String(c.hours))}</td>`
   }
 
+  function sectionBadges(n: number, c: number, m: number, isLatest: boolean): string {
+    const parts: string[] = []
+    if (isLatest) parts.push(`<span class="badge badge-latest">이번 주</span>`)
+    if (n > 0)    parts.push(`<span class="badge badge-new">신규 ${n}</span>`)
+    if (c > 0)    parts.push(`<span class="badge badge-corr">정정 ${c}</span>`)
+    if (m > 0)    parts.push(`<span class="badge badge-manual">관리자 ${m}</span>`)
+    return parts.join('')
+  }
+
   // ── 주→사람 view ───────────────────────────────────────────────
   const wpSections = weeks.map((week, wi) => {
-    const sid = `wp${wi}`
+    const sid      = `wp${wi}`
+    const isLatest = week.weekStart === latestWeekStart
+    let wNew = 0, wCorr = 0, wManual = 0
+    for (const p of sorted) {
+      for (const col of week.columns) {
+        if (col.isHoliday) continue
+        const prefix = `${p.id}||${col.date}||`
+        for (const [key, entry] of entries) {
+          if (!key.startsWith(prefix)) continue
+          if (entry.kind === 'new') wNew++
+          else if (entry.kind === 'correction') wCorr++
+          else if (entry.kind === 'manual_edit' || entry.kind === 'manual_add') wManual++
+        }
+      }
+    }
     const colHeaders = week.columns.map(col =>
       `<th class="${col.isHoliday ? 'holiday' : ''}" style="${colW}">${escHtml(col.label)}${col.isHoliday ? '<br><small>공휴일</small>' : ''}</th>`
     ).join('')
@@ -331,8 +365,8 @@ function generateGuidelineHtml(
     })
     if (rows.length === 0) rows.push(`<tr><td colspan="${week.columns.length + 1}" class="empty">해당 항목 없음</td></tr>`)
     return `<section>
-<div class="sec-hdr" onclick="tog('${sid}')"><span>${escHtml(week.label)}</span><span class="arr" id="a-${sid}">▼</span></div>
-<div class="sec-body" id="${sid}"><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
+<div class="sec-hdr" onclick="tog('${sid}')"><span>${escHtml(week.label)}${sectionBadges(wNew, wCorr, wManual, isLatest)}</span><span class="arr" id="a-${sid}">▶</span></div>
+<div class="sec-body closed" id="${sid}"><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
 </section>`
   })
 
@@ -342,6 +376,19 @@ function generateGuidelineHtml(
     const hasAny = weeks.some(w => buildCodeRows(person.id, w.columns, entries).length > 0)
     if (!hasAny) return
     const sid = `pw${pi}`
+    let pNew = 0, pCorr = 0, pManual = 0
+    for (const week of weeks) {
+      for (const col of week.columns) {
+        if (col.isHoliday) continue
+        const prefix = `${person.id}||${col.date}||`
+        for (const [key, entry] of entries) {
+          if (!key.startsWith(prefix)) continue
+          if (entry.kind === 'new') pNew++
+          else if (entry.kind === 'correction') pCorr++
+          else if (entry.kind === 'manual_edit' || entry.kind === 'manual_add') pManual++
+        }
+      }
+    }
     const weekParts: string[] = []
     for (const week of weeks) {
       const codeRows = buildCodeRows(person.id, week.columns, entries)
@@ -356,10 +403,16 @@ function generateGuidelineHtml(
       weekParts.push(`<div class="pw-week"><h4>${escHtml(week.label)}</h4><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${tableRows}</tbody></table></div>`)
     }
     pwSections.push(`<section>
-<div class="sec-hdr" onclick="tog('${sid}')"><span><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></span><span class="arr" id="a-${sid}">▼</span></div>
-<div class="sec-body" id="${sid}">${weekParts.join('')}</div>
+<div class="sec-hdr" onclick="tog('${sid}')"><span><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span>${sectionBadges(pNew, pCorr, pManual, false)}</span><span class="arr" id="a-${sid}">▶</span></div>
+<div class="sec-body closed" id="${sid}">${weekParts.join('')}</div>
 </section>`)
   })
+
+  const summaryHtml = hasChanges
+    ? `<div class="summary">${htmlNew > 0 ? `<span class="badge badge-new">신규 ${htmlNew}건</span>` : ''}${htmlCorr > 0 ? `<span class="badge badge-corr">정정 ${htmlCorr}건</span>` : ''}${htmlManual > 0 ? `<span class="badge badge-manual">관리자 수정 ${htmlManual}건</span>` : ''}</div>`
+    : ''
+
+  const legendHtml = `<div class="legend"><span class="leg-item"><span class="leg-dot" style="background:#dbeafe"></span>신규</span><span class="leg-item"><span class="leg-dot" style="background:#fef3c7"></span>정정(신규 코드)</span><span class="leg-item"><span class="leg-dot" style="background:#ffe4e6"></span>정정(이전 코드 삭제)</span><span class="leg-item"><span class="leg-dot" style="background:#f3e8ff"></span>관리자 수정</span></div>`
 
   return `<!DOCTYPE html>
 <html lang="ko">
@@ -369,13 +422,13 @@ function generateGuidelineHtml(
 <style>
 ${HTML_EXPORT_CSS}
 body{font-family:system-ui,sans-serif;max-width:1400px;margin:0 auto;padding:16px}
-.view-bar{display:flex;gap:8px;margin:12px 0 16px}
+.view-bar{display:flex;gap:8px;margin:8px 0 8px}
 .vbtn{padding:6px 16px;font-size:12px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;background:#f8fafc;color:#64748b}
 .vbtn.on{background:#eff6ff;color:#4f46e5;border-color:#c7d2fe;font-weight:600}
 section{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:8px}
 .sec-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#f8fafc;cursor:pointer;user-select:none;font-size:13px;font-weight:600;color:#1e293b}
 .sec-hdr:hover{background:#eff6ff}
-.arr{font-size:11px;color:#94a3b8;margin-left:8px}
+.arr{font-size:11px;color:#94a3b8;margin-left:8px;flex-shrink:0}
 .sec-body.closed{display:none}
 .person-hdr td{font-size:12px;padding:5px 8px;border-top:2px solid #cbd5e1}
 .rank{font-size:10px;color:#6b7280;font-weight:400}
@@ -388,13 +441,25 @@ section{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom
 table{border-collapse:collapse;font-size:12px}
 td,th{border:1px solid #e2e8f0;padding:4px 6px}
 th{background:#f8fafc;font-weight:500;color:#475569}
+.badge{display:inline-block;border-radius:9999px;padding:1px 8px;font-size:10px;font-weight:500;margin-left:6px;vertical-align:middle}
+.badge-latest{background:#eff6ff;color:#4f46e5}
+.badge-new{background:#dbeafe;color:#1d4ed8}
+.badge-corr{background:#fef3c7;color:#b45309}
+.badge-manual{background:#f3e8ff;color:#7c3aed}
+.summary{display:flex;align-items:center;gap:6px;margin:8px 0 4px;flex-wrap:wrap}
+.summary .badge{margin-left:0;padding:3px 12px;font-size:11px}
+.legend{display:flex;align-items:center;gap:12px;margin:4px 0 12px;flex-wrap:wrap}
+.leg-item{display:flex;align-items:center;gap:4px;font-size:10px;color:#64748b}
+.leg-dot{width:10px;height:10px;border-radius:3px;display:inline-block}
 </style>
 </head>
 <body>
 <header>
   <h1 style="margin:0 0 4px;font-size:20px">${escHtml(docTitle ?? '타임시트 지침')}</h1>
-  <p class="meta" style="color:#64748b;font-size:12px;margin:2px 0">윈도우: ${escHtml(windowStart)} ~ ${escHtml(windowEnd)}</p>
-  <p class="meta" style="color:#64748b;font-size:12px;margin:2px 0">생성: ${escHtml(generated)}</p>
+  <p style="color:#64748b;font-size:12px;margin:2px 0">윈도우: ${escHtml(windowStart)} ~ ${escHtml(windowEnd)}</p>
+  <p style="color:#64748b;font-size:12px;margin:2px 0">생성: ${escHtml(generated)}</p>
+  ${summaryHtml}
+  ${legendHtml}
   <div class="view-bar">
     <button class="vbtn on" id="btn-wp" onclick="sv('wp')">주 → 사람</button>
     <button class="vbtn"    id="btn-pw" onclick="sv('pw')">사람 → 주</button>
@@ -409,21 +474,11 @@ function tog(id){
   if(a)a.textContent=c?'▶':'▼';
 }
 function sv(m){
-  document.getElementById('view-wp').style.display=m==='wp'?'':'none';
-  document.getElementById('view-pw').style.display=m==='pw'?'':'none';
+  document.getElementById('view-wp').style.display=m==='wp'?'block':'none';
+  document.getElementById('view-pw').style.display=m==='pw'?'block':'none';
   document.getElementById('btn-wp').className='vbtn'+(m==='wp'?' on':'');
   document.getElementById('btn-pw').className='vbtn'+(m==='pw'?' on':'');
 }
-window.addEventListener('DOMContentLoaded',function(){
-  ['view-wp','view-pw'].forEach(function(vid){
-    var secs=document.querySelectorAll('#'+vid+'>section');
-    secs.forEach(function(s,i){
-      var body=s.querySelector('.sec-body');
-      var arr=s.querySelector('.arr');
-      if(i>=2){body.classList.add('closed');if(arr)arr.textContent='▶';}
-    });
-  });
-});
 </script>
 </body>
 </html>`
@@ -528,6 +583,28 @@ function ResetConfirmModal({ dayCount, onConfirm, onClose }: { dayCount: number;
         <div className="flex justify-end gap-2">
           <button className="btn-secondary text-xs py-1" onClick={onClose}>취소</button>
           <button className="btn-danger text-xs py-1 gap-1" onClick={onConfirm}><RotateCcw size={12} /> 초기화 실행</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SubmitConfirmModal({ rowCount, onConfirm, onClose }: { rowCount: number; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/25 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl p-5 w-96 space-y-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3">
+          <Save size={18} className="text-brand-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <h4 className="text-sm font-semibold text-gray-800">타임시트 지침 제출</h4>
+            <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
+              <strong>{rowCount}건</strong>을 시스템에 제출합니다. 계속할까요?
+            </p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary text-xs py-1" onClick={onClose}>취소</button>
+          <button className="btn-primary text-xs py-1 gap-1" onClick={onConfirm}><Save size={12} /> 제출</button>
         </div>
       </div>
     </div>
@@ -759,6 +836,7 @@ export default function TimesheetGuidelineTab() {
   const [docSavedMsg,      setDocSavedMsg]      = useState<string | null>(null)
   const [showApplyDocModal, setShowApplyDocModal] = useState(false)
   const [isApplyingDoc,    setIsApplyingDoc]    = useState(false)
+  const [showSubmitModal,  setShowSubmitModal]  = useState(false)
 
   // Tracks the dataUpdatedAt timestamp of the last snapshotRows we loaded.
   // Timestamp comparison is safer than reference identity — avoids skipping
@@ -922,8 +1000,10 @@ export default function TimesheetGuidelineTab() {
     for (const dateStr of days) {
       if (!isEmployedOnDate(person, dateStr)) continue
       try {
-        const result = resolveTimesheetCode(person, dateStr, ctx)
-        computed.set(snapKey(person.id, dateStr, result.code), { hours: 8, provisional: result.provisional ?? false })
+        const results = resolveTimesheetCode(person, dateStr, ctx)
+        for (const r of results) {
+          computed.set(snapKey(person.id, dateStr, r.code), { hours: r.hours ?? 8, provisional: r.provisional ?? false })
+        }
       } catch (e) {
         const msg = formatError(e)
         console.error(`[TSG resolveTimesheetCode 오류] ${person.name} (${person.id}) ${dateStr}: ${msg}`, e)
@@ -1526,9 +1606,7 @@ export default function TimesheetGuidelineTab() {
                         ? `${resetProgress.done + 1}/${resetProgress.total} 계산 중…`
                         : '생성 중…'}
                     </>
-                  : previewed
-                    ? <><RefreshCw size={13} /> 재생성</>
-                    : <><Play size={13} /> 지침 생성</>}
+                  : <><RefreshCw size={13} /> 지침 자동생성</>}
               </button>
 
               <button onClick={() => { setShowDocList(v => !v); setViewingDoc(null) }}
@@ -1552,11 +1630,11 @@ export default function TimesheetGuidelineTab() {
                       ? <><Loader2 size={13} className="animate-spin" /> 저장 중…</>
                       : <><FileText size={13} /> 이 지침 저장</>}
                   </button>
-                  <button onClick={handleSave} disabled={isSaving || !hasAnyChange}
+                  <button onClick={() => setShowSubmitModal(true)} disabled={isSaving || !hasAnyChange}
                     className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
                     {isSaving
-                      ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
-                      : <><Save size={13} /> {saveRowCount}건 반영</>}
+                      ? <><Loader2 size={13} className="animate-spin" /> 제출 중…</>
+                      : <><Save size={13} /> {saveRowCount}건 시스템에 제출</>}
                   </button>
                 </>
               )}
@@ -1618,7 +1696,7 @@ export default function TimesheetGuidelineTab() {
       )}
       {savedAt && (
         <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-          {savedCount}건 반영됨 — {savedAt}
+          {savedCount}건 제출 완료 — {savedAt}
         </div>
       )}
       {docSavedMsg && (
@@ -2010,6 +2088,13 @@ export default function TimesheetGuidelineTab() {
           dayCount={pastWorkingDays.length}
           onConfirm={handleReset}
           onClose={() => setShowResetModal(false)}
+        />
+      )}
+      {showSubmitModal && (
+        <SubmitConfirmModal
+          rowCount={saveRowCount}
+          onConfirm={() => { setShowSubmitModal(false); handleSave() }}
+          onClose={() => setShowSubmitModal(false)}
         />
       )}
       {showApplyDocModal && viewingDoc && (

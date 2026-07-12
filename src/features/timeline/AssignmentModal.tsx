@@ -184,6 +184,7 @@ export default function AssignmentModal({
     end:          state.prefill.endNum   != null ? numToStr(state.prefill.endNum)   : '',
     weekendDates: [] as string[],
     note:         '',
+    dailyHours:   '',
   })
 
   const [form, setForm] = useState(blankForm)
@@ -216,6 +217,7 @@ export default function AssignmentModal({
         end:          a.end_date,
         weekendDates: a.weekend_dates ?? [],
         note:         a.note          ?? '',
+        dailyHours:   a.daily_hours != null ? String(a.daily_hours) : '',
       })
       setDatesLocked(true)  // edit mode: don't auto-fill dates
     }
@@ -302,6 +304,7 @@ export default function AssignmentModal({
       }
     }
 
+    const selectedPerson = people.find(p => p.id === form.personId)
     const base = {
       person_id:    form.personId,
       kind:         form.kind,
@@ -311,6 +314,9 @@ export default function AssignmentModal({
       end_date:     form.end,
       weekend_dates: form.kind === 'work' ? form.weekendDates : [],
       note:         form.note || null,
+      daily_hours:  form.kind === 'work' && selectedPerson?.rank === 'Partner' && form.dailyHours
+        ? (parseFloat(form.dailyHours) || null)
+        : null,
     }
     try {
       // E-5: compute work item expansion (fires mutation inside callback, returns HistoryEntry)
@@ -452,6 +458,25 @@ export default function AssignmentModal({
                 />
               </div>
             </div>
+
+            {/* Partner 하루 투입 시간 (다중 배정 분할용) */}
+            {people.find(p => p.id === form.personId)?.rank === 'Partner' && (
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-700">
+                  하루 투입 시간
+                  <span className="ml-1 text-[10px] text-muted">(다중 배정 시간 분할 — Partner 전용)</span>
+                </label>
+                <input
+                  type="number" min="0.5" max="24" step="0.5"
+                  className="input w-32 text-sm"
+                  value={form.dailyHours}
+                  disabled={effectiveReadOnly}
+                  onChange={e => setForm(f => ({ ...f, dailyHours: e.target.value }))}
+                  placeholder="예: 4"
+                />
+                <p className="mt-0.5 text-[10px] text-muted">설정 시 동일 날짜 다른 배정과 시간 합산. 합계 &lt; 8h이면 NBD로 자동 보충.</p>
+              </div>
+            )}
 
             {/* Weekend actual-workday dates */}
             <div>

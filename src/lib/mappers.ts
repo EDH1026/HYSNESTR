@@ -107,6 +107,7 @@ export function toWorkItem(row: RawWorkItem): WorkItem {
 }
 
 export function toAssignment(row: RawAssignment): Assignment {
+  const r = row as typeof row & { daily_hours?: number | null }
   return {
     id:            row.id,
     person_id:     row.person_id,
@@ -117,6 +118,7 @@ export function toAssignment(row: RawAssignment): Assignment {
     start:         row.start,
     end_date:      row.end_date,
     note:          row.note,
+    daily_hours:   r.daily_hours ?? null,
   }
 }
 
