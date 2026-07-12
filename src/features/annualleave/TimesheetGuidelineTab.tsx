@@ -248,6 +248,32 @@ async function batchInsertSnapshot(rows: object[], batchSize = 200): Promise<voi
 }
 
 
+// ── Pagination helper — works around PostgREST max_rows=1000 ──
+// PostgREST's server-side max_rows caps every response at 1000 rows regardless
+// of the client-side .limit() value. Use explicit .range() pagination instead.
+
+async function fetchAllSnapshotRows(gte: string, lte: string): Promise<{ person_id: string; date: string; code: string; hours: number }[]>
+async function fetchAllSnapshotRows(gte: string, lte: string, select: 'person_id, date, code'): Promise<{ person_id: string; date: string; code: string }[]>
+async function fetchAllSnapshotRows(gte: string, lte: string, select = 'person_id, date, code, hours'): Promise<any[]> {
+  const PAGE = 1000
+  const allRows: any[] = []
+  let from = 0
+  while (true) {
+    const { data, error } = await (supabase as any)
+      .from('timesheet_guideline_snapshot')
+      .select(select)
+      .gte('date', gte)
+      .lte('date', lte)
+      .range(from, from + PAGE - 1)
+    if (error) throw error
+    if (!data || data.length === 0) break
+    allRows.push(...data)
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return allRows
+}
+
 // ── HTML export ────────────────────────────────────────────────
 
 function generateGuidelineHtml(
@@ -584,16 +610,7 @@ export default function TimesheetGuidelineTab() {
 
   const { data: snapshotRows, isLoading: isLoadingSnapshot, dataUpdatedAt } = useQuery({
     queryKey: SNAP_KEY,
-    queryFn:  async () => {
-      const { data, error } = await (supabase as any)
-        .from('timesheet_guideline_snapshot')
-        .select('person_id, date, code, hours')
-        .gte('date', windowStart)
-        .lte('date', windowEnd)
-        .limit(50000)
-      if (error) throw error
-      return (data ?? []) as { person_id: string; date: string; code: string; hours: number }[]
-    },
+    queryFn:  async () => fetchAllSnapshotRows(windowStart, windowEnd),
     enabled:              !dataLoading,
     staleTime:            Infinity,
     refetchOnWindowFocus: false,
@@ -971,16 +988,10 @@ export default function TimesheetGuidelineTab() {
       }
 
       // 현재 스냅샷과 비교
-      const { data: snapRows, error: fetchErr } = await (supabase as any)
-        .from('timesheet_guideline_snapshot')
-        .select('person_id, date, code, hours')
-        .gte('date', windowStart)
-        .lte('date', windowEnd)
-        .limit(50000)
-      if (fetchErr) throw fetchErr
+      const snapRows = await fetchAllSnapshotRows(windowStart, windowEnd)
 
       const snapMap = new Map<string, number>()
-      for (const row of snapRows ?? []) {
+      for (const row of snapRows) {
         snapMap.set(snapKey(row.person_id, row.date, row.code), row.hours ?? 8)
       }
 
@@ -1063,13 +1074,8 @@ export default function TimesheetGuidelineTab() {
       if (verifyErr) throw new Error(`저장 검증 실패: ${formatError(verifyErr)}`)
 
       if (actualSaved !== rows.length) {
-        const { data: savedRows } = await (supabase as any)
-          .from('timesheet_guideline_snapshot')
-          .select('person_id, date, code')
-          .gte('date', windowStart)
-          .lte('date', windowEnd)
-          .limit(50000)
-        const savedSet = new Set((savedRows ?? []).map((r: any) => `${r.person_id}|${r.date}|${r.code}`))
+        const savedRows = await fetchAllSnapshotRows(windowStart, windowEnd, 'person_id, date, code')
+        const savedSet = new Set(savedRows.map(r => `${r.person_id}|${r.date}|${r.code}`))
         const missing: string[] = []
         for (const r of rows as { person_id: string; date: string; code: string }[]) {
           if (!savedSet.has(`${r.person_id}|${r.date}|${r.code}`)) missing.push(`${r.date}(${r.code})`)
