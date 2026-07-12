@@ -791,6 +791,16 @@ export default function TimesheetGuidelineTab() {
 
     try {
       const targetWorkingDays = pastWorkingDays
+      const pastEnd = numToStr(latestMonNum - 1)   // 이번 주 월요일 전날 (일요일)
+
+      // 대상 범위 전체를 먼저 일괄 삭제 — 이전 버전이 남긴 고아 행 포함 정리.
+      // 이번 주(latestMonNum ~)는 범위 밖이므로 절대 삭제되지 않음.
+      const { error: bulkDelErr } = await (supabase as any)
+        .from('timesheet_guideline_snapshot')
+        .delete()
+        .gte('date', windowStart)
+        .lte('date', pastEnd)
+      if (bulkDelErr) throw new Error(`대상 범위 일괄 삭제 실패: ${formatError(bulkDelErr)}`)
 
       console.log(
         `[TSG 초기화] 시작 — 대상 ${targetWorkingDays.length}영업일 ` +
@@ -822,9 +832,6 @@ export default function TimesheetGuidelineTab() {
           console.warn(`[TSG 초기화] ${person.name} 날짜별 오류:`, rowErrors)
         }
 
-        // a. 이 인력의 이전 주까지 기존 행 삭제 (이번 주 행은 건드리지 않음)
-        await deletePersonSnapshot(person.id, windowStart, numToStr(latestMonNum - 1))
-
         // c. 계산 결과 저장
         const rows = [...computed.entries()].map(([key, comp]) => {
           const [personId, date, code] = parseSnapKey(key)
@@ -833,7 +840,6 @@ export default function TimesheetGuidelineTab() {
         if (rows.length > 0) await batchInsertSnapshot(rows)
 
         // d. 저장 즉시 재조회 검증 (이번 주 제외 범위)
-        const pastEnd = numToStr(latestMonNum - 1)
         const { count: actualCount, error: cntErr } = await (supabase as any)
           .from('timesheet_guideline_snapshot')
           .select('*', { count: 'exact', head: true })
