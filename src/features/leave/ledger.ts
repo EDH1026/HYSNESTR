@@ -100,13 +100,17 @@ function fifoSourceAccruals(
     return allAccruals.filter(a => a.type === '특별휴가')
   }
   if (type === '지정휴가') {
+    // LV-8 v2.84: 날짜 오름차순 우선 → 사용일 이전 오래된 적립을 먼저 소진
+    // 같은 날짜는 유형 우선순위(JIEONG_PRIORITY)로 tie-break
     return allAccruals
       .filter(a => JIEONG_SOURCES.has(a.type))
       .sort((a, b) => {
+        const dateCmp = a.date.localeCompare(b.date)
+        if (dateCmp !== 0) return dateCmp
         const pa = JIEONG_PRIORITY.indexOf(a.type)
         const pb = JIEONG_PRIORITY.indexOf(b.type)
         if (pa !== pb) return pa - pb
-        return a.date.localeCompare(b.date) || a.id.localeCompare(b.id)
+        return a.id.localeCompare(b.id)
       })
   }
   return allAccruals

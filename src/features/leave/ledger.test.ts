@@ -439,12 +439,13 @@ describe('LV-5 FIFO source type restrictions', () => {
     expect(usage.deductions.find(d => d.accrualId === 'accP')).toBeUndefined()
   })
 
-  it('지정휴가 follows priority: 주말/휴일대체 before 프로젝트휴가 (regardless of date)', () => {
+  it('지정휴가 날짜 우선 FIFO: 더 오래된 적립을 먼저 소진 (LV-8 v2.84)', () => {
+    // accProj(Jan 1) 이 accWknd(Feb 1) 보다 오래됐으므로 accProj 먼저 소진
+    // 유형 우선순위(주말/휴일대체 > 프로젝트휴가)는 동일 날짜 tie-break에만 적용
     const accruals: Accrual[] = [
       { id: 'accProj', person_id: 'p1', type: '프로젝트휴가',  days: 3, date: '2024-01-01', source: null, note: null },
       { id: 'accWknd', person_id: 'p1', type: '주말/휴일대체', days: 2, date: '2024-02-01', source: null, note: null },
     ]
-    // accProj has an earlier date but lower priority
     const leave = mkAssignment({
       person_id: 'p1', kind: 'leave', leave_type: '지정휴가',
       start: '2024-03-11', end_date: '2024-03-12',  // 2 workdays (Mon–Tue)
@@ -455,7 +456,56 @@ describe('LV-5 FIFO source type restrictions', () => {
     })
     const usage = ledger.usages[0]
     expect(usage.days).toBe(2)
-    expect(usage.deficit).toBe(0)
+    // accProj(Jan 1)가 더 오래됐으므로 먼저 소진
+    expect(usage.deductions.find(d => d.accrualId === 'accProj')?.days).toBe(2)
+    // accWknd(Feb 1)는 더 나중 적립 → 이미 accProj로 충당됐으므로 미사용
+    expect(usage.deductions.find(d => d.accrualId === 'accWknd')).toBeUndefined()
+  })
+
+  it('LV-8 v2.84 PRD 시나리오: 사용일 이전 적립이 충분하면 사용일 이후 적립은 소진하지 않음', () => {
+    // RA 3d + 보정(포상) 2d (2022-06-30) → 지정휴가 5d (2022-07-25~29)
+    // KDB 프로젝트휴가 5d (2022-12-31) 는 나중 적립 → 소진되면 안 됨
+    const accruals: Accrual[] = [
+      { id: 'ra',         person_id: 'p1', type: '프로젝트휴가', days: 3, date: '2022-06-30', source: null, note: null },
+      { id: 'correction', person_id: 'p1', type: '포상휴가',     days: 2, date: '2022-06-30', source: null, note: null },
+      { id: 'kdb',        person_id: 'p1', type: '프로젝트휴가', days: 5, date: '2022-12-31', source: null, note: null },
+    ]
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '지정휴가',
+      start: '2022-07-25', end_date: '2022-07-29',  // 5 workdays (Mon–Fri)
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2022-08-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(5)
+    // 2022-06-30 적립(RA+보정)이 정확히 5d → 모두 소진
+    expect(usage.deductions.find(d => d.accrualId === 'ra')?.days).toBe(3)
+    expect(usage.deductions.find(d => d.accrualId === 'correction')?.days).toBe(2)
+    // 2022-12-31 KDB 적립은 소진되면 안 됨
+    expect(usage.deductions.find(d => d.accrualId === 'kdb')).toBeUndefined()
+    // KDB remaining 은 여전히 5d
+    expect(ledger.accruals.find(e => e.id === 'kdb')?.remaining).toBe(5)
+  })
+
+  it('동일 날짜 적립: 같은 날이면 유형 우선순위(주말/휴일대체 > 프로젝트휴가) 적용', () => {
+    // 두 적립이 같은 날 → tie-break으로 주말/휴일대체 우선
+    const accruals: Accrual[] = [
+      { id: 'accProj', person_id: 'p1', type: '프로젝트휴가',  days: 3, date: '2024-01-01', source: null, note: null },
+      { id: 'accWknd', person_id: 'p1', type: '주말/휴일대체', days: 2, date: '2024-01-01', source: null, note: null },
+    ]
+    const leave = mkAssignment({
+      person_id: 'p1', kind: 'leave', leave_type: '지정휴가',
+      start: '2024-03-11', end_date: '2024-03-12',  // 2 workdays
+    })
+    const ledger = computeLedger('p1', {
+      workItems: [], assignments: [leave], accruals,
+      isHoliday: NO_HOLIDAY, today: dateToNum('2024-04-01'),
+    })
+    const usage = ledger.usages[0]
+    expect(usage.days).toBe(2)
+    // 같은 날이므로 유형 우선순위: 주말/휴일대체 먼저
     expect(usage.deductions.find(d => d.accrualId === 'accWknd')?.days).toBe(2)
     expect(usage.deductions.find(d => d.accrualId === 'accProj')).toBeUndefined()
   })
