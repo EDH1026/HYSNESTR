@@ -2836,7 +2836,8 @@ function GridRow({
     if (row.kind === 'person') {
       if (a.kind === 'leave') return a.leave_type ?? 'Leave'
       const wi = workItemMap.get(a.work_item_id ?? '')
-      return wi?.name ?? '—'
+      if (!wi) return '—'
+      return wi.client ? `[${wi.client}] ${wi.name}` : wi.name
     }
     if (row.kind === 'workitem-sub') {
       const p = peopleMap.get(a.person_id)
