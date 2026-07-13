@@ -11,13 +11,19 @@ import { CheckCircle2, AlertTriangle, Info, ChevronDown, ChevronRight } from 'lu
 // ── Runtime checks ────────────────────────────────────────────
 
 function noServiceRoleInBundle(): boolean {
-  // service_role key must never be set as a VITE_ env var
+  // service_role key must never be set as a VITE_ env var.
+  // Condition 1: key name contains "service_role"
+  // Condition 2: JWT value whose decoded payload has role="service_role"
+  //   (fixes false-positive on VITE_SUPABASE_ANON_KEY — also a JWT but role="anon")
   const suspect = (import.meta.env as Record<string, string | undefined>)
-  return !Object.entries(suspect).some(
-    ([k, v]) =>
-      k.toLowerCase().includes('service_role') ||
-      (typeof v === 'string' && v.length > 30 && v.startsWith('eyJ') && k.startsWith('VITE_')),
-  )
+  return !Object.entries(suspect).some(([k, v]) => {
+    if (k.toLowerCase().includes('service_role')) return true
+    if (typeof v !== 'string' || v.length <= 30 || !k.startsWith('VITE_')) return false
+    try {
+      const payload = JSON.parse(atob(v.split('.')[1])) as Record<string, unknown>
+      return payload?.role === 'service_role'
+    } catch { return false }
+  })
 }
 
 // ── Types ─────────────────────────────────────────────────────
