@@ -344,7 +344,7 @@ type WIColKey = typeof WI_COLS[number]
 
 const VALID_WI_TYPES = new Set(['project', 'proposal', 'pipeline'])
 const WI_DATE_RE     = /^\d{4}-\d{2}-\d{2}$/
-const ENG_RE         = /^(?:E-\d{8}|C\d{6}[A-Z]{2})$/
+const ENG_RE         = /^(?:E-\d{8}|C\d{6}[A-Z]{2}|I-\d{8})$/
 
 interface WIRow {
   rowNum:            number
@@ -386,7 +386,7 @@ function validateWIRows(rows: WIRow[]): RowError[] {
     if (r.status && !['open', 'closed', ''].includes(r.status))
                                           e.push(`status 유효값: open|closed (입력: "${r.status}")`)
     if (r.engagement_number && !ENG_RE.test(r.engagement_number))
-                                          e.push(`engagement_number 형식: E-00000000 또는 C000000AA (입력: "${r.engagement_number}")`)
+                                          e.push(`engagement_number 형식: E-00000000, C000000AA, 또는 I-00000000 (입력: "${r.engagement_number}")`)
     if (r.confidential && !['true', 'false', ''].includes(r.confidential))
                                           e.push(`confidential 유효값: true|false`)
     // CSV 내 Engagement No. 중복 검사
@@ -597,7 +597,7 @@ function WorkItemsUpload({ onSuccess }: { onSuccess: () => void }) {
         </button>
         <p className="mt-2 text-[11px] text-muted">컬럼: {WI_COLS.join(' · ')}</p>
         <p className="mt-1 text-[11px] text-muted">
-          Engagement No.(<code>E-00000000</code> 또는 <code>C000000AA</code>) 일치 항목은 기존 작업항목을 갱신(배정 유지)하고, 미일치는 신규 등록합니다.
+          Engagement No.(<code>E-00000000</code>, <code>C000000AA</code>, 또는 <code>I-00000000</code>) 일치 항목은 기존 작업항목을 갱신(배정 유지)하고, 미일치는 신규 등록합니다.
         </p>
       </div>
 

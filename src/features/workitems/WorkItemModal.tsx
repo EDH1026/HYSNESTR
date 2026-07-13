@@ -63,7 +63,7 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
   const engWarn = useMemo(() => {
     if (form.type === 'proposal') return null  // NBD 코드는 별도 형식 허용
     const v = form.engagement_number.trim()
-    return v && !/^(?:E-\d{8}|C\d{6}[A-Z]{2})$/.test(v) ? '형식 권장: E-00000000 또는 C000000AA' : null
+    return v && !/^(?:E-\d{8}|C\d{6}[A-Z]{2}|I-\d{8})$/.test(v) ? '형식 권장: E-00000000, C000000AA, 또는 I-00000000' : null
   }, [form.engagement_number, form.type])
 
   // ── TSG-15: Partner NBD 자동 채움 ─────────────────────────
@@ -325,7 +325,7 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
               value={form.engagement_number}
               onChange={e => setForm(f => ({ ...f, engagement_number: e.target.value }))}
               disabled={readOnly}
-              placeholder="E-00000000 / C000000AA"
+              placeholder="E-00000000 / C000000AA / I-00000000"
             />
             {engWarn && !readOnly && (
               <p className="mt-1 text-[11px] text-amber-600">{engWarn}</p>

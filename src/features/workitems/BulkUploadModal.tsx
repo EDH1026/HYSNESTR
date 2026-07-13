@@ -49,7 +49,7 @@ interface RowError {
 
 const VALID_TYPES = new Set(['project', 'proposal', 'pipeline'])
 const DATE_RE     = /^\d{4}-\d{2}-\d{2}$/
-const ENG_RE      = /^(?:E-\d{8}|C\d{6}[A-Z]{2})$/
+const ENG_RE      = /^(?:E-\d{8}|C\d{6}[A-Z]{2}|I-\d{8})$/
 
 function validateRows(rows: ParsedRow[]): RowError[] {
   const errs: RowError[] = []
@@ -73,7 +73,7 @@ function validateRows(rows: ParsedRow[]): RowError[] {
     if (r.status && !['open', 'closed', ''].includes(r.status))
                                           e.push(`status 유효값: open | closed (입력: "${r.status}")`)
     if (r.engagement_number && !ENG_RE.test(r.engagement_number))
-                                          e.push(`engagement_number 형식: E-00000000 또는 C000000AA (입력: "${r.engagement_number}")`)
+                                          e.push(`engagement_number 형식: E-00000000, C000000AA, 또는 I-00000000 (입력: "${r.engagement_number}")`)
     if (r.confidential && !['true', 'false', ''].includes(r.confidential.toLowerCase()))
                                           e.push(`confidential 유효값: true | false (입력: "${r.confidential}")`)
     if (e.length) errs.push({ rowNum: r.rowNum, errors: e })
