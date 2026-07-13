@@ -2,6 +2,7 @@ import { useState, useRef, useMemo, type FormEvent, type KeyboardEvent } from 'r
 import { Loader2, Trash2, X as XIcon, LockKeyhole } from 'lucide-react'
 import Modal from '@/components/Modal'
 import { useCreateWorkItem, useUpdateWorkItem, useDeleteWorkItem } from './hooks'
+import { useAllPeople } from '@/features/people/hooks'
 import { useHistory } from '@/lib/history'
 import { makeWorkItemCreate, makeWorkItemUpdate, makeWorkItemDelete } from '@/lib/historyOps'
 import type { WorkItem, WorkItemType } from '@/types'
@@ -49,14 +50,34 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
     status:             (workItem?.status ?? workItem?.project_status ?? 'open') as 'open' | 'closed',
     confidential:        workItem?.confidential ?? false,
   })
+  // TSG-15 / W-3: proposal NBD 자동 채움
+  const { data: allPeople = [] } = useAllPeople()
+  const partners = useMemo(() => allPeople.filter(p => p.rank === 'Partner'), [allPeople])
+  const [proposalPartner, setProposalPartner] = useState('')
+  const autoFilledCode = useRef<string | null>(null)
+
   const [hashInput, setHashInput] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const hashInputRef = useRef<HTMLInputElement>(null)
 
   const engWarn = useMemo(() => {
+    if (form.type === 'proposal') return null  // NBD 코드는 별도 형식 허용
     const v = form.engagement_number.trim()
     return v && !/^(?:E-\d{8}|C\d{6}[A-Z]{2})$/.test(v) ? '형식 권장: E-00000000 또는 C000000AA' : null
-  }, [form.engagement_number])
+  }, [form.engagement_number, form.type])
+
+  // ── TSG-15: Partner NBD 자동 채움 ─────────────────────────
+  function handlePartnerSelect(partnerId: string) {
+    setProposalPartner(partnerId)
+    if (!partnerId) return
+    const partner = allPeople.find(p => p.id === partnerId)
+    const nbdCode = partner?.nbd_code ?? ''
+    // 필드가 비어 있거나 이전 자동 채움 값과 같을 때만 덮어씀
+    if (!form.engagement_number || form.engagement_number === autoFilledCode.current) {
+      setForm(f => ({ ...f, engagement_number: nbdCode }))
+      autoFilledCode.current = nbdCode
+    }
+  }
 
   // ── Hashtag helpers ────────────────────────────────────────
 
@@ -270,6 +291,28 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
             ))}
           </div>
         </div>
+
+        {/* Proposal: 담당 파트너 → NBD 자동 채움 (TSG-15 / W-3) */}
+        {form.type === 'proposal' && !readOnly && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">
+              담당 파트너
+              <span className="ml-1 text-[10px] text-muted">선택 시 Engagement No.에 NBD 코드 자동 채움</span>
+            </label>
+            <select
+              className="input"
+              value={proposalPartner}
+              onChange={e => handlePartnerSelect(e.target.value)}
+            >
+              <option value="">— 선택 안 함 —</option>
+              {partners.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.name}{p.nbd_code ? ` (${p.nbd_code})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Engagement & Client */}
         <div className="grid grid-cols-2 gap-3">

@@ -117,46 +117,44 @@ export function resolveTimesheetCode(
   // Priority 6 & 7: work assignment
   const workAsgns = onDate.filter(a => a.kind === 'work')
 
-  // ── Partner 다중 프로젝트 분할 (TSG-14) ─────────────────────
-  // 조건: Partner + 프로젝트 배정 2개 이상 + 1개 이상에 daily_hours 설정
-  if (_person.rank === 'Partner' && workAsgns.length >= 2) {
+  // ── Partner 통합 경로 (TSG-14 v2.80) ────────────────────────
+  // 규칙:
+  //   daily_hours 설정된 project → 각각 별도 코드-시간 행
+  //   나머지(8h − 합계) → NBD로 보충 (proposal·미배정도 여기서 처리)
+  //   project는 있되 daily_hours 없음 → 단일 경로(8h 전체)
+  if (_person.rank === 'Partner') {
     const projectAsgns = workAsgns.filter(a => {
       const wi = ctx.workItems.find(w => w.id === a.work_item_id)
       return wi?.type === 'project'
     })
     const withHours = projectAsgns.filter(a => (a.daily_hours ?? 0) > 0)
 
-    if (projectAsgns.length >= 2 && withHours.length > 0) {
-      const results: TimesheetCodeResult[] = []
-      let totalH = 0
-
-      for (const wa of withHours) {
-        const wi = ctx.workItems.find(w => w.id === wa.work_item_id)!
-        const code = wi.engagement_number
-          ?? (wi.temp_engagement_code ?? '(코드 미정)')
-        results.push({
-          code,
-          hours:       wa.daily_hours!,
-          provisional: wi.engagement_number ? undefined : true,
-        })
-        totalH += wa.daily_hours!
-      }
-
-      // 합이 8h 미만이면 차액을 NBD 코드로 보충
-      const remaining = Math.round((8 - totalH) * 10) / 10
-      if (remaining > 0) {
-        results.push({
-          code:        _person.nbd_code ?? '(NBD코드 없음)',
-          hours:       remaining,
-          provisional: _person.nbd_code ? undefined : true,
-        })
-      }
-
-      return results
+    // Project(s) present but none have explicit hours → full 8 h on first project
+    if (projectAsgns.length > 0 && withHours.length === 0) {
+      const wi = ctx.workItems.find(w => w.id === projectAsgns[0].work_item_id)!
+      if (wi.engagement_number)    return [{ code: wi.engagement_number }]
+      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, provisional: true }]
+      return [{ code: '(코드 미정)', provisional: true }]
     }
+
+    // Split path: project rows by daily_hours + NBD remainder
+    // When withHours is empty (no projects at all), remaining = 8 → all-NBD day
+    const results: TimesheetCodeResult[] = []
+    let totalH = 0
+    for (const wa of withHours) {
+      const wi = ctx.workItems.find(w => w.id === wa.work_item_id)!
+      const code = wi.engagement_number ?? (wi.temp_engagement_code ?? '(코드 미정)')
+      results.push({ code, hours: wa.daily_hours!, provisional: wi.engagement_number ? undefined : true })
+      totalH += wa.daily_hours!
+    }
+    const remaining = Math.round((8 - totalH) * 10) / 10
+    if (remaining > 0) {
+      results.push({ code: _person.nbd_code ?? '(NBD코드 없음)', hours: remaining, provisional: _person.nbd_code ? undefined : true })
+    }
+    return results
   }
 
-  // ── 단일 배정 경로 ────────────────────────────────────────────
+  // ── 비Partner 단일 배정 경로 ─────────────────────────────────
   const workAsgn = workAsgns[0]
   if (workAsgn?.work_item_id) {
     const wi = ctx.workItems.find(w => w.id === workAsgn.work_item_id)
