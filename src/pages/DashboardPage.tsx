@@ -259,6 +259,7 @@ export default function DashboardPage() {
 
     for (const p of people) {
       if (p.status !== 'active') continue
+      if (p.rank === 'Partner') continue
       const myAsgn = assignments.filter(a => a.person_id === p.id)
       const unassigned: number[] = []
 

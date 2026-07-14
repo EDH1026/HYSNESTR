@@ -190,10 +190,10 @@ function AdjustmentsTab({ person, readOnly }: { person: Person; readOnly: boolea
   // 법정연차 자동 계산 (읽기 전용 표시, 오늘 기준)
   const todayStr = numToStr(today())
   const statutoryItems = useMemo(() =>
-    person.hire_date
+    person.hire_date && person.rank !== 'Partner'
       ? computeStatutoryLeave(person.hire_date, 'fiscal', todayStr)
       : [],
-  [person.hire_date, todayStr])
+  [person.hire_date, person.rank, todayStr])
 
   async function handleAdjSubmit(e: FormEvent) {
     e.preventDefault()
@@ -387,7 +387,7 @@ function AdjustmentsTab({ person, readOnly }: { person: Person; readOnly: boolea
 // Shared hook — ledger + annual leave data for a person
 // ─────────────────────────────────────────────────────────────
 
-function usePersonData(personId: string, asOfStr: string) {
+function usePersonData(personId: string, asOfStr: string, personRank?: string) {
   const { data: assignments = [], isLoading: la } = useAssignmentsByPerson(personId)
   const { data: accruals   = [], isLoading: lb } = useAccrualsByPerson(personId)
   const { data: workItems  = [], isLoading: lw } = useAllWorkItems()
@@ -407,8 +407,8 @@ function usePersonData(personId: string, asOfStr: string) {
 
   const ledger = useMemo(() => {
     if (isLoading) return null
-    return computeLedger(personId, { workItems, assignments, accruals, isHoliday, today: asOf })
-  }, [personId, workItems, assignments, accruals, isHoliday, asOf, isLoading])
+    return computeLedger(personId, { workItems, assignments, accruals, isHoliday, today: asOf, personRank })
+  }, [personId, workItems, assignments, accruals, isHoliday, asOf, isLoading, personRank])
 
   return { isLoading, ledger, adjustments, workItems, isHoliday }
 }
@@ -763,7 +763,7 @@ function StatutorySection({
 
 function SettlementTab({ person }: { person: Person }) {
   const [asOfStr, setAsOfStr] = useState(numToStr(today()))
-  const { isLoading, ledger, adjustments, workItems, isHoliday } = usePersonData(person.id, asOfStr)
+  const { isLoading, ledger, adjustments, workItems, isHoliday } = usePersonData(person.id, asOfStr, person.rank)
 
   const weekendSubAccrued = useMemo(() =>
     (ledger?.accruals ?? [])
@@ -1172,7 +1172,7 @@ function TimesheetTab({ person }: { person: Person }) {
   const fyEnd   = `${selectedFY}-06-30`
   const asOfStr = todayStr <= fyEnd ? todayStr : fyEnd
 
-  const { isLoading, ledger, adjustments } = usePersonData(person.id, asOfStr)
+  const { isLoading, ledger, adjustments } = usePersonData(person.id, asOfStr, person.rank)
 
   const figures = useMemo(() => {
     if (!ledger) return null

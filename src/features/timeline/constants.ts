@@ -1,5 +1,5 @@
 // Timeline layout constants
-export const LABEL_W       = 192  // px — fixed left label column
+export const LABEL_W       = 320  // px — fixed left label column
 export const ROW_H         = 44   // px — height of each timeline row
 export const HEADER_ROW_H  = 28   // px — height of one header tier (month / week / day)
 export const BAR_PAD       = 6    // px — vertical padding inside a row for bars

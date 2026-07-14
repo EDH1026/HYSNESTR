@@ -2517,7 +2517,7 @@ export default function TimelineView() {
       {/* ── Timeline body ── */}
       <div className="flex flex-1 overflow-hidden">
         {/* Label column */}
-        <div style={{ width: labelW }} className="flex-shrink-0 border-r border-border flex flex-col overflow-hidden">
+        <div style={{ width: labelW }} className="flex-shrink-0 flex flex-col overflow-hidden">
           {/* Corner */}
           <div style={{ height: headerH }} className="flex-shrink-0 border-b border-border bg-surface-100" />
           {/* Labels */}
@@ -2560,6 +2560,25 @@ export default function TimelineView() {
             ))}
           </div>
         </div>
+
+        {/* Label column resize handle */}
+        <div
+          className="flex-shrink-0 w-1 bg-border hover:bg-brand-400 transition-colors cursor-col-resize select-none z-10"
+          onPointerDown={e => {
+            e.preventDefault()
+            const startX = e.clientX
+            const startW = labelW
+            const handleMove = (ev: PointerEvent) => {
+              setLabelW(Math.max(120, Math.min(600, startW + ev.clientX - startX)))
+            }
+            const handleUp = () => {
+              window.removeEventListener('pointermove', handleMove)
+              window.removeEventListener('pointerup', handleUp)
+            }
+            window.addEventListener('pointermove', handleMove)
+            window.addEventListener('pointerup', handleUp)
+          }}
+        />
 
         {/* Grid panel — single scroll container (T-8: header + body share one scrollLeft) */}
         <div className="flex flex-1 flex-col overflow-hidden">
