@@ -40,9 +40,13 @@ function fyRangeLabel(fy: number): string {
   return `FY${String(fy).slice(-2)} (${fy - 1}.07~${fy}.06)`
 }
 
-function wiSourceLabel(wi: WorkItem | undefined, fallback: string): string {
-  if (!wi) return fallback
-  return wi.client ? `${wi.name} — ${wi.client}` : wi.name
+function accrualSrcVal(note: string | null | undefined, wi: WorkItem | undefined): string {
+  return note || wi?.client || wi?.name || '—'
+}
+
+function fmtDeducSrc(type: string, note: string | null | undefined, wi: WorkItem | undefined, days: number): string {
+  const val = note || wi?.client || wi?.name || ''
+  return val ? `[${type}] ${val} ${days}일` : `[${type}] ${days}일`
 }
 
 function generateLeaveLedgerHtml(
@@ -71,9 +75,7 @@ function generateLeaveLedgerHtml(
       accrualLines.push(`<tr class="fy-hdr"><td colspan="4">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
       for (const e of entries) {
         const wi  = e.sourceId ? wiMap.get(e.sourceId) : undefined
-        const src = wi
-          ? escHtml(wiSourceLabel(wi, e.sourceId!))
-          : (!e.isAuto && e.note ? escHtml(e.note) : '—')
+        const src = escHtml(accrualSrcVal(e.note, wi))
         accrualLines.push(`<tr>
           <td class="mono">${escHtml(e.date)}</td>
           <td><span class="pill pill-blue">${escHtml(e.type)}</span></td>
@@ -105,12 +107,10 @@ function generateLeaveLedgerHtml(
         const deducParts = u.deductions.map(d => {
           const acc = accrualById.get(d.accrualId)
           if (!acc) return ''
-          const wi  = acc.sourceId ? wiMap.get(acc.sourceId) : undefined
-          const src = wi ? wiSourceLabel(wi, acc.sourceId!) : (acc.note ?? '범용')
-          return `${escHtml(src)} ${d.days}일`
+          const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
+          return escHtml(fmtDeducSrc(acc.type, acc.note, wi, d.days))
         }).filter(Boolean)
-        const deducText = deducParts.length ? deducParts.join(' / ') : '—'
-        const deficit   = u.deficit < 0 ? ` <span class="neg">(선사용 ${-u.deficit}일)</span>` : ''
+        const deducText = deducParts.length ? deducParts.join(', ') : '—'
         const typeTag   = u.isManual
           ? `<span class="pill pill-red">${escHtml(u.type)}</span> <span class="pill pill-red" style="font-size:10px">수동차감</span>`
           : `<span class="pill pill-violet">${escHtml(u.type)}</span>`
@@ -118,7 +118,7 @@ function generateLeaveLedgerHtml(
           <td class="mono">${period}</td>
           <td>${typeTag}</td>
           <td class="num">${escHtml(u.days)}일</td>
-          <td>${deducText}${deficit}</td></tr>`)
+          <td>${deducText}</td></tr>`)
       }
       usageLines.push(`<tr class="fy-sub"><td colspan="3">소계</td><td class="num">${sub}일</td></tr>`)
     }
@@ -144,18 +144,17 @@ function generateLeaveLedgerHtml(
   const combinedRaw: { kind: string; date: string; period: string; type: string; source: string; change: number; balance: number }[] = []
   for (const e of ledger.accruals) {
     const wi  = e.sourceId ? wiMap.get(e.sourceId) : undefined
-    const src = wi ? wiSourceLabel(wi, e.sourceId!) : (!e.isAuto && e.note ? e.note : '—')
-    combinedRaw.push({ kind: 'accrual', date: e.date, period: e.date, type: e.type, source: src, change: e.days, balance: 0 })
+    combinedRaw.push({ kind: 'accrual', date: e.date, period: e.date, type: e.type, source: accrualSrcVal(e.note, wi), change: e.days, balance: 0 })
   }
   for (const u of ledger.usages) {
     const period     = u.start === u.end ? u.start : `${u.start}~${u.end}`
     const deducParts = u.deductions.map(d => {
       const acc = accrualById.get(d.accrualId)
       if (!acc) return ''
-      const wi  = acc.sourceId ? wiMap.get(acc.sourceId) : undefined
-      return wi ? wiSourceLabel(wi, acc.sourceId!) : (acc.note ?? '범용')
+      const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
+      return fmtDeducSrc(acc.type, acc.note, wi, d.days)
     }).filter(Boolean)
-    combinedRaw.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(' / ') || '—', change: -u.days, balance: 0 })
+    combinedRaw.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(', ') || '—', change: -u.days, balance: 0 })
   }
   for (const u of ledger.unpaid) {
     const period = u.start === u.end ? u.start : `${u.start}~${u.end}`
@@ -512,11 +511,9 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
   }
 
   const wiMap       = useMemo(() => new Map(workItems.map(w => [w.id, w])), [workItems])
-  const accrualNote = useMemo(() => {
-    const m = new Map<string, string | null>()
-    for (const a of ledger?.accruals ?? []) m.set(a.id, a.note ?? null)
-    return m
-  }, [ledger])
+  const accrualByIdUI = useMemo(() =>
+    new Map((ledger?.accruals ?? []).map(a => [a.id, a])),
+  [ledger])
 
   // LV-6: 특별휴가 현재 잔여 (수동 차감 입력 시 검증용)
   const specialLeaveBalance = useMemo(() =>
@@ -567,18 +564,17 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
     const rows: CH[] = []
     for (const e of ledger.accruals) {
       const wi  = e.sourceId ? wiMap.get(e.sourceId) : undefined
-      const src = wi ? wiSourceLabel(wi, e.sourceId!) : (!e.isAuto && e.note ? e.note : '—')
-      rows.push({ kind: 'accrual', date: e.date, period: e.date, type: e.type, source: src, change: e.days, balance: 0 })
+      rows.push({ kind: 'accrual', date: e.date, period: e.date, type: e.type, source: accrualSrcVal(e.note, wi), change: e.days, balance: 0 })
     }
     for (const u of ledger.usages) {
       const period     = u.start === u.end ? u.start : `${u.start} ~ ${u.end}`
       const deducParts = u.deductions.map(d => {
         const acc = accrualById.get(d.accrualId)
         if (!acc) return ''
-        const wi  = acc.sourceId ? wiMap.get(acc.sourceId) : undefined
-        return wi ? wiSourceLabel(wi, acc.sourceId!) : (acc.note ?? '범용')
+        const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
+        return fmtDeducSrc(acc.type, acc.note, wi, d.days)
       }).filter(Boolean)
-      rows.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(' / ') || '—', change: -u.days, balance: 0 })
+      rows.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(', ') || '—', change: -u.days, balance: 0 })
     }
     for (const u of ledger.unpaid) {
       const period = u.start === u.end ? u.start : `${u.start} ~ ${u.end}`
@@ -787,9 +783,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                 <span className="pill bg-brand-100 text-brand-700">{e.type}</span>
                               </td>
                               <td className="px-3 py-2 text-muted">
-                                {e.sourceId
-                                  ? wiSourceLabel(wiMap.get(e.sourceId), e.sourceId)
-                                  : (!e.isAuto && e.note ? e.note : '—')}
+                                {accrualSrcVal(e.note, e.sourceId ? wiMap.get(e.sourceId) : undefined)}
                               </td>
                               <td className="px-3 py-2 text-right font-medium">+{e.days}</td>
                               {canEditThis && (
@@ -925,18 +919,14 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                               </td>
                               <td className="px-3 py-2 text-right font-medium">{u.days}일</td>
                               <td className="px-3 py-2 text-muted text-[11px]">
-                                {u.deductions.length === 0 && !(u.type === '지정휴가' && u.deficit < 0)
+                                {u.deductions.length === 0
                                   ? '—'
                                   : <span className="flex flex-wrap gap-x-1 gap-y-0.5">
                                       {u.deductions.map((d, i) => {
-                                        const srcName = d.sourceId
-                                          ? wiSourceLabel(wiMap.get(d.sourceId), d.sourceId)
-                                          : (accrualNote.get(d.accrualId) ?? '범용')
-                                        return <span key={i}>{srcName} {d.days}일</span>
+                                        const acc = accrualByIdUI.get(d.accrualId)
+                                        const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
+                                        return <span key={i}>{acc ? fmtDeducSrc(acc.type, acc.note, wi, d.days) : `? ${d.days}일`}</span>
                                       })}
-                                      {u.type === '지정휴가' && u.deficit < 0 && (
-                                        <span className="text-red-500 font-medium">선사용 {-u.deficit}일</span>
-                                      )}
                                     </span>
                                 }
                               </td>

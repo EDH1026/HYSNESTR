@@ -423,22 +423,13 @@ function deductionSummary(
   workItemById: Map<string, WorkItem>,
 ): string {
   if (!deductions.length) return '—'
-  const byType: Record<string, { days: number; proj: string | null }> = {}
-  for (const d of deductions) {
+  return deductions.map(d => {
     const acc = accrualById.get(d.accrualId)
-    if (!acc) continue
-    if (!byType[acc.type]) {
-      const wi = acc.sourceId ? workItemById.get(acc.sourceId) : undefined
-      byType[acc.type] = {
-        days: 0,
-        proj: wi ? wiLabel(wi, wi.name) : (acc.note ?? null),
-      }
-    }
-    byType[acc.type].days += d.days
-  }
-  return Object.entries(byType)
-    .map(([t, { days, proj }]) => proj ? `${t} ${days}일 (${proj})` : `${t} ${days}일`)
-    .join(' / ')
+    if (!acc) return `? ${d.days}일`
+    const wi  = d.sourceId ? workItemById.get(d.sourceId) : undefined
+    const val = acc.note || wi?.client || wi?.name || ''
+    return val ? `[${acc.type}] ${val} ${d.days}일` : `[${acc.type}] ${d.days}일`
+  }).join(', ')
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -453,11 +444,6 @@ function fyFromDate(dateStr: string): number {
 
 function fyRangeLabel(fy: number): string {
   return `FY${String(fy).slice(-2)} (${fy - 1}.07~${fy}.06)`
-}
-
-function wiLabel(wi: WorkItem | undefined, fallback: string): string {
-  if (!wi) return fallback
-  return wi.client ? `${wi.name} — ${wi.client}` : wi.name
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -544,9 +530,7 @@ function generateSettlementHtml(
       t2Lines.push(`<tr class="fy-hdr"><td colspan="4">FY${fyYY} (${fy - 1}.07~${fy}.06)</td></tr>`)
       for (const a of entries) {
         const wi      = a.sourceId ? workItemById.get(a.sourceId) : undefined
-        const srcText = wi
-          ? escHtml(wi.client ? `${wi.name} — ${wi.client}` : wi.name)
-          : (!a.isAuto && a.note ? escHtml(a.note) : '—')
+        const srcText = escHtml(a.note || wi?.client || wi?.name || '—')
         t2Lines.push(`<tr>
           <td><span class="pill pill-purple">${escHtml(a.type)}</span></td>
           <td class="mono">${escHtml(a.date)}</td>
@@ -576,11 +560,10 @@ function generateSettlementHtml(
       for (const u of entries) {
         const period  = u.start === u.end ? escHtml(u.start) : `${escHtml(u.start)}~${escHtml(u.end)}`
         const fifo    = escHtml(deductionSummary(u.deductions, accrualById, workItemById))
-        const deficit = u.deficit < 0 ? ` <span class="neg">(선사용 ${escHtml(-u.deficit)}일)</span>` : ''
         t3Lines.push(`<tr>
           <td class="mono">${period}</td>
           <td><span class="pill pill-amber">${escHtml(u.type)}</span></td>
-          <td>${fifo}${deficit}</td>
+          <td>${fifo}</td>
           <td class="num">−${escHtml(u.days)}</td></tr>`)
       }
       t3Lines.push(`<tr class="fy-sub"><td colspan="3">소계</td><td class="num">−${sub}</td></tr>`)
@@ -621,7 +604,7 @@ function generateSettlementHtml(
 <section>
   <h2>② 팀 정당 적립 내역</h2>
   <table>
-    <thead><tr><th>유형</th><th>날짜</th><th>원천(프로젝트)</th><th>일수</th></tr></thead>
+    <thead><tr><th>유형</th><th>날짜</th><th>원천</th><th>일수</th></tr></thead>
     <tbody>${t2.join('')}</tbody>
     <tfoot><tr><td colspan="3">팀 정당 적립 합계</td><td class="num">${result.teamAccrued}일</td></tr></tfoot>
   </table>
@@ -934,7 +917,7 @@ function SettlementTab({ person }: { person: Person }) {
                   <tr className="bg-surface-50 border-b border-border text-muted">
                     <th className="px-3 py-2 text-left font-medium">유형</th>
                     <th className="px-3 py-2 text-left font-medium whitespace-nowrap">날짜</th>
-                    <th className="px-3 py-2 text-left font-medium">원천(프로젝트)</th>
+                    <th className="px-3 py-2 text-left font-medium">원천</th>
                     <th className="px-3 py-2 text-right font-medium whitespace-nowrap">일수</th>
                   </tr>
                 </thead>
@@ -965,9 +948,7 @@ function SettlementTab({ person }: { person: Person }) {
                             <td className="px-3 py-2"><span className="pill bg-purple-100 text-purple-700 text-[10px]">{a.type}</span></td>
                             <td className="px-3 py-2 font-mono text-[11px]">{a.date}</td>
                             <td className="px-3 py-2 text-muted">
-                              {a.sourceId
-                                ? wiLabel(workItemById.get(a.sourceId), a.sourceId)
-                                : (!a.isAuto && a.note ? a.note : '—')}
+                              {a.note || (a.sourceId ? (workItemById.get(a.sourceId)?.client || workItemById.get(a.sourceId)?.name) : null) || '—'}
                             </td>
                             <td className="px-3 py-2 text-right font-semibold text-purple-700">+{a.days}</td>
                           </tr>
@@ -1055,9 +1036,6 @@ function SettlementTab({ person }: { person: Person }) {
                             <td className="px-3 py-2"><span className="pill bg-amber-100 text-amber-700 text-[10px]">{u.type}</span></td>
                             <td className="px-3 py-2 text-muted text-[10px]">
                               {deductionSummary(u.deductions, accrualById, workItemById)}
-                              {u.deficit < 0 && (
-                                <span className="ml-1 text-red-500 whitespace-nowrap">(선사용 {-u.deficit}일)</span>
-                              )}
                             </td>
                             <td className="px-3 py-2 text-right font-semibold text-gray-800">−{u.days}</td>
                           </tr>
