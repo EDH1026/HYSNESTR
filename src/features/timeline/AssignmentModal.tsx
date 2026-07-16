@@ -314,8 +314,8 @@ export default function AssignmentModal({
       end_date:     form.end,
       weekend_dates: form.kind === 'work' ? form.weekendDates : [],
       note:         form.note || null,
-      daily_hours:  form.kind === 'work' && selectedPerson?.rank === 'Partner' && form.dailyHours
-        ? (parseFloat(form.dailyHours) || null)
+      daily_hours:  form.kind === 'work' && selectedPerson?.rank === 'Partner' && form.dailyHours !== ''
+        ? (isNaN(parseFloat(form.dailyHours)) ? null : parseFloat(form.dailyHours))
         : null,
     }
     try {
@@ -467,7 +467,7 @@ export default function AssignmentModal({
                   <span className="ml-1 text-[10px] text-muted">(다중 배정 시간 분할 — Partner 전용)</span>
                 </label>
                 <input
-                  type="number" min="0.5" max="24" step="0.5"
+                  type="number" min="0" max="24" step="0.5"
                   className="input w-32 text-sm"
                   value={form.dailyHours}
                   disabled={effectiveReadOnly}

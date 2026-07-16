@@ -127,7 +127,8 @@ export function resolveTimesheetCode(
       const wi = ctx.workItems.find(w => w.id === a.work_item_id)
       return wi?.type === 'project'
     })
-    const withHours = projectAsgns.filter(a => (a.daily_hours ?? 0) > 0)
+    // null = 미설정 → single-project fallback / 0 or positive = 명시적 분할 설정
+    const withHours = projectAsgns.filter(a => a.daily_hours != null)
 
     // Project(s) present but none have explicit hours → full 8 h on first project
     if (projectAsgns.length > 0 && withHours.length === 0) {
@@ -142,6 +143,7 @@ export function resolveTimesheetCode(
     const results: TimesheetCodeResult[] = []
     let totalH = 0
     for (const wa of withHours) {
+      if ((wa.daily_hours ?? 0) <= 0) continue  // daily_hours=0 → 해당 프로젝트 0h, NBD에 귀속
       const wi = ctx.workItems.find(w => w.id === wa.work_item_id)!
       const code = wi.engagement_number ?? (wi.temp_engagement_code ?? '(코드 미정)')
       results.push({ code, hours: wa.daily_hours!, provisional: wi.engagement_number ? undefined : true })
