@@ -99,21 +99,19 @@ function fifoSourceAccruals(
   if (type === '특별휴가') {
     return allAccruals.filter(a => a.type === '특별휴가')
   }
-  if (type === '지정휴가') {
-    // LV-8 v2.84: 날짜 오름차순 우선 → 사용일 이전 오래된 적립을 먼저 소진
-    // 같은 날짜는 유형 우선순위(JIEONG_PRIORITY)로 tie-break
-    return allAccruals
-      .filter(a => JIEONG_SOURCES.has(a.type))
-      .sort((a, b) => {
-        const dateCmp = a.date.localeCompare(b.date)
-        if (dateCmp !== 0) return dateCmp
-        const pa = JIEONG_PRIORITY.indexOf(a.type)
-        const pb = JIEONG_PRIORITY.indexOf(b.type)
-        if (pa !== pb) return pa - pb
-        return a.id.localeCompare(b.id)
-      })
-  }
+  // 특별휴가 이외의 모든 유급 유형(지정휴가·프로젝트휴가·주말/휴일대체·포상휴가·지연보상 등):
+  // 특별휴가 적립은 후보에서 완전히 제외한다 (LV-5 v2.88).
+  // 날짜 오름차순 → 유형 우선순위(JIEONG_PRIORITY) tie-break (LV-8 v2.84).
   return allAccruals
+    .filter(a => JIEONG_SOURCES.has(a.type))
+    .sort((a, b) => {
+      const dateCmp = a.date.localeCompare(b.date)
+      if (dateCmp !== 0) return dateCmp
+      const pa = JIEONG_PRIORITY.indexOf(a.type)
+      const pb = JIEONG_PRIORITY.indexOf(b.type)
+      if (pa !== pb) return pa - pb
+      return a.id.localeCompare(b.id)
+    })
 }
 
 // ── Delay compensation table ──────────────────────────────────

@@ -454,21 +454,10 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
       }
       if (availDays.length === 0) return
 
-      // §7.4: allocate days by priority type — ① 주말/휴일대체 → ② 프로젝트휴가 → ③ 포상휴가
-      const PRIORITY: AccrualType[] = ['주말/휴일대체', '프로젝트휴가', '포상휴가']
-      const allocation: { type: LeaveType; days: number }[] = []
-      let daysLeft = availDays.length
-      for (const t of PRIORITY) {
-        const v = ledger.byType[t]
-        if (!v) continue
-        const typeRem = Math.floor(Math.max(0, v.accrued - v.used))
-        const allocate = Math.min(typeRem, daysLeft)
-        if (allocate > 0) { allocation.push({ type: t as LeaveType, days: allocate }); daysLeft -= allocate }
-      }
-      if (daysLeft > 0) allocation.push({ type: '지정휴가', days: daysLeft })
+      // §7.4 LV-1 v2.88: 항상 프로젝트휴가 유형 하나로 배정 생성
+      // 차감 원천 FIFO(주말대체→프로젝트→포상→지연보상)는 computeLedger에서 독립적으로 계산
 
-      // Group a sorted list of day-numbers into contiguous date ranges
-      // (treats weekends/holidays in the middle as non-breaks)
+      // Group contiguous available workdays into date ranges
       function toRanges(days: number[]): [number, number][] {
         if (days.length === 0) return []
         const out: [number, number][] = []
@@ -486,24 +475,17 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
         return out
       }
 
-      // Create one assignment per contiguous block per type
-      let dayIdx = 0
-      for (const block of allocation) {
-        if (dayIdx >= availDays.length) break
-        const blockDays = availDays.slice(dayIdx, dayIdx + block.days)
-        dayIdx += block.days
-        for (const [s, e] of toRanges(blockDays)) {
-          await createAssignment.mutateAsync({
-            person_id:    person.id,
-            kind:         'leave',
-            work_item_id: null,
-            leave_type:   block.type,
-            start:        numToStr(s),
-            end_date:     numToStr(e),
-            weekend_dates: [],
-            note:         '잔여 적립 소진 (자동 생성)',
-          })
-        }
+      for (const [s, e] of toRanges(availDays)) {
+        await createAssignment.mutateAsync({
+          person_id:    person.id,
+          kind:         'leave',
+          work_item_id: null,
+          leave_type:   '프로젝트휴가',
+          start:        numToStr(s),
+          end_date:     numToStr(e),
+          weekend_dates: [],
+          note:         '잔여 적립 소진 (자동 생성)',
+        })
       }
     } finally {
       setIsCreatingLeave(false)
@@ -1112,8 +1094,8 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
               <div>
                 <p className="text-xs font-semibold text-brand-800">잔여 휴가 소진 배정</p>
                 <p className="text-xs text-brand-700 mt-0.5">
-                  기준일 이후 빈 영업일 {Math.floor(ledger.remaining)}일 —
-                  ① 주말대체 → ② 프로젝트휴가 → ③ 포상휴가 순으로 유형별 배정 생성
+                  기준일 이후 빈 영업일 {Math.floor(ledger.remaining)}일 — 프로젝트휴가로 일괄 배정 생성
+                  (차감 원천은 FIFO 규칙으로 자동 계산)
                 </p>
               </div>
               <button
