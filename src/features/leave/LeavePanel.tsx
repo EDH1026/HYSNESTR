@@ -24,7 +24,7 @@ import { useAuthz } from '@/hooks/useAuthz'
 import { useHistory } from '@/lib/history'
 import { makeAccrualCreate, makeAccrualDelete } from '@/lib/historyOps'
 import { dateToNum, numToStr, today, isWeekend, nextWorkday } from '@/lib/date'
-import type { Person, AccrualType, LeaveType, WorkItem } from '@/types'
+import type { Person, AccrualType, WorkItem } from '@/types'
 
 const MANUAL_TYPES: AccrualType[] = ['포상휴가', '특별휴가', '지연보상', '프로젝트휴가', '주말/휴일대체']
 
