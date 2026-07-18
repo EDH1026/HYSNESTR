@@ -46,6 +46,7 @@ import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete, combine }
 import type { HistoryEntry } from '@/lib/history'
 import { useAuth }          from '@/hooks/useAuth'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
+import { parseSearchQuery } from '@/lib/searchQuery'
 import AssignmentModal      from './AssignmentModal'
 import { computeSpecialLeaveBalance, hasAssignmentOverlap } from '@/features/leave/validateLeave'
 import WorkItemDetailModal  from '@/features/workitems/WorkItemDetailModal'
@@ -1195,6 +1196,7 @@ interface FilterBarProps {
   wiSort:        WiSortBy;     wiDir: 'asc' | 'desc'
   showClosed:    boolean;      typeFilter: string[]
   clientFilter:  string;       hashFilter: string
+  nameFilter:    string;       unifiedFilter: string
   // callbacks
   onPersonSort:      (by: PersonSortBy) => void
   onShowResigned:    (v: boolean) => void
@@ -1205,6 +1207,8 @@ interface FilterBarProps {
   onTypeFilter:      (type: string) => void
   onClientFilter:    (v: string) => void
   onHashFilter:      (v: string) => void
+  onNameFilter:      (v: string) => void
+  onUnifiedFilter:   (v: string) => void
 }
 
 function SortBtn({ label, active, dir, onClick }: { label: string; active: boolean; dir: 'asc'|'desc'; onClick: () => void }) {
@@ -1243,21 +1247,27 @@ function ChipBtn({ label, active, onClick }: { label: string; active: boolean; o
 function FilterBar({
   viewMode,
   personSort, personDir, showResigned, rankFilter, personNameSearch,
-  wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter,
+  wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter, nameFilter, unifiedFilter,
   onPersonSort, onShowResigned, onRankFilter, onPersonNameSearch,
-  onWiSort, onShowClosed, onTypeFilter, onClientFilter, onHashFilter,
+  onWiSort, onShowClosed, onTypeFilter, onClientFilter, onHashFilter, onNameFilter, onUnifiedFilter,
 }: FilterBarProps) {
   // §9.3: debounce text-filter inputs (200 ms) so each keystroke doesn't rerender the whole grid
-  const [localName,   setLocalName]   = useState(personNameSearch)
-  const [localClient, setLocalClient] = useState(clientFilter)
-  const [localHash,   setLocalHash]   = useState(hashFilter)
-  const nameTimer   = useRef<ReturnType<typeof setTimeout>>()
-  const clientTimer = useRef<ReturnType<typeof setTimeout>>()
-  const hashTimer   = useRef<ReturnType<typeof setTimeout>>()
+  const [localName,     setLocalName]     = useState(personNameSearch)
+  const [localClient,   setLocalClient]   = useState(clientFilter)
+  const [localHash,     setLocalHash]     = useState(hashFilter)
+  const [localWiName,   setLocalWiName]   = useState(nameFilter)
+  const [localUnified,  setLocalUnified]  = useState(unifiedFilter)
+  const nameTimer     = useRef<ReturnType<typeof setTimeout>>()
+  const clientTimer   = useRef<ReturnType<typeof setTimeout>>()
+  const hashTimer     = useRef<ReturnType<typeof setTimeout>>()
+  const wiNameTimer   = useRef<ReturnType<typeof setTimeout>>()
+  const unifiedTimer  = useRef<ReturnType<typeof setTimeout>>()
 
-  useEffect(() => setLocalName(personNameSearch),   [personNameSearch])
-  useEffect(() => setLocalClient(clientFilter), [clientFilter])
-  useEffect(() => setLocalHash(hashFilter),   [hashFilter])
+  useEffect(() => setLocalName(personNameSearch),  [personNameSearch])
+  useEffect(() => setLocalClient(clientFilter),    [clientFilter])
+  useEffect(() => setLocalHash(hashFilter),        [hashFilter])
+  useEffect(() => setLocalWiName(nameFilter),      [nameFilter])
+  useEffect(() => setLocalUnified(unifiedFilter),  [unifiedFilter])
 
   function handleNameChange(val: string) {
     setLocalName(val)
@@ -1273,6 +1283,16 @@ function FilterBar({
     setLocalHash(val)
     clearTimeout(hashTimer.current)
     hashTimer.current = setTimeout(() => onHashFilter(val), 200)
+  }
+  function handleWiNameChange(val: string) {
+    setLocalWiName(val)
+    clearTimeout(wiNameTimer.current)
+    wiNameTimer.current = setTimeout(() => onNameFilter(val), 200)
+  }
+  function handleUnifiedChange(val: string) {
+    setLocalUnified(val)
+    clearTimeout(unifiedTimer.current)
+    unifiedTimer.current = setTimeout(() => onUnifiedFilter(val), 200)
   }
 
   return (
@@ -1341,6 +1361,18 @@ function FilterBar({
             placeholder="#hashtag"
             value={localHash}
             onChange={e => handleHashChange(e.target.value)}
+          />
+          <input
+            className="input py-0.5 px-2 text-[11px] w-28"
+            placeholder="프로젝트명"
+            value={localWiName}
+            onChange={e => handleWiNameChange(e.target.value)}
+          />
+          <input
+            className="input py-0.5 px-2 text-[11px] w-36"
+            placeholder="통합검색…"
+            value={localUnified}
+            onChange={e => handleUnifiedChange(e.target.value)}
           />
         </>
       )}
@@ -1478,9 +1510,11 @@ export default function TimelineView() {
   const [wiDir,        setWiDir]        = useState<'asc' | 'desc'>('asc')
   const [showClosed,   setShowClosed]   = useState(false)
   const [typeFilter,   setTypeFilter]   = useState<string[]>([])
-  const [clientFilter, setClientFilter] = useState('')
-  const [hashFilter,   setHashFilter]   = useState('')
-  const [fyFilter,     setFyFilter]     = useState<FYFilter>({ mode: 'month' })  // T-16: default '이번 달'
+  const [clientFilter,  setClientFilter]  = useState('')
+  const [hashFilter,    setHashFilter]    = useState('')
+  const [nameFilter,    setNameFilter]    = useState('')
+  const [unifiedFilter, setUnifiedFilter] = useState('')
+  const [fyFilter,      setFyFilter]      = useState<FYFilter>({ mode: 'month' })  // T-16: default '이번 달'
 
   // Scroll refs
   const labelsBodyRef = useRef<HTMLDivElement>(null)
@@ -1621,11 +1655,38 @@ export default function TimelineView() {
       return fp.map(p => ({ kind: 'person' as const, person: p, key: p.id }))
     }
 
+    // viewer: confidential items mask name+client; pipeline items omit description
+    const isConf    = (wi: WorkItem) => !!wi.confidential && !globalEdit
+    const isPipelineViewer = (wi: WorkItem) => wi.type === 'pipeline' && !globalEdit
+
+    const clientQ  = parseSearchQuery(clientFilter)
+    const hashQ    = parseSearchQuery(hashFilter)
+    const nameQ2   = parseSearchQuery(nameFilter)
+    const unifiedQ = parseSearchQuery(unifiedFilter)
+
     let fw = workItems.filter(wi => {
       if (!showClosed && (wi.status ?? wi.project_status) === 'closed') return false
       if (typeFilter.length > 0 && !typeFilter.includes(wi.type)) return false
-      if (clientFilter && !wi.client?.toLowerCase().includes(clientFilter.toLowerCase())) return false
-      if (hashFilter  && !wi.hashtags.some(h => h.toLowerCase().includes(hashFilter.toLowerCase()))) return false
+      // Client search — skip match on confidential items (viewer sees null)
+      if (clientFilter && !isConf(wi)) {
+        if (!clientQ([wi.client ?? ''])) return false
+      } else if (clientFilter && isConf(wi)) {
+        return false  // masked item can't match a client query
+      }
+      // Hashtag search
+      if (hashFilter && !hashQ(wi.hashtags)) return false
+      // Name search
+      if (nameFilter && !nameQ2([isConf(wi) ? '' : wi.name])) return false
+      // Unified search: OR across name · client · description · hashtags (field visibility respected)
+      if (unifiedFilter) {
+        const fields: string[] = [
+          ...wi.hashtags,
+          isConf(wi) ? '' : wi.name,
+          isConf(wi) ? '' : (wi.client ?? ''),
+          isPipelineViewer(wi) ? '' : (wi.description ?? ''),
+        ]
+        if (!unifiedQ(fields)) return false
+      }
       return true
     })
 
@@ -1685,7 +1746,7 @@ export default function TimelineView() {
   }, [
     viewMode, people, workItems, assignments, peopleMap,
     personSort, personDir, showResigned, rankFilter, personNameSearch,
-    wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter,
+    wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter, nameFilter, unifiedFilter,
     expandedWorkItems, expandedLeave,
   ])
 
@@ -2378,7 +2439,7 @@ export default function TimelineView() {
           <SlidersHorizontal size={13} />
           {(viewMode === 'person'
             ? (rankFilter.length > 0 || showResigned || fyFilter.mode !== 'all')
-            : (typeFilter.length > 0 || showClosed || clientFilter || hashFilter || fyFilter.mode !== 'all')
+            : (typeFilter.length > 0 || showClosed || clientFilter || hashFilter || nameFilter || unifiedFilter || fyFilter.mode !== 'all')
           ) && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
         </button>
 
@@ -2470,6 +2531,7 @@ export default function TimelineView() {
             wiSort={wiSort}          wiDir={wiDir}
             showClosed={showClosed}  typeFilter={typeFilter}
             clientFilter={clientFilter}  hashFilter={hashFilter}
+            nameFilter={nameFilter}      unifiedFilter={unifiedFilter}
             onPersonSort={(by) => {
               if (personSort === by) setPersonDir(d => d === 'asc' ? 'desc' : 'asc')
               else { setPersonSort(by); setPersonDir('asc') }
@@ -2489,6 +2551,8 @@ export default function TimelineView() {
             )}
             onClientFilter={setClientFilter}
             onHashFilter={setHashFilter}
+            onNameFilter={setNameFilter}
+            onUnifiedFilter={setUnifiedFilter}
           />
           <div className="flex-shrink-0 flex items-center px-4 py-1.5 border-b border-border bg-surface-50">
             <FYPicker value={fyFilter} onChange={setFyFilter} startMonth={startMonth} />
@@ -2497,7 +2561,7 @@ export default function TimelineView() {
       )}
 
       {/* ── Active filter chips (§9.3 — always visible even when filter panel collapsed) ── */}
-      {(rankFilter.length > 0 || typeFilter.length > 0 || clientFilter || hashFilter) && (
+      {(rankFilter.length > 0 || typeFilter.length > 0 || clientFilter || hashFilter || nameFilter || unifiedFilter) && (
         <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-4 py-1.5 border-b border-amber-200 bg-amber-50/70">
           {rankFilter.map(r => (
             <span key={r} className="inline-flex items-center gap-1 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] px-2 py-0.5 font-medium">
@@ -2523,8 +2587,20 @@ export default function TimelineView() {
               <button onClick={() => setHashFilter('')} className="text-amber-500 hover:text-amber-800 leading-none">×</button>
             </span>
           )}
+          {nameFilter && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] px-2 py-0.5 font-medium">
+              이름: {nameFilter}
+              <button onClick={() => setNameFilter('')} className="text-amber-500 hover:text-amber-800 leading-none">×</button>
+            </span>
+          )}
+          {unifiedFilter && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-white border border-amber-300 text-amber-800 text-[11px] px-2 py-0.5 font-medium">
+              검색: {unifiedFilter}
+              <button onClick={() => setUnifiedFilter('')} className="text-amber-500 hover:text-amber-800 leading-none">×</button>
+            </span>
+          )}
           <button
-            onClick={() => { setRankFilter([]); setTypeFilter([]); setClientFilter(''); setHashFilter('') }}
+            onClick={() => { setRankFilter([]); setTypeFilter([]); setClientFilter(''); setHashFilter(''); setNameFilter(''); setUnifiedFilter('') }}
             className="text-[11px] text-muted hover:text-gray-700 ml-1 underline"
           >
             모두 지우기
