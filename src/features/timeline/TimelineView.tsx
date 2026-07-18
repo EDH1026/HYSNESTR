@@ -307,12 +307,13 @@ interface WorkItemBandProps {
   wi:            WorkItem
   dayWidth:      number
   viewStart:     number
+  viewEnd:       number
   canEdit:       boolean
   onUpdate:      (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
   onOpenDetail?: () => void
 }
 
-function WorkItemBand({ wi, color, dayWidth, viewStart, canEdit, onUpdate, onOpenDetail }: WorkItemBandProps) {
+function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, onUpdate, onOpenDetail }: WorkItemBandProps) {
   const startNum   = useMemo(() => dateToNum(wi.start), [wi.start])
   const endNum     = useMemo(() => dateToNum(wi.end_date), [wi.end_date])
   const mainNum    = useMemo(() => wi.main_start ? dateToNum(wi.main_start) : null, [wi.main_start])
@@ -329,9 +330,13 @@ function WorkItemBand({ wi, color, dayWidth, viewStart, canEdit, onUpdate, onOpe
     setLive({ start: startNum, end: endNum, main: mainNum })
   }, [startNum, endNum, mainNum])
 
-  const x    = (live.start - viewStart) * dayWidth
-  const w    = Math.max((live.end - live.start + 1) * dayWidth, 4)
-  const preW = live.main ? (live.main - live.start) * dayWidth : 0
+  // T-17: clamp to viewport
+  const visStart = Math.max(live.start, viewStart)
+  const visEnd   = Math.min(live.end,   viewEnd)
+
+  const x    = (visStart - viewStart) * dayWidth
+  const w    = Math.max((Math.max(visEnd, visStart) - visStart + 1) * dayWidth, 4)
+  const preW = (live.main && live.main > visStart) ? (live.main - visStart) * dayWidth : 0
 
   function handlePointerDown(e: ReactPointerEvent, edge: 'left' | 'right' | 'body') {
     if (!canEdit) return
@@ -446,6 +451,7 @@ interface AssignmentBarProps {
   color:        string
   dayWidth:     number
   viewStart:    number
+  viewEnd:      number      // T-17: bars outside this range are clipped
   topOffset?:   number      // px from row top (default BAR_PAD)
   height?:      number      // px (default ROW_H - 2*BAR_PAD)
   isLeave:      boolean
@@ -470,7 +476,7 @@ interface AssignmentBarProps {
 }
 
 function AssignmentBar({
-  assignment, label, color, dayWidth, viewStart,
+  assignment, label, color, dayWidth, viewStart, viewEnd,
   topOffset = BAR_PAD,
   height    = ROW_H - 2 * BAR_PAD,
   isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo,
@@ -497,6 +503,9 @@ function AssignmentBar({
   useEffect(() => { setLiveStart(origStart) }, [origStart])
   useEffect(() => { setLiveEnd(origEnd)     }, [origEnd])
 
+  // T-17: skip render entirely if the bar is fully outside the viewport
+  if (origEnd < viewStart || origStart > viewEnd) return null
+
   // T-14: follower bars show offset position during multi-drag / bulk-resize
   const dispStart = multiMoveDelta      != null ? origStart + multiMoveDelta      :
                     multiResizeStartDelta != null ? origStart + multiResizeStartDelta :
@@ -504,8 +513,13 @@ function AssignmentBar({
   const dispEnd   = multiMoveDelta    != null ? origEnd + multiMoveDelta    :
                     multiResizeEndDelta != null ? origEnd + multiResizeEndDelta :
                     liveEnd
-  const x = (dispStart - viewStart) * dayWidth
-  const w = Math.max((dispEnd - dispStart + 1) * dayWidth, 3)
+
+  // T-17: clamp rendered position to viewport; bar outside range is not drawn
+  const renderStart = Math.max(dispStart, viewStart)
+  const renderEnd   = Math.min(dispEnd,   viewEnd)
+
+  const x = (renderStart - viewStart) * dayWidth
+  const w = Math.max((renderEnd - renderStart + 1) * dayWidth, 3)
 
   // E-7: overhang container — HANDLE_HIT px hit-zone on each side regardless of bar width;
   //      container widens as needed to guarantee MIN_MOVE_PX of central move zone.
@@ -683,8 +697,8 @@ function AssignmentBar({
           pointerEvents:'none',
         }}>
           {(() => {
-            const preStudyPx = (preStudyStart != null && preStudyStart > liveStart)
-              ? Math.max(0, Math.min((preStudyStart - liveStart) * dayWidth, w))
+            const preStudyPx = (preStudyStart != null && preStudyStart > renderStart)
+              ? Math.max(0, Math.min((preStudyStart - renderStart) * dayWidth, w))
               : 0
             const mainPx = w - preStudyPx
             const labelPad = 4  // px from bar edges for text
@@ -1168,7 +1182,7 @@ function PersonChipStrip({ people, highlightedPersonIds, onToggleHighlight, onCl
 const RANKS = ['Partner', 'SM', 'M', 'Senior', 'Staff', 'Intern'] as const
 const WI_TYPES = ['project', 'proposal', 'pipeline'] as const
 
-type PersonSortBy = 'name' | 'rank' | 'role'
+type PersonSortBy = 'name' | 'rank'
 type WiSortBy     = 'start' | 'name' | 'status' | 'type'
 
 interface FilterBarProps {
@@ -1269,7 +1283,6 @@ function FilterBar({
             <span className="text-muted mr-1">정렬</span>
             <SortBtn label="이름"  active={personSort === 'name'} dir={personDir} onClick={() => onPersonSort('name')} />
             <SortBtn label="직급"  active={personSort === 'rank'} dir={personDir} onClick={() => onPersonSort('rank')} />
-            <SortBtn label="역할"  active={personSort === 'role'} dir={personDir} onClick={() => onPersonSort('role')} />
           </div>
           <input
             className="input py-0.5 px-2 text-[11px] w-28"
@@ -1453,9 +1466,9 @@ export default function TimelineView() {
   }, [])
 
   // ─── Sort / filter state (§5.2 F-1.8) ────────────────────────────────────
-  const [showFilter,   setShowFilter]   = useState(false)
+  const [showFilter,   setShowFilter]   = useState(true)   // T-19: open by default
   // Person view
-  const [personSort,   setPersonSort]   = useState<'name' | 'rank' | 'role'>('rank')
+  const [personSort,   setPersonSort]   = useState<'name' | 'rank'>('rank')
   const [personDir,    setPersonDir]    = useState<'asc' | 'desc'>('asc')
   const [showResigned,      setShowResigned]      = useState(false)
   const [rankFilter,        setRankFilter]        = useState<string[]>([])
@@ -1467,7 +1480,7 @@ export default function TimelineView() {
   const [typeFilter,   setTypeFilter]   = useState<string[]>([])
   const [clientFilter, setClientFilter] = useState('')
   const [hashFilter,   setHashFilter]   = useState('')
-  const [fyFilter,     setFyFilter]     = useState<FYFilter>({ mode: 'all' })
+  const [fyFilter,     setFyFilter]     = useState<FYFilter>({ mode: 'month' })  // T-16: default '이번 달'
 
   // Scroll refs
   const labelsBodyRef = useRef<HTMLDivElement>(null)
@@ -1508,23 +1521,39 @@ export default function TimelineView() {
   const canEditPipeline = canEdit('global') ||
     workItems.some(w => w.type === 'pipeline' && canEdit('work_item', w.id))
 
-  // View range — FY/range override when active, otherwise all data ± padding
-  // T-10: fixed render window — no data-driven unbounded range
+  // View range — T-11: preset/range returns exact window; 'all' = today ±7 months
   const { viewStart, viewEnd } = useMemo(() => {
     const [fyFrom, fyTo] = resolveFYFilter(fyFilter, startMonth)
     if (fyFrom && fyTo) {
-      // Filter active: range ±1 month (T-10 §1)
-      return {
-        viewStart: monthStart(addMonths(dateToNum(fyFrom), -1)),
-        viewEnd:   nextMonthStart(addMonths(dateToNum(fyTo),  1)) - 1,
-      }
+      return { viewStart: dateToNum(fyFrom), viewEnd: dateToNum(fyTo) }
     }
-    // No filter: today ±7 months (T-10 §2)
     return {
       viewStart: monthStart(addMonths(todayNum, -7)),
-      viewEnd:   nextMonthStart(addMonths(todayNum,  7)) - 1,
+      viewEnd:   nextMonthStart(addMonths(todayNum, 7)) - 1,
     }
   }, [todayNum, fyFilter, startMonth])
+
+  // T-11/T-16: auto-zoom + scroll to today whenever the filter preset changes
+  useEffect(() => {
+    const [from, to] = resolveFYFilter(fyFilter, startMonth)
+    if (!from || !to) return
+    const rangeStart = dateToNum(from)
+    const rangeEnd   = dateToNum(to)
+    const lW    = window.innerWidth < 768 ? 120 : LABEL_W
+    const gridW = Math.max(400, window.innerWidth - lW - 20)
+    const newDayW = Math.max(DAY_MIN, Math.min(DAY_MAX, Math.floor(gridW / (rangeEnd - rangeStart + 1))))
+    setDayWidth(newDayW)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = gridBodyRef.current
+      if (!el) return
+      const inRange = todayNum >= rangeStart && todayNum <= rangeEnd
+      const left = inRange
+        ? Math.max(0, (todayNum - rangeStart) * newDayW - el.clientWidth / 2)
+        : 0
+      el.scrollTo({ left, behavior: 'smooth' })
+    }))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fyFilter, startMonth])
 
   const totalWidth  = (viewEnd - viewStart + 1) * dayWidth
   const headerTiers = dayWidth < ZOOM_WEEK ? 1 : dayWidth < ZOOM_DAY ? 2 : 3
@@ -1586,7 +1615,6 @@ export default function TimelineView() {
         let cmp = 0
         if (personSort === 'name') cmp = a.name.localeCompare(b.name, 'ko')
         if (personSort === 'rank') cmp = (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99)
-        if (personSort === 'role') cmp = (a.role ?? '').localeCompare(b.role ?? '', 'ko')
         return personDir === 'desc' ? -cmp : cmp
       })
 
@@ -1730,17 +1758,6 @@ export default function TimelineView() {
       el.scrollTo({ left: Math.max(0, (todayNum - viewStart) * newW - el.clientWidth / 2), behavior: 'smooth' })
     })
   }
-
-  // T-16: scroll to today the first time rows are available (works for all entry paths —
-  // direct tab click, drilldown, search jump). The mount-time fire is intentionally
-  // removed because data may not be loaded yet; this effect waits for the grid to render.
-  const initialScrollDone = useRef(false)
-  useEffect(() => {
-    if (rows.length === 0 || initialScrollDone.current) return
-    initialScrollDone.current = true
-    scrollToToday()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.length])
 
   // D-6 / §5.11a: handle navigation state (dashboard drill-down + global search jump)
   // T-16 fix: track last-handled key (not a boolean) so re-navigation to the same/different
@@ -2239,6 +2256,7 @@ export default function TimelineView() {
         laneMap={rowLaneData.get(row.key)?.laneMap}
         dayWidth={dayWidth}
         viewStart={viewStart}
+        viewEnd={viewEnd}
         canCreate={canCreate}
         globalEdit={globalEdit}
         canEditAsgn={canEditAsgn}
@@ -2728,6 +2746,7 @@ interface GridRowProps {
   laneMap?:       Map<string, number>   // T-16: lane index per assignment id
   dayWidth:       number
   viewStart:      number
+  viewEnd:        number                // T-17: bar clipping bound
   canCreate:      boolean
   globalEdit:     boolean
   canEditAsgn:    (a: Assignment) => boolean
@@ -2758,7 +2777,7 @@ interface GridRowProps {
 }
 
 function GridRow({
-  row, rowAssignments, laneMap, dayWidth, viewStart,
+  row, rowAssignments, laneMap, dayWidth, viewStart, viewEnd,
   canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
   peopleMap, workItemMap, colorMap, holidaySet,
   virtualLeaveBlocks,
@@ -2955,6 +2974,7 @@ function GridRow({
           color={colorMap.get(row.workItem.id) ?? (TYPE_FAMILY[row.workItem.type]?.[0] ?? '#1e40af')}
           dayWidth={dayWidth}
           viewStart={viewStart}
+          viewEnd={viewEnd}
           canEdit={canEditWI(row.workItem)}
           onUpdate={onUpdateWI}
           onOpenDetail={onOpenDetail ? () => onOpenDetail(row.workItem) : undefined}
@@ -2963,8 +2983,11 @@ function GridRow({
 
       {/* T-17: virtual leave preview blocks — behind real bars (z=3) */}
       {virtualLeaveBlocks && virtualLeaveBlocks.map((blk, i) => {
-        const left  = (blk.start - viewStart) * dayWidth
-        const width = (blk.end - blk.start + 1) * dayWidth
+        const clampedStart = Math.max(blk.start, viewStart)
+        const clampedEnd   = Math.min(blk.end,   viewEnd)
+        if (clampedEnd < clampedStart) return null
+        const left  = (clampedStart - viewStart) * dayWidth
+        const width = (clampedEnd - clampedStart + 1) * dayWidth
         return (
           <div
             key={`vl-${i}`}
@@ -3013,6 +3036,7 @@ function GridRow({
             color={color}
             dayWidth={dayWidth}
             viewStart={viewStart}
+            viewEnd={viewEnd}
             topOffset={lane * ROW_H + BAR_PAD}
             isLeave={a.kind === 'leave'}
             holidaySet={holidaySet}
