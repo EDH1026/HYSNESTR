@@ -183,6 +183,9 @@ COMMENT ON FUNCTION public.bulk_status_transition(date, date, text[], text) IS
 -- 검증 쿼리
 -- ════════════════════════════════════════════════════════════
 
+-- PostgREST 스키마 캐시 강제 갱신 (함수 생성 직후 인식되도록)
+NOTIFY pgrst, 'reload schema';
+
 SELECT proname, prosecdef, provolatile
   FROM pg_proc
  WHERE proname IN ('bulk_status_preview', 'bulk_status_transition')

@@ -18,6 +18,8 @@
 
 import {
   useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect, Fragment,
+  Component,
+  type ErrorInfo, type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type MouseEvent as ReactMouseEvent,
   type DragEvent as ReactDragEvent,
@@ -61,6 +63,35 @@ import {
   WEEKEND_BG, HOLIDAY_BG, TODAY_COLOR,
   RANK_ORDER,
 } from './constants'
+
+// T-11 v2.90: Error Boundary — prevents any render exception from blanking the full app
+class TimelineErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { error: null }
+  }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[TimelineErrorBoundary]', error, info.componentStack)
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex flex-col items-center justify-center flex-1 text-sm gap-3 py-12">
+          <p className="text-red-600 font-medium">타임라인 렌더링 오류</p>
+          <p className="text-xs font-mono text-gray-500">{this.state.error.message}</p>
+          <button className="btn-secondary text-xs" onClick={() => this.setState({ error: null })}>
+            다시 시도
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 // T-1: compute dayWidth so ~90 days (≈3 months) fill the grid on first load
 function calcDefaultDayWidth(): number {
@@ -670,12 +701,6 @@ function AssignmentBar({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
         onDoubleClick={onDoubleClick ? e => { e.stopPropagation(); onDoubleClick() } : undefined}
-        onContextMenu={e => {
-          e.preventDefault()
-          e.stopPropagation()
-          setTipPos(null)
-          onContextMenu?.(assignment, e.clientX, e.clientY)
-        }}
         onMouseEnter={e => {
           setHovered(true)
           if (tooltipInfo) setTipPos({ x: e.clientX, y: e.clientY })
@@ -799,6 +824,27 @@ function AssignmentBar({
               }} />
             </div>
           </>
+        )}
+        {/* T-12 v2.90: kebab action button — left-click replaces right-click context menu */}
+        {onContextMenu && (hovered || isSelected) && w >= 16 && (
+          <button
+            style={{
+              position: 'absolute',
+              right: innerBarOffset,
+              top: '50%', transform: 'translateY(-50%)',
+              width: 20, height: 20,
+              zIndex: 25,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(0,0,0,0.38)',
+              borderRadius: 3, border: 'none', cursor: 'pointer',
+              color: 'white', fontSize: 13, lineHeight: '1',
+              pointerEvents: 'auto',
+            }}
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onContextMenu(assignment, e.clientX, e.clientY) }}
+          >
+            ⋯
+          </button>
         )}
       </div>
 
@@ -1584,14 +1630,18 @@ export default function TimelineView() {
 
   // View range — T-11: preset/range returns exact window; 'all' = today ±7 months
   const { viewStart, viewEnd } = useMemo(() => {
+    const defaultStart = monthStart(addMonths(todayNum, -7))
+    const defaultEnd   = nextMonthStart(addMonths(todayNum, 7)) - 1
     const [fyFrom, fyTo] = resolveFYFilter(fyFilter, startMonth)
     if (fyFrom && fyTo) {
-      return { viewStart: dateToNum(fyFrom), viewEnd: dateToNum(fyTo) }
+      const vs = dateToNum(fyFrom)
+      const ve = dateToNum(fyTo)
+      // Guard: reject NaN/Infinity or inverted ranges (e.g. from manual range input)
+      if (Number.isFinite(vs) && Number.isFinite(ve) && vs <= ve) {
+        return { viewStart: vs, viewEnd: ve }
+      }
     }
-    return {
-      viewStart: monthStart(addMonths(todayNum, -7)),
-      viewEnd:   nextMonthStart(addMonths(todayNum, 7)) - 1,
-    }
+    return { viewStart: defaultStart, viewEnd: defaultEnd }
   }, [todayNum, fyFilter, startMonth])
 
   // T-11/T-16: auto-zoom + scroll to today whenever the filter preset changes
@@ -1600,9 +1650,12 @@ export default function TimelineView() {
     if (!from || !to) return
     const rangeStart = dateToNum(from)
     const rangeEnd   = dateToNum(to)
+    if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd)) return
+    const rangeSpan  = rangeEnd - rangeStart + 1
+    if (rangeSpan <= 0) return
     const lW    = window.innerWidth < 768 ? 120 : LABEL_W
     const gridW = Math.max(400, window.innerWidth - lW - 20)
-    const newDayW = Math.max(DAY_MIN, Math.min(DAY_MAX, Math.floor(gridW / (rangeEnd - rangeStart + 1))))
+    const newDayW = Math.max(DAY_MIN, Math.min(DAY_MAX, Math.floor(gridW / rangeSpan)))
     setDayWidth(newDayW)
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const el = gridBodyRef.current
@@ -2712,6 +2765,7 @@ export default function TimelineView() {
         />
 
         {/* Grid panel — single scroll container (T-8: header + body share one scrollLeft) */}
+        <TimelineErrorBoundary>
         <div className="flex flex-1 flex-col overflow-hidden">
           <div
             ref={gridBodyRef}
@@ -2767,6 +2821,7 @@ export default function TimelineView() {
             </div>
           </div>
         </div>
+        </TimelineErrorBoundary>
       </div>
 
       {/* ── Assignment modal ── */}
