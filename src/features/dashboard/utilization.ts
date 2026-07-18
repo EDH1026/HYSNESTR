@@ -54,7 +54,12 @@ export function computeUtil(
       } else if (a.kind === 'work' && a.work_item_id) {
         const wi = wiMap.get(a.work_item_id)
         if (wi?.type === 'project') {
-          for (let d = as; d <= ae; d++) projectDays.add(d)
+          // Clamp to main phase [main_start, end_date] — exclude pre-study (T-6 §7.1)
+          const mainStart = wi.main_start ? dateToNum(wi.main_start) : as
+          const wiEnd     = dateToNum(wi.end_date)
+          const ps = Math.max(as, mainStart)
+          const pe = Math.min(ae, wiEnd)
+          for (let d = ps; d <= pe; d++) projectDays.add(d)
         }
       }
     }

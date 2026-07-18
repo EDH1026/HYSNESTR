@@ -228,4 +228,28 @@ describe('computeUtil', () => {
     expect(den).toBe(3)
     expect(num).toBe(3)
   })
+
+  it('pre-study days excluded from numerator (T-6 §7.1)', () => {
+    // WI: start=day0, main_start=day4 (Mon 1970-01-05), end_date=day6 (Wed 1970-01-07)
+    // Assignment covers full period [0,6] including pre-study [0,3]
+    // Period [0,6]: 5 workdays {0,1,4,5,6}
+    //
+    // BEFORE fix: projectDays = {0,1,4,5,6} → num=5 (pre-study counted)
+    // AFTER  fix: projectDays = {4,5,6}     → num=3 (pre-study excluded)
+    //   Pre-study workdays excluded: day0(Thu) + day1(Fri) = 2-day reduction
+    const wi  = mkWI({ start: '1970-01-01', main_start: '1970-01-05', end_date: '1970-01-07' })
+    const asn = mkA({ start: '1970-01-01', end_date: '1970-01-07' })
+    const { num, den } = computeUtil(0, 6, [mkP()], [asn], [wi], noHoliday)
+    expect(den).toBe(5)  // all 5 workdays available (pre-study doesn't affect den)
+    expect(num).toBe(3)  // only main-phase workdays {4,5,6}
+  })
+
+  it('no main_start → full assignment range counts (backward-compat)', () => {
+    // main_start=null: falls back to as — entire assignment range counts
+    const wi  = mkWI({ main_start: null })
+    const asn = mkA()
+    const { num, den } = computeUtil(0, 6, [mkP()], [asn], [wi], noHoliday)
+    expect(den).toBe(5)
+    expect(num).toBe(5)
+  })
 })
