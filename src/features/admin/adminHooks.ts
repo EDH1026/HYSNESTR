@@ -111,6 +111,66 @@ export function useFillStatutoryLeave() {
   })
 }
 
+// ── Bulk status transition (PRD v2.89) ────────────────────
+
+export interface BulkStatusPreviewResult {
+  work_items:        number
+  leave_assignments: number
+  direction:         'close' | 'open'
+  from:              string
+  to:                string
+}
+
+export interface BulkStatusTransitionResult {
+  work_items:        number
+  leave_assignments: number
+  direction:         'close' | 'open'
+}
+
+export interface BulkStatusParams {
+  from:      string          // YYYY-MM-DD
+  to:        string          // YYYY-MM-DD
+  targets:   ('work_items' | 'leave_assignments')[]
+  direction: 'close' | 'open'
+}
+
+export function useBulkStatusPreview() {
+  return useMutation({
+    mutationFn: async (p: BulkStatusParams): Promise<BulkStatusPreviewResult> => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase as any).rpc('bulk_status_preview', {
+        p_from:      p.from,
+        p_to:        p.to,
+        p_targets:   p.targets,
+        p_direction: p.direction,
+      })
+      if (error) throw new Error(error.message)
+      return data as BulkStatusPreviewResult
+    },
+  })
+}
+
+export function useBulkStatusTransition() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (p: BulkStatusParams): Promise<BulkStatusTransitionResult> => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase as any).rpc('bulk_status_transition', {
+        p_from:      p.from,
+        p_to:        p.to,
+        p_targets:   p.targets,
+        p_direction: p.direction,
+      })
+      if (error) throw new Error(error.message)
+      return data as BulkStatusTransitionResult
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.workItems.all() })
+      qc.invalidateQueries({ queryKey: queryKeys.assignments.all() })
+    },
+  })
+}
+
 // ── Audit log ─────────────────────────────────────────────────
 
 export interface AuditLogEntry extends AuditLog {
