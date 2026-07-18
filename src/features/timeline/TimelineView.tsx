@@ -535,6 +535,15 @@ function AssignmentBar({
   useEffect(() => { setLiveStart(origStart) }, [origStart])
   useEffect(() => { setLiveEnd(origEnd)     }, [origEnd])
 
+  // React error #300 fix (v2.91): these hooks must run unconditionally on every
+  // render of this instance (same key=a.id regardless of viewport) — they were
+  // previously declared after the T-17 early return below, so a viewStart/viewEnd
+  // change (preset/FY click) could flip the same fiber between calling 9 hooks and
+  // 12 hooks across renders, violating the Rules of Hooks.
+  const [tipPos,   setTipPos]   = useState<{ x: number; y: number } | null>(null)
+  const [dragTip,  setDragTip]  = useState<{ x: number; y: number } | null>(null)
+  const isHolidayFn = useCallback((n: number) => holidaySet.has(n), [holidaySet])
+
   // T-17: skip render entirely if the bar is fully outside the viewport
   if (origEnd < viewStart || origStart > viewEnd) return null
 
@@ -570,10 +579,6 @@ function AssignmentBar({
     if (posX >= containerW - HANDLE_HIT) return 'resize-right'
     return 'move'
   }
-
-  const [tipPos,   setTipPos]   = useState<{ x: number; y: number } | null>(null)
-  const [dragTip,  setDragTip]  = useState<{ x: number; y: number } | null>(null)
-  const isHolidayFn = useCallback((n: number) => holidaySet.has(n), [holidaySet])
 
   function onPointerDown(e: ReactPointerEvent) {
     setTipPos(null)
