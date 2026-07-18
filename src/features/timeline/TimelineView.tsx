@@ -24,7 +24,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye, Pencil, Copy, Trash2, FileText, CalendarDays } from 'lucide-react'
+import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye, Pencil, Copy, Trash2, FileText, CalendarDays, Lock, Unlock } from 'lucide-react'
 
 import {
   dateToNum, numToStr, today, isWeekend, isSaturday,
@@ -759,6 +759,17 @@ function AssignmentBar({
                     zIndex: 20, pointerEvents: 'none',
                   }} />
                 )}
+                {/* PRD v2.88: Closed leave lock indicator */}
+                {isLeave && assignment.status === 'closed' && (
+                  <div title="🔒 Closed — 편집 잠금" style={{
+                    position: 'absolute', top: 2, left: 3,
+                    display: 'flex', alignItems: 'center',
+                    zIndex: 20, pointerEvents: 'none',
+                    opacity: 0.85,
+                  }}>
+                    <Lock size={9} color="white" strokeWidth={2.5} />
+                  </div>
+                )}
               </>
             )
           })()}
@@ -982,21 +993,23 @@ interface CtxMenuProps {
   x:           number
   y:           number
   workItem?:   WorkItem
-  hasEditRole: boolean   // user has edit permission (ignoring Closed status)
-  isClosed:    boolean   // linked work item is Closed (always false for leave)
-  canSeeLeave: boolean   // viewer: only own person; editor+: always
-  onClose:     () => void
-  onEdit:      () => void
-  onDuplicate: () => void
-  onDelete:    () => void
-  onDetail:    () => void
-  onLeave:     () => void
+  hasEditRole:         boolean   // user has edit permission (ignoring Closed status)
+  isClosed:            boolean   // linked work item is Closed, OR leave is status='closed'
+  leaveLocked:         boolean   // leave assignment is specifically status='closed'
+  canSeeLeave:         boolean   // viewer: only own person; editor+: always
+  onClose:             () => void
+  onEdit:              () => void
+  onDuplicate:         () => void
+  onDelete:            () => void
+  onDetail:            () => void
+  onLeave:             () => void
+  onToggleLeaveStatus: () => void
 }
 
 function AssignmentContextMenu({
   assignment, x, y,
-  hasEditRole, isClosed, canSeeLeave,
-  onClose, onEdit, onDuplicate, onDelete, onDetail, onLeave,
+  hasEditRole, isClosed, leaveLocked, canSeeLeave,
+  onClose, onEdit, onDuplicate, onDelete, onDetail, onLeave, onToggleLeaveStatus,
 }: CtxMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -1070,6 +1083,19 @@ function AssignmentContextMenu({
           >
             <Trash2 size={13} /> 삭제
           </button>
+          {assignment.kind === 'leave' && (
+            <>
+              <div className="border-t border-border/50 my-1" />
+              <button
+                className={item()}
+                onClick={() => { onClose(); onToggleLeaveStatus() }}
+              >
+                {leaveLocked
+                  ? <><Unlock size={13} /> Open으로 해제</>
+                  : <><Lock   size={13} /> Closed로 잠금</>}
+              </button>
+            </>
+          )}
         </>
       )}
 
@@ -1542,8 +1568,9 @@ export default function TimelineView() {
   // Status-toggle permission: role-based only, does NOT require item to be open
   const canToggleWIStatus = (wi: WorkItem) =>
     wi.type === 'pipeline' ? canEdit('work_item', wi.id) || globalEdit : globalEdit || canEdit('work_item', wi.id)
-  // Assignment edit: also blocked when linked work item is closed (W-5/W-6)
+  // Assignment edit: blocked when leave is Closed (PRD v2.88), or linked work item is Closed (W-5/W-6)
   const canEditAsgn = (a: Assignment) => {
+    if (a.kind === 'leave' && a.status === 'closed') return false
     if (a.work_item_id) {
       const wi = workItemMap.get(a.work_item_id)
       if (wi && isWIClosed(wi)) return false
@@ -1949,6 +1976,10 @@ export default function TimelineView() {
   // ─── T-12: Context-menu handlers ─────────────────────────────────────────
 
   function handleCtxDelete(a: Assignment) {
+    if (a.kind === 'leave' && a.status === 'closed') {
+      window.alert('Closed 휴가 배정은 삭제할 수 없습니다. 먼저 Open으로 전환하세요.')
+      return
+    }
     const label = a.kind === 'leave'
       ? `${a.leave_type ?? '휴가'} (${a.start} ~ ${a.end_date})`
       : `배정 (${a.start} ~ ${a.end_date})`
@@ -1956,6 +1987,11 @@ export default function TimelineView() {
     deleteAssignment.mutate(a.id, {
       onSuccess: () => push(makeAssignmentDelete(a)),
     })
+  }
+
+  function handleToggleLeaveStatus(a: Assignment) {
+    const newStatus: 'open' | 'closed' = a.status === 'closed' ? 'open' : 'closed'
+    updateAssignment.mutate({ id: a.id, status: newStatus })
   }
 
   function handleCtxDuplicate(a: Assignment) {
@@ -2125,6 +2161,7 @@ export default function TimelineView() {
       }
     }
     const moved = assignments.find(a => a.id === id)
+    if (moved?.kind === 'leave' && moved.status === 'closed') return  // PRD v2.88 defense-in-depth
     if (!moved?.person_id) {
       updateAssignment.mutate({ id, ...patch })
       return
@@ -2781,10 +2818,11 @@ export default function TimelineView() {
 
       {/* ── T-12: Assignment right-click context menu ── */}
       {ctxMenu && (() => {
-        const a         = ctxMenu.assignment
-        const wi        = a.work_item_id ? workItemMap.get(a.work_item_id) : undefined
-        const closed    = wi ? isWIClosed(wi) : false
-        // "has edit role" = user can edit independent of Closed status
+        const a             = ctxMenu.assignment
+        const wi            = a.work_item_id ? workItemMap.get(a.work_item_id) : undefined
+        const isLeaveLocked = a.kind === 'leave' && a.status === 'closed'
+        const closed        = isLeaveLocked || (wi ? isWIClosed(wi) : false)
+        // "has edit role" = user has role permission, independent of Closed status
         const hasRole   = globalEdit || canEdit('person', a.person_id) ||
                           (a.work_item_id ? canEdit('work_item', a.work_item_id) : false)
         const seeLeave  = hasRole || a.person_id === myPersonId
@@ -2796,6 +2834,7 @@ export default function TimelineView() {
             workItem={wi}
             hasEditRole={hasRole}
             isClosed={closed}
+            leaveLocked={isLeaveLocked}
             canSeeLeave={seeLeave}
             onClose={() => setCtxMenu(null)}
             onEdit={() => openEdit(a)}
@@ -2803,6 +2842,7 @@ export default function TimelineView() {
             onDelete={() => handleCtxDelete(a)}
             onDetail={() => { if (wi) setDetailWorkItem(wi) }}
             onLeave={() => handleCtxViewLeave(a.person_id)}
+            onToggleLeaveStatus={() => handleToggleLeaveStatus(a)}
           />
         )
       })()}
@@ -2990,7 +3030,11 @@ function GridRow({
     if (a.kind === 'leave') {
       return {
         title: a.leave_type ?? 'Leave',
-        lines: [p ? `대상: ${p.name}` : '', dateRange].filter(Boolean),
+        lines: [
+          p ? `대상: ${p.name}` : '',
+          dateRange,
+          a.status === 'closed' ? '🔒 Closed — 편집·삭제 잠금' : '',
+        ].filter(Boolean),
       }
     }
     if (row.kind === 'person') {
