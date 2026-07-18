@@ -30,7 +30,7 @@ import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, C
 
 import {
   dateToNum, numToStr, today, isWeekend, isSaturday,
-  monthBoundaries, weekBoundaries, nextMonthStart, monthStart, addMonths,
+  monthBoundaries, weekBoundaries, nextMonthStart,
   monthYearLabel, dayOfMonthLabel, weekdayLabel, numToDate,
   snapLeaveEnd, workdayCount, nextWorkday,
 } from '@/lib/date'
@@ -60,6 +60,7 @@ import {
   LABEL_W, ROW_H, HEADER_ROW_H, BAR_PAD, HANDLE_W, DRAG_THRESHOLD,
   DAY_MIN, DAY_MAX,
   ZOOM_WEEK, ZOOM_DAY,
+  ZOOM_PRESET_MONTH, ZOOM_PRESET_WEEK, ZOOM_PRESET_DAY,
   WEEKEND_BG, HOLIDAY_BG, TODAY_COLOR,
   RANK_ORDER,
 } from './constants'
@@ -91,12 +92,6 @@ class TimelineErrorBoundary extends Component<
     }
     return this.props.children
   }
-}
-
-// T-1: compute dayWidth so ~90 days (≈3 months) fill the grid on first load
-function calcDefaultDayWidth(): number {
-  const lW = window.innerWidth < 768 ? 120 : LABEL_W
-  return Math.max(DAY_MIN, Math.min(DAY_MAX, Math.round((window.innerWidth - lW) / 90)))
 }
 
 // T-17: virtual leave preview — fill empty workdays with phantom leave blocks
@@ -1393,15 +1388,6 @@ function FilterBar({
               <ChipBtn key={r} label={r} active={rankFilter.includes(r)} onClick={() => onRankFilter(r)} />
             ))}
           </div>
-          <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
-            <input
-              type="checkbox"
-              checked={showResigned}
-              onChange={e => onShowResigned(e.target.checked)}
-              className="accent-brand-600"
-            />
-            퇴직자 표시
-          </label>
         </>
       ) : (
         <>
@@ -1418,15 +1404,6 @@ function FilterBar({
               <ChipBtn key={t} label={t} active={typeFilter.includes(t)} onClick={() => onTypeFilter(t)} />
             ))}
           </div>
-          <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
-            <input
-              type="checkbox"
-              checked={showClosed}
-              onChange={e => onShowClosed(e.target.checked)}
-              className="accent-brand-600"
-            />
-            Closed 표시
-          </label>
           <input
             className="input py-0.5 px-2 text-[11px] w-28"
             placeholder="Client"
@@ -1453,6 +1430,26 @@ function FilterBar({
           />
         </>
       )}
+
+      {/* T-21 v2.92: 퇴직자/Closed 표시 — shared toggles, available in both Person and Work Item tabs */}
+      <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
+        <input
+          type="checkbox"
+          checked={showResigned}
+          onChange={e => onShowResigned(e.target.checked)}
+          className="accent-brand-600"
+        />
+        퇴직자 표시
+      </label>
+      <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
+        <input
+          type="checkbox"
+          checked={showClosed}
+          onChange={e => onShowClosed(e.target.checked)}
+          className="accent-brand-600"
+        />
+        Closed 표시
+      </label>
     </div>
   )
 }
@@ -1507,7 +1504,9 @@ export default function TimelineView() {
   }, [])
 
   const [viewMode,          setViewMode]          = useState<ViewMode>('person')
-  const [dayWidth,          setDayWidth]          = useState(calcDefaultDayWidth)
+  // T-11 v2.92: zoom/period/focus are independent — dayWidth is seeded to the fixed
+  // 'Day' preset, never a container-fit calculation (see ZOOM_PRESET_DAY/WEEK/MONTH).
+  const [dayWidth,          setDayWidth]          = useState(ZOOM_PRESET_DAY)
   const [labelW,            setLabelW]            = useState(() => window.innerWidth < 768 ? 120 : LABEL_W)
   const [modal,             setModal]             = useState<ModalState>({ open: false, mode: 'create', prefill: {} })
   const [expandedWorkItems,    setExpandedWorkItems]    = useState<Set<string>>(new Set())
@@ -1591,7 +1590,11 @@ export default function TimelineView() {
   const [hashFilter,    setHashFilter]    = useState('')
   const [nameFilter,    setNameFilter]    = useState('')
   const [unifiedFilter, setUnifiedFilter] = useState('')
-  const [fyFilter,      setFyFilter]      = useState<FYFilter>({ mode: 'month' })  // T-16: default '이번 달'
+  // T-16 v2.92: default entry period = ±30일 centred on today (period is independent of zoom — see T-11)
+  const [fyFilter,      setFyFilter]      = useState<FYFilter>(() => {
+    const t = today()
+    return { mode: 'range', from: numToStr(t - 30), to: numToStr(t + 30) }
+  })
 
   // Scroll refs
   const labelsBodyRef = useRef<HTMLDivElement>(null)
@@ -1633,10 +1636,13 @@ export default function TimelineView() {
   const canEditPipeline = canEdit('global') ||
     workItems.some(w => w.type === 'pipeline' && canEdit('work_item', w.id))
 
-  // View range — T-11: preset/range returns exact window; 'all' = today ±7 months
+  // View range — T-11 v2.92: period preset/FY/range sets ONLY viewStart/viewEnd.
+  // It must never touch dayWidth or scroll position (those are independent controls —
+  // see the Day/Week/Month zoom buttons and Today button below). Fallback (invalid/empty
+  // range) is ±30일, matching the default entry period (T-16).
   const { viewStart, viewEnd } = useMemo(() => {
-    const defaultStart = monthStart(addMonths(todayNum, -7))
-    const defaultEnd   = nextMonthStart(addMonths(todayNum, 7)) - 1
+    const defaultStart = todayNum - 30
+    const defaultEnd   = todayNum + 30
     const [fyFrom, fyTo] = resolveFYFilter(fyFilter, startMonth)
     if (fyFrom && fyTo) {
       const vs = dateToNum(fyFrom)
@@ -1649,34 +1655,25 @@ export default function TimelineView() {
     return { viewStart: defaultStart, viewEnd: defaultEnd }
   }, [todayNum, fyFilter, startMonth])
 
-  // T-11/T-16: auto-zoom + scroll to today whenever the filter preset changes
+  // T-16 v2.92: centre on today once, on initial mount only (default period ±30일
+  // already includes today). Period/FY/range changes after mount do NOT re-trigger this —
+  // "focus 불변" per T-11: changing the period control must not reposition scroll.
   useEffect(() => {
-    const [from, to] = resolveFYFilter(fyFilter, startMonth)
-    if (!from || !to) return
-    const rangeStart = dateToNum(from)
-    const rangeEnd   = dateToNum(to)
-    if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd)) return
-    const rangeSpan  = rangeEnd - rangeStart + 1
-    if (rangeSpan <= 0) return
-    const lW    = window.innerWidth < 768 ? 120 : LABEL_W
-    const gridW = Math.max(400, window.innerWidth - lW - 20)
-    const newDayW = Math.max(DAY_MIN, Math.min(DAY_MAX, Math.floor(gridW / rangeSpan)))
-    setDayWidth(newDayW)
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const el = gridBodyRef.current
       if (!el) return
-      const inRange = todayNum >= rangeStart && todayNum <= rangeEnd
-      const left = inRange
-        ? Math.max(0, (todayNum - rangeStart) * newDayW - el.clientWidth / 2)
-        : 0
-      el.scrollTo({ left, behavior: 'smooth' })
+      el.scrollTo({ left: Math.max(0, (todayNum - viewStart) * dayWidth - el.clientWidth / 2) })
     }))
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fyFilter, startMonth])
+  }, [])
 
   const totalWidth  = (viewEnd - viewStart + 1) * dayWidth
   const headerTiers = dayWidth < ZOOM_WEEK ? 1 : dayWidth < ZOOM_DAY ? 2 : 3
   const headerH     = headerTiers * HEADER_ROW_H
+  // v2.92: period filter badge should only light up for a non-default period (was fyFilter.mode!=='all',
+  // but 'all' no longer occurs now that ±30일 — itself a 'range' — is the default)
+  const isDefaultPeriod = fyFilter.mode === 'range' &&
+    fyFilter.from === numToStr(todayNum - 30) && fyFilter.to === numToStr(todayNum + 30)
 
   // Holiday set (with recurring support)
   const holidaySet = useMemo(() => {
@@ -1808,6 +1805,8 @@ export default function TimelineView() {
         const subRows = personIds
           .map(pid => peopleMap.get(pid))
           .filter((p): p is Person => !!p)
+          // T-21 v2.92: shared "퇴직자 표시" toggle also applies to workitem-sub person rows
+          .filter(p => showResigned || p.status !== 'resigned')
           .sort((a, b) => {
             const ro = (RANK_ORDER[a.rank] ?? 99) - (RANK_ORDER[b.rank] ?? 99)
             return ro !== 0 ? ro : a.name.localeCompare(b.name, 'ko')
@@ -1894,14 +1893,12 @@ export default function TimelineView() {
     return viewStart + Math.floor((clientX - rect.left + scrollLeft) / dayWidth)
   }, [viewStart, dayWidth])
 
-  // Scroll to today (+ reset zoom to ~3 months when called from the button)
+  // T-11(C) v2.92: Today button moves focus ONLY — zoom (dayWidth) and period (viewStart/viewEnd) untouched
   function scrollToToday() {
-    const newW = calcDefaultDayWidth()
-    setDayWidth(newW)   // T-1: reset to ~3-month zoom (no-op on mount since state was already newW)
     requestAnimationFrame(() => {
       const el = gridBodyRef.current
       if (!el) return
-      el.scrollTo({ left: Math.max(0, (todayNum - viewStart) * newW - el.clientWidth / 2), behavior: 'smooth' })
+      el.scrollTo({ left: Math.max(0, (todayNum - viewStart) * dayWidth - el.clientWidth / 2), behavior: 'smooth' })
     })
   }
 
@@ -2404,6 +2401,21 @@ export default function TimelineView() {
       rowAssignments = assignments.filter(a => a.kind === 'leave')
     }
 
+    // T-21 v2.92: shared "Closed 표시" toggle — hides work assignments tied to a Closed work item
+    // and Closed leave blocks (LV-15) when off, in both Person and Work Item tabs. Row.kind==='workitem-sub'
+    // is already covered upstream (fw filters out Closed work items entirely when showClosed is false),
+    // so this only has visible effect on person rows and the leave rows.
+    if (!showClosed) {
+      rowAssignments = rowAssignments.filter(a => {
+        if (a.kind === 'leave') return a.status !== 'closed'
+        if (a.work_item_id) {
+          const wi = workItemMap.get(a.work_item_id)
+          if (wi && isWIClosed(wi)) return false
+        }
+        return true
+      })
+    }
+
     return (
       <GridRow
         key={row.key}
@@ -2490,9 +2502,35 @@ export default function TimelineView() {
                   className="btn-secondary p-1.5" title="Zoom in">
             <ZoomIn size={13} />
           </button>
-          <span className="text-xs text-muted w-10 text-right">
-            {dayWidth < ZOOM_WEEK ? 'Mo' : dayWidth < ZOOM_DAY ? 'Wk' : 'Day'}
-          </span>
+          {/* T-11(A) v2.92: Day/Week/Month display-unit presets — zoom only, period/focus untouched.
+              Highlight reflects the current header tier (not exact-value match), same semantics
+              as the old static Mo/Wk/Day indicator this replaces. */}
+          <div className="flex rounded-md overflow-hidden border border-border">
+            <button
+              onClick={() => setDayWidth(ZOOM_PRESET_MONTH)}
+              title="Month — 월 단위 눈금"
+              className={[
+                'px-2 py-1 text-[11px] font-medium transition-colors',
+                dayWidth < ZOOM_WEEK ? 'bg-brand-600 text-white' : 'bg-white text-gray-600 hover:bg-surface-100',
+              ].join(' ')}
+            >Month</button>
+            <button
+              onClick={() => setDayWidth(ZOOM_PRESET_WEEK)}
+              title="Week — 주 단위 눈금"
+              className={[
+                'px-2 py-1 text-[11px] font-medium border-l border-border transition-colors',
+                dayWidth >= ZOOM_WEEK && dayWidth < ZOOM_DAY ? 'bg-brand-600 text-white' : 'bg-white text-gray-600 hover:bg-surface-100',
+              ].join(' ')}
+            >Week</button>
+            <button
+              onClick={() => setDayWidth(ZOOM_PRESET_DAY)}
+              title="Day — 일 단위 눈금"
+              className={[
+                'px-2 py-1 text-[11px] font-medium border-l border-border transition-colors',
+                dayWidth >= ZOOM_DAY ? 'bg-brand-600 text-white' : 'bg-white text-gray-600 hover:bg-surface-100',
+              ].join(' ')}
+            >Day</button>
+          </div>
         </div>
 
         {/* Today */}
@@ -2511,7 +2549,7 @@ export default function TimelineView() {
             ].join(' ')}
           >
             <Eye size={13} />
-            잔여 예정
+            휴가 배정 시뮬레이션
           </button>
         )}
 
@@ -2533,8 +2571,8 @@ export default function TimelineView() {
         >
           <SlidersHorizontal size={13} />
           {(viewMode === 'person'
-            ? (rankFilter.length > 0 || showResigned || fyFilter.mode !== 'all')
-            : (typeFilter.length > 0 || showClosed || clientFilter || hashFilter || nameFilter || unifiedFilter || fyFilter.mode !== 'all')
+            ? (rankFilter.length > 0 || showResigned || showClosed || !isDefaultPeriod)
+            : (typeFilter.length > 0 || showClosed || showResigned || clientFilter || hashFilter || nameFilter || unifiedFilter || !isDefaultPeriod)
           ) && <span className="w-1.5 h-1.5 rounded-full bg-brand-500" />}
         </button>
 
@@ -2650,7 +2688,7 @@ export default function TimelineView() {
             onUnifiedFilter={setUnifiedFilter}
           />
           <div className="flex-shrink-0 flex items-center px-4 py-1.5 border-b border-border bg-surface-50">
-            <FYPicker value={fyFilter} onChange={setFyFilter} startMonth={startMonth} />
+            <FYPicker value={fyFilter} onChange={setFyFilter} startMonth={startMonth} quickPresets="days" />
           </div>
         </>
       )}
@@ -3246,7 +3284,13 @@ function GridRow({
           Each marker is a rotated square (diamond) centred on its day. */}
       {rowAssignments.flatMap(a => {
         const lane = laneMap?.get(a.id) ?? 0
-        return (a.weekend_dates ?? []).map(dateStr => {
+        // T-20 v2.92: clamp to viewport — unlike AssignmentBar/WorkItemBand, this marker loop had no
+        // viewStart/viewEnd bound, so a date far outside the current period (e.g. a person's other,
+        // more recent assignment while an old FY is selected) stretched the scroll canvas out to it.
+        return (a.weekend_dates ?? []).filter(dateStr => {
+          const d = dateToNum(dateStr)
+          return d >= viewStart && d <= viewEnd
+        }).map(dateStr => {
           const dayNum = dateToNum(dateStr)
           const cx     = (dayNum - viewStart) * dayWidth + dayWidth / 2
           const SIZE   = Math.min(8, Math.max(5, dayWidth * 0.4))

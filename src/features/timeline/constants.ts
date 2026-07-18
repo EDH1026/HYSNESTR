@@ -15,6 +15,13 @@ export const DAY_DEFAULT = 8
 export const ZOOM_WEEK = 8   // show week row
 export const ZOOM_DAY  = 22  // show individual day row
 
+// T-11 v2.92: fixed display-unit zoom presets (Day/Week/Month toolbar buttons).
+// Week/Month use the largest dayWidth that stays inside that header label tier
+// (see ZOOM_WEEK/ZOOM_DAY tier semantics above) — no container-width math involved.
+export const ZOOM_PRESET_MONTH = ZOOM_WEEK - 1  // 7  — largest dayWidth still month-only header
+export const ZOOM_PRESET_WEEK  = ZOOM_DAY - 1   // 21 — largest dayWidth still without the day tier
+export const ZOOM_PRESET_DAY   = DAY_MAX        // 50 — most zoomed in
+
 // Color derivation moved to src/lib/colors.ts (PRD v2.3 §4/§9.1)
 // Colors are derived from work-item type/leave-type — not stored per item.
 

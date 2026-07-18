@@ -70,9 +70,22 @@ interface Props {
   value:      FYFilter
   onChange:   (v: FYFilter) => void
   startMonth: number
+  // T-11 v2.92: 'legacy' = 이번 주/달/분기/FY quick presets (WorkItemsPage, default).
+  // 'days' = ±30/±90/±180일 quick presets (Timeline) — period-only, never touches zoom.
+  quickPresets?: 'legacy' | 'days'
 }
 
-export default function FYPicker({ value, onChange, startMonth }: Props) {
+// ±N-day preset centred on today, expressed as a plain 'range' filter (no new FYFilter mode needed)
+function dayPreset(n: number): FYFilter {
+  const t = today()
+  return { mode: 'range', from: numToStr(t - n), to: numToStr(t + n) }
+}
+function isDayPresetActive(value: FYFilter, n: number): boolean {
+  const t = today()
+  return value.mode === 'range' && value.from === numToStr(t - n) && value.to === numToStr(t + n)
+}
+
+export default function FYPicker({ value, onChange, startMonth, quickPresets = 'legacy' }: Props) {
   const curFY   = fyOf(today(), startMonth)
   // T-7: FY22~FY28 only (T-7-TEMP FY09~FY28 reverted)
   const fyYears = Array.from({ length: 7 }, (_, i) => 2022 + i)
@@ -80,6 +93,11 @@ export default function FYPicker({ value, onChange, startMonth }: Props) {
   const base = 'px-2.5 py-1 text-xs font-medium rounded border transition-colors'
   const on   = 'bg-brand-600 text-white border-brand-600'
   const off  = 'bg-white text-gray-700 border-border hover:bg-surface-50'
+
+  // 'days' variant: "직접 입력" should only look active for a genuinely custom range,
+  // not one that happens to coincide with a ±N-day preset (both use mode:'range').
+  const isCustomRange = value.mode === 'range' &&
+    ![30, 90, 180].some(n => isDayPresetActive(value, n))
 
   // Toggle a single-FY preset (week/month/quarter/이번FY); clicking active → deactivate ('all')
   function togglePreset(next: FYFilter) {
@@ -115,14 +133,28 @@ export default function FYPicker({ value, onChange, startMonth }: Props) {
       <span className="text-xs text-muted font-medium mr-0.5">기간</span>
 
       {/* T-11: one-click period presets */}
-      <button className={`${base} ${value.mode === 'week'    ? on : off}`}
-        onClick={() => togglePreset({ mode: 'week' })}>이번 주</button>
-      <button className={`${base} ${value.mode === 'month'   ? on : off}`}
-        onClick={() => togglePreset({ mode: 'month' })}>이번 달</button>
-      <button className={`${base} ${value.mode === 'quarter' ? on : off}`}
-        onClick={() => togglePreset({ mode: 'quarter' })}>이번 분기</button>
-      <button className={`${base} ${isThisFYOnly ? on : off}`}
-        onClick={() => togglePreset({ mode: 'fy', fyYears: [curFY] })}>이번 FY</button>
+      {quickPresets === 'legacy' ? (
+        <>
+          <button className={`${base} ${value.mode === 'week'    ? on : off}`}
+            onClick={() => togglePreset({ mode: 'week' })}>이번 주</button>
+          <button className={`${base} ${value.mode === 'month'   ? on : off}`}
+            onClick={() => togglePreset({ mode: 'month' })}>이번 달</button>
+          <button className={`${base} ${value.mode === 'quarter' ? on : off}`}
+            onClick={() => togglePreset({ mode: 'quarter' })}>이번 분기</button>
+          <button className={`${base} ${isThisFYOnly ? on : off}`}
+            onClick={() => togglePreset({ mode: 'fy', fyYears: [curFY] })}>이번 FY</button>
+        </>
+      ) : (
+        <>
+          {/* T-11 v2.92: period-only presets — never touches zoom (caller must not react to this by re-fitting dayWidth) */}
+          <button className={`${base} ${isDayPresetActive(value, 30)  ? on : off}`}
+            onClick={() => onChange(dayPreset(30))}>±30일</button>
+          <button className={`${base} ${isDayPresetActive(value, 90)  ? on : off}`}
+            onClick={() => onChange(dayPreset(90))}>±90일</button>
+          <button className={`${base} ${isDayPresetActive(value, 180) ? on : off}`}
+            onClick={() => onChange(dayPreset(180))}>±180일</button>
+        </>
+      )}
 
       {/* Divider */}
       <span style={{ width: 1, height: 16, background: '#d1d5db', display: 'inline-block', flexShrink: 0, marginInline: 2 }} />
@@ -136,7 +168,7 @@ export default function FYPicker({ value, onChange, startMonth }: Props) {
         </button>
       ))}
 
-      <button className={`${base} ${value.mode === 'range' ? on : off}`}
+      <button className={`${base} ${(quickPresets === 'days' ? isCustomRange : value.mode === 'range') ? on : off}`}
         onClick={() => onChange({ mode: 'range', from: value.from ?? '', to: value.to ?? '' })}>
         직접 입력
       </button>
