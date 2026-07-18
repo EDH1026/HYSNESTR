@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 import { queryKeys } from '@/lib/queryKeys'
+import { fetchAllRows } from '@/lib/fetchAll'
 import { toPerson, type CreatePersonInput, type UpdatePersonInput } from '@/lib/mappers'
 import type { Person } from '@/types'
 
@@ -22,12 +23,10 @@ export function useAllPeople() {
   return useQuery({
     queryKey: queryKeys.people.all(),
     queryFn: async (): Promise<Person[]> => {
-      const { data, error } = await supabase
-        .from('people')
-        .select('*')
-        .order('name')
-      if (error) throw error
-      return (data ?? []).map(toPerson)
+      const rows = await fetchAllRows((from, to) =>
+        supabase.from('people').select('*').order('name').range(from, to),
+      )
+      return rows.map(toPerson)
     },
   })
 }

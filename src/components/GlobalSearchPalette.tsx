@@ -4,11 +4,14 @@
  * 인력(이름·LPN) + 작업항목(이름·고객사·Engagement No.·해시태그·description) 클라이언트 검색.
  * 권한 준수: work_items_safe 경유이므로 masking은 서버에서 처리됨.
  * Pipeline은 RLS로 editor/admin에게만 노출됨 (viewer는 useAllWorkItems() 결과에 pipeline 없음).
+ *
+ * G-2: 최소 2글자 이상 입력 시 검색 실행.
+ * G-6: 결과 개수 상한 없음 — 매칭 전체 표시, 스크롤로 탐색.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Search, Users, Briefcase, X } from 'lucide-react'
+import { Search, Users, Briefcase, X, ChevronDown, ChevronUp } from 'lucide-react'
 import { useAllPeople }    from '@/features/people/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
 import { parseSearchQuery } from '@/lib/searchQuery'
@@ -19,20 +22,23 @@ interface Props {
   onSelectWorkItem: (wi: WorkItem) => void
 }
 
-const MAX_RESULTS = 6
+const MIN_QUERY_LEN = 2
 
 export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props) {
   const navigate = useNavigate()
   const inputRef  = useRef<HTMLInputElement>(null)
   const [raw, setRaw] = useState('')
   const [q,   setQ]   = useState('')
+  const [peopleCollapsed, setPeopleCollapsed] = useState(false)
+  const [wiCollapsed,     setWiCollapsed]     = useState(false)
 
   const { data: people    = [] } = useAllPeople()
   const { data: workItems = [] } = useAllWorkItems()
 
-  // Debounce query
+  // Debounce query; only fire if meets minimum length
   useEffect(() => {
-    const t = setTimeout(() => setQ(raw.trim()), 180)
+    const trimmed = raw.trim()
+    const t = setTimeout(() => setQ(trimmed.length >= MIN_QUERY_LEN ? trimmed : ''), 180)
     return () => clearTimeout(t)
   }, [raw])
 
@@ -54,17 +60,16 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
   const matchedPeople = useMemo(() => {
     if (!q) return [] as Person[]
     const matches = parseSearchQuery(q)
-    return people
-      .filter(p => p.status === 'active' && matches([p.name, p.lpn ?? '', p.role ?? '']))
-      .slice(0, MAX_RESULTS)
+    return people.filter(p => p.status === 'active' && matches([p.name, p.lpn ?? '', p.role ?? '']))
   }, [q, people])
 
   const matchedWIs = useMemo(() => {
     if (!q) return [] as WorkItem[]
     const matches = parseSearchQuery(q)
-    return workItems
-      .filter(wi => wi.name !== '(비공개)' && matches([wi.name, wi.client ?? '', wi.engagement_number ?? '', wi.description ?? '', ...wi.hashtags]))
-      .slice(0, MAX_RESULTS)
+    return workItems.filter(wi =>
+      wi.name !== '(비공개)' &&
+      matches([wi.name, wi.client ?? '', wi.engagement_number ?? '', wi.description ?? '', ...wi.hashtags])
+    )
   }, [q, workItems])
 
   function selectPerson(p: Person) {
@@ -77,6 +82,7 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
     onClose()
   }
 
+  const tooShort  = raw.trim().length > 0 && raw.trim().length < MIN_QUERY_LEN
   const noResults = q.length > 0 && matchedPeople.length === 0 && matchedWIs.length === 0
 
   const TYPE_KR: Record<string, string> = { project: '프로젝트', proposal: '제안', pipeline: 'Pipeline' }
@@ -108,9 +114,13 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
         </div>
 
         {/* Results */}
-        <div className="max-h-96 overflow-y-auto">
-          {!q && (
+        <div className="max-h-[60vh] overflow-y-auto">
+          {/* Empty / too-short hint */}
+          {!raw && (
             <p className="px-4 py-6 text-center text-sm text-muted">이름, 고객사, 해시태그 등으로 검색하세요</p>
+          )}
+          {tooShort && (
+            <p className="px-4 py-6 text-center text-sm text-muted">2글자 이상 입력하세요</p>
           )}
 
           {noResults && (
@@ -119,11 +129,19 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
 
           {matchedPeople.length > 0 && (
             <section>
-              <div className="flex items-center gap-1.5 px-4 pt-3 pb-1">
+              <button
+                onClick={() => setPeopleCollapsed(c => !c)}
+                className="w-full flex items-center gap-1.5 px-4 pt-3 pb-1 hover:bg-surface-50 transition-colors"
+              >
                 <Users size={11} className="text-muted" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">인력</span>
-              </div>
-              {matchedPeople.map(p => (
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted flex-1 text-left">
+                  인력 ({matchedPeople.length})
+                </span>
+                {peopleCollapsed
+                  ? <ChevronDown size={11} className="text-muted" />
+                  : <ChevronUp   size={11} className="text-muted" />}
+              </button>
+              {!peopleCollapsed && matchedPeople.map(p => (
                 <button
                   key={p.id}
                   onClick={() => selectPerson(p)}
@@ -144,11 +162,19 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
 
           {matchedWIs.length > 0 && (
             <section className={matchedPeople.length > 0 ? 'border-t border-border/50' : ''}>
-              <div className="flex items-center gap-1.5 px-4 pt-3 pb-1">
+              <button
+                onClick={() => setWiCollapsed(c => !c)}
+                className="w-full flex items-center gap-1.5 px-4 pt-3 pb-1 hover:bg-surface-50 transition-colors"
+              >
                 <Briefcase size={11} className="text-muted" />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">작업항목</span>
-              </div>
-              {matchedWIs.map(wi => (
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted flex-1 text-left">
+                  작업항목 ({matchedWIs.length})
+                </span>
+                {wiCollapsed
+                  ? <ChevronDown size={11} className="text-muted" />
+                  : <ChevronUp   size={11} className="text-muted" />}
+              </button>
+              {!wiCollapsed && matchedWIs.map(wi => (
                 <button
                   key={wi.id}
                   onClick={() => selectWorkItem(wi)}

@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 import { queryKeys } from '@/lib/queryKeys'
+import { fetchAllRows } from '@/lib/fetchAll'
 import {
   toWorkItem,
   type CreateWorkItemInput,
@@ -30,12 +31,10 @@ export function useAllWorkItems() {
     queryKey: queryKeys.workItems.all(),
     queryFn: async (): Promise<WorkItem[]> => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data, error } = await (supabase as any)
-        .from('work_items_safe')
-        .select('*')
-        .order('start', { ascending: false })
-      if (error) throw error
-      return (data ?? []).map(toWorkItem)
+      const rows = await fetchAllRows<any>((from, to) =>
+        (supabase as any).from('work_items_safe').select('*').order('start', { ascending: false }).range(from, to),
+      )
+      return rows.map(toWorkItem)
     },
   })
 }
