@@ -100,6 +100,7 @@ export interface Assignment {
   end_date: string            // YYYY-MM-DD
   note: string | null
   daily_hours?: number | null  // Partner 다중 배정 시 하루 투입시간 (TSG-14, PRD v2.78)
+  status?: 'open' | 'closed'  // 휴가 배정 잠금 상태 (PRD v2.88); kind='leave'에만 의미 있음
 }
 
 /**
