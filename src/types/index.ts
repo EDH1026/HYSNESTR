@@ -40,6 +40,7 @@ export interface Profile {
   person_id: string | null    // links to people.id when the user is also a team member
   lpn?: string | null         // 인력 식별 번호 — LPN 매칭용 (PRD §4); optional until database.ts regenerated
   status: 'active' | 'inactive'
+  must_set_password?: boolean // PRD v2.97 ADM-10: true면 초대 계정이 아직 비밀번호를 설정 안 함
 }
 
 export type PersonStatus = 'active' | 'resigned' | 'upcoming'

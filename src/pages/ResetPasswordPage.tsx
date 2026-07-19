@@ -5,6 +5,16 @@ import { supabase } from '@/lib/supabase'
 
 type Status = 'checking' | 'ready' | 'saving' | 'done' | 'invalid'
 
+// Supabase's raw auth error text (expired/reused link, stale session, etc.) is not
+// user-friendly. Map the recognizable cases to plain language; pass through anything else.
+function friendlyAuthError(message: string): string {
+  const m = message.toLowerCase()
+  if (m.includes('session') || m.includes('expired') || m.includes('token') || m.includes('jwt')) {
+    return 'This link has expired or has already been used. Please request a new invitation or reset link.'
+  }
+  return message
+}
+
 export default function ResetPasswordPage() {
   const navigate = useNavigate()
 
@@ -66,10 +76,21 @@ export default function ResetPasswordPage() {
     }
 
     setStatus('saving')
-    const { error } = await supabase.auth.updateUser({ password })
 
-    if (error) {
-      setError(error.message)
+    const { error: pwError } = await supabase.auth.updateUser({ password })
+    if (pwError) {
+      setError(friendlyAuthError(pwError.message))
+      setStatus('ready')
+      return
+    }
+
+    // PRD v2.97 ADM-10: clears profiles.must_set_password for invited accounts.
+    // This is the only path allowed to flip that flag (RLS blocks a plain UPDATE).
+    // Idempotent/harmless for accounts that weren't invited (flag already false).
+    // Cast: RPC not yet in generated database.ts (see src/types/database.ts regen note in CLAUDE.md)
+    const { error: rpcError } = await (supabase.rpc as any)('complete_password_setup')
+    if (rpcError) {
+      setError('Password was saved, but finishing setup failed. Please try again.')
       setStatus('ready')
       return
     }

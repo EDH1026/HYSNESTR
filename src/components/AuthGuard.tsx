@@ -2,7 +2,7 @@ import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/context/AuthContext'
 
 export default function AuthGuard() {
-  const { session, isLoading } = useAuth()
+  const { session, profile, isLoading } = useAuth()
 
   if (isLoading) {
     return (
@@ -12,5 +12,11 @@ export default function AuthGuard() {
     )
   }
 
-  return session ? <Outlet /> : <Navigate to="/login" replace />
+  if (!session) return <Navigate to="/login" replace />
+
+  // PRD v2.97 ADM-10: invited accounts must set a password before reaching any
+  // protected screen. Applied once at the router root so no route can skip it.
+  if (profile?.must_set_password) return <Navigate to="/reset-password" replace />
+
+  return <Outlet />
 }
