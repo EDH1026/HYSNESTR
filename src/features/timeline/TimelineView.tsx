@@ -157,6 +157,7 @@ import {
   TYPE_FAMILY, LEAVE_GREEN, buildWorkItemColorMap, barColorOf,
 } from '@/lib/colors'
 import { useAllAccruals, useLedgerData }  from '@/features/leave/hooks'
+import { useAuth }          from '@/context/AuthContext'
 import { computeLedger }   from '@/features/leave/ledger'
 
 import type { Accrual } from '@/types'
@@ -952,9 +953,10 @@ interface RowLabelProps {
   onOpenDetail?:    () => void
   onToggleExpand?:  () => void
   onDoubleClick?:   () => void
+  simulationRestricted?: boolean  // PRD v2.101 LV-18: viewer, showVirtualLeave on, not this person
 }
 
-function RowLabel({ row, color = '#1e40af', isExpanded, highlighted, rowHeight, onToggleExpand, onOpenDetail, onDoubleClick }: RowLabelProps) {
+function RowLabel({ row, color = '#1e40af', isExpanded, highlighted, rowHeight, onToggleExpand, onOpenDetail, onDoubleClick, simulationRestricted }: RowLabelProps) {
   if (row.kind === 'person') {
     const p = row.person
     return (
@@ -968,6 +970,11 @@ function RowLabel({ row, color = '#1e40af', isExpanded, highlighted, rowHeight, 
           <div className="text-sm font-medium text-gray-900 truncate">{p.name}</div>
           <div className="text-[11px] text-muted">{p.rank}</div>
         </div>
+        {simulationRestricted && (
+          <div title="휴가 배정 시뮬레이션은 본인 항목만 볼 수 있습니다" className="flex-shrink-0 text-muted/60">
+            <Lock size={11} />
+          </div>
+        )}
       </div>
     )
   }
@@ -1528,7 +1535,8 @@ export default function TimelineView() {
   const updateAssignment = useUpdateAssignment()
   const deleteAssignment = useDeleteAssignment()
   const updateWorkItem   = useUpdateWorkItem()
-  const { canEdit }      = useAuthz()
+  const { canEdit, isAssistant } = useAuthz()
+  const { myPersonId }   = useAuth()
   const { push }         = useHistory()
   const startMonth       = settings?.fiscal_year_start_month ?? 7
 
@@ -1754,6 +1762,14 @@ export default function TimelineView() {
     return s
   }, [holidays, viewStart, viewEnd])
 
+  // PRD v2.101 LV-18: viewer may only request their own person via get_leave_ledger_data()
+  // (server-enforced, LV-17's explicit design — viewer must never see other people's
+  // accrual/usage detail). The simulation used to silently iterate every person anyway,
+  // which for a viewer meant every row but their own computed against an empty ledgerSrc —
+  // indistinguishable on screen from "0 days remaining". Skip those rows outright instead
+  // so the UI can say "본인만" rather than a misleading blank/zero result.
+  const simulationRestrictedToSelf = !globalEdit && !isAssistant()
+
   // T-17: per-person virtual leave blocks (only computed when toggle is on & person view)
   const virtualLeaveBlocksMap = useMemo((): Map<string, Array<{ start: number; end: number }>> => {
     if (!showVirtualLeave || viewMode !== 'person') return new Map()
@@ -1763,12 +1779,14 @@ export default function TimelineView() {
     // hooks above — those are correctly role-scoped for Gantt rendering but were feeding
     // this simulation an incomplete picture for non-editor/admin callers (missing
     // pipeline-linked assignments), making the same person's simulated result differ by
-    // the viewer's own role. Callers get complete data only for people they're permitted
-    // to see (viewer: self only — the RPC returns empty for anyone else, silently).
+    // the viewer's own role.
     const ledgerAssignments = ledgerSrc?.assignments ?? []
     const ledgerAccruals    = ledgerSrc?.accruals    ?? []
     const ledgerWorkItems   = ledgerSrc?.workItems   ?? []
     for (const p of people) {
+      // LV-18: viewer only gets real data for their own person from the RPC — don't even
+      // attempt anyone else's (see simulationRestrictedToSelf above).
+      if (simulationRestrictedToSelf && p.id !== myPersonId) continue
       // LV-1/P-3 v2.94: personRank must be passed so computeLedger excludes Partners from
       // auto-accrual the same way LeavePage's real Ledger does — otherwise the simulation
       // shows Partners with a nonzero projectedRemaining that the real Ledger never grants.
@@ -1786,7 +1804,7 @@ export default function TimelineView() {
       if (blocks.length > 0) map.set(p.id, blocks)
     }
     return map
-  }, [showVirtualLeave, viewMode, people, ledgerSrc, holidaySet, todayNum])
+  }, [showVirtualLeave, viewMode, people, ledgerSrc, holidaySet, todayNum, simulationRestrictedToSelf, myPersonId])
 
   // Build row list — filtered and sorted (§5.2 F-1.8)
   const rows: RowData[] = useMemo(() => {
@@ -2868,6 +2886,10 @@ export default function TimelineView() {
                     : globalEdit && row.kind === 'workitem-sub' && viewMode === 'workitem'
                     ? () => toggleHighlight(row.person.id)
                     : undefined
+                }
+                simulationRestricted={
+                  showVirtualLeave && row.kind === 'person' &&
+                  simulationRestrictedToSelf && row.person.id !== myPersonId
                 }
               />
             ))}
