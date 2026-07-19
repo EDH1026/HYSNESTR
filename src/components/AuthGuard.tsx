@@ -14,9 +14,11 @@ export default function AuthGuard() {
 
   if (!session) return <Navigate to="/login" replace />
 
-  // PRD v2.97 ADM-10: invited accounts must set a password before reaching any
-  // protected screen. Applied once at the router root so no route can skip it.
-  if (profile?.must_set_password) return <Navigate to="/reset-password" replace />
+  // PRD v2.98 ADM-10 fix: fail-closed. A missing profile row (query error, not-yet-
+  // loaded edge case, or a row that genuinely doesn't exist yet) must block access,
+  // not silently pass — the old `profile?.must_set_password` fell through to
+  // <Outlet/> whenever profile was null.
+  if (!profile || profile.must_set_password) return <Navigate to="/reset-password" replace />
 
   return <Outlet />
 }
