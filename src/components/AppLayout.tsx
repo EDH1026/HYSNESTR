@@ -30,6 +30,8 @@ import { useAuthz } from '@/hooks/useAuthz'
 import { useAllAssignments } from '@/features/timeline/hooks'
 import { useAllPeople }      from '@/features/people/hooks'
 import { useAllWorkItems }   from '@/features/workitems/hooks'
+import { useAllHolidays }    from '@/features/admin/hooks'
+import { buildHolidaySet }   from '@/features/leave/ledger'
 import { buildWorkItemColorMap } from '@/lib/colors'
 import GlobalSearchPalette from './GlobalSearchPalette'
 import WorkItemDetailModal from '@/features/workitems/WorkItemDetailModal'
@@ -88,10 +90,16 @@ export default function AppLayout() {
   const { data: allAssignments = [] } = useAllAssignments()
   const { data: allPeople      = [] } = useAllPeople()
   const { data: allWorkItems   = [] } = useAllWorkItems()
+  const { data: allHolidays    = [] } = useAllHolidays()
   const peopleMap = useMemo(
     () => new Map(allPeople.map(p => [p.id, p])),
     [allPeople],
   )
+  // v2.95: WorkItemDetailModal의 Pre-study 종료일(prevWorkday) 계산용
+  const holidaySet = useMemo(() => {
+    const yr = new Date().getFullYear()
+    return buildHolidaySet(allHolidays, yr - 3, yr + 3)
+  }, [allHolidays])
   const colorMap = useMemo(() => buildWorkItemColorMap(allWorkItems), [allWorkItems])
 
   useEffect(() => {
@@ -303,6 +311,7 @@ export default function AppLayout() {
         const latest = allWorkItems.find(w => w.id === detailWI.id) ?? detailWI
         const isClosed = (latest.status ?? latest.project_status ?? 'open') === 'closed'
         const canEditWI = !isClosed && (isAdminFn() || canEdit('work_item', latest.id))
+        // v2.95: 전역 검색에서도 실제 편집 경로가 없으므로 onEdit 미전달 → 편집 버튼 미노출
         return (
           <WorkItemDetailModal
             workItem={latest}
@@ -310,8 +319,8 @@ export default function AppLayout() {
             peopleMap={peopleMap}
             colorMap={colorMap}
             canEdit={canEditWI}
+            isHoliday={n => holidaySet.has(n)}
             onClose={() => setDetailWI(null)}
-            onEdit={() => setDetailWI(null)}
           />
         )
       })()}

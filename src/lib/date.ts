@@ -213,6 +213,20 @@ export function nextWorkday(
 }
 
 /**
+ * Returns the last workday strictly before `before`, skipping weekends and holidays.
+ * Used for Pre-study end display (last business day before main_start, PRD §5.7 W-9)
+ * so the Pre-study and main-phase spans never overlap on the same calendar day.
+ */
+export function prevWorkday(
+  before: number,
+  isHoliday: (n: number) => boolean = () => false,
+): number {
+  let d = before - 1
+  while (isWeekend(d) || isHoliday(d)) d--
+  return d
+}
+
+/**
  * Given a leave start date (inclusive), find the end date such that exactly
  * `nWorkdays` business days fall in [start, end].  Used for the leave workday
  * snap when dragging an assignment bar (§5.3 F-2.4).

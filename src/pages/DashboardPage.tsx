@@ -1,7 +1,7 @@
 /**
  * DashboardPage — §5.1 대시보드 / §8 Utilization
  *
- * Editor / Admin 전용. 4종 가동률 카드 + 금주 복귀 예정자 + 업무지정 필요대상.
+ * Editor / Admin 전용. 4종 가동률 카드 + 향후 7일 내 복귀 대상 + 업무지정 필요대상.
  */
 import { useMemo, useState } from 'react'
 import { PieChart, Pie, Cell } from 'recharts'
@@ -214,11 +214,10 @@ export default function DashboardPage() {
     }
   }, [isLoading, periods, people, assignments, workItems, isHoliday])
 
-  // ── 금주 복귀 예정자 ───────────────────────────────────────
-  // People whose leave (kind='leave') ends such that nextWorkday(end) ∈ this week
+  // ── 향후 7일 내 복귀 대상 (v2.95: 주 경계 → 오늘~+7일 롤링, 업무지정 필요대상과 동일 기준) ──
+  // People whose leave (kind='leave') ends such that nextWorkday(end) ∈ [today, today+7]
   const returning = useMemo(() => {
     if (isLoading) return []
-    const { weekMon, weekSun } = periods
     const activePeople = people.filter(p => p.status === 'active')
     const result: { person: Person; returnDay: number }[] = []
     const seen = new Set<string>()
@@ -228,7 +227,7 @@ export default function DashboardPage() {
       let bestRetDay = -1
       for (const a of myLeaves) {
         const retDay = nextWorkday(dateToNum(a.end_date), isHoliday)
-        if (retDay >= weekMon && retDay <= weekSun) {
+        if (retDay >= todayNum && retDay <= todayNum + 6) {
           if (retDay > bestRetDay) bestRetDay = retDay
         }
       }
@@ -239,7 +238,7 @@ export default function DashboardPage() {
     }
 
     return result.sort((a, b) => a.returnDay - b.returnDay)
-  }, [isLoading, periods, people, assignments, isHoliday])
+  }, [isLoading, people, assignments, isHoliday, todayNum])
 
   // ── 입사 예정자 ───────────────────────────────────────────
   // People whose hire_date > today, sorted ascending
@@ -332,7 +331,8 @@ export default function DashboardPage() {
     return `${md(days[0])} ~ ${md(days[days.length - 1])}`
   }
 
-  const fyYears = [currentFY - 1, currentFY, currentFY + 1]
+  // v2.95: FY26 제거(더 이상 YTD 조회 대상 아님)
+  const fyYears = [currentFY - 1, currentFY, currentFY + 1].filter(fy => fy !== 2026)
   const btnBase = 'px-2.5 py-1 text-xs font-medium rounded border transition-colors'
   const btnOn   = 'bg-brand-600 text-white border-brand-600'
   const btnOff  = 'bg-white text-gray-700 border-border hover:bg-surface-50'
@@ -430,20 +430,20 @@ export default function DashboardPage() {
 
         </div>
 
-        {/* ── 금주 복귀 예정자 + 입사 예정자 + 업무지정 필요대상 ── */}
+        {/* ── 향후 7일 내 복귀 대상 + 입사 예정자 + 업무지정 필요대상 ── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-          {/* 금주 복귀 예정자 */}
+          {/* 향후 7일 내 복귀 대상 (v2.95: 금주→향후 7일 롤링) */}
           <section className="card p-5">
             <h2 className="text-xs font-semibold text-gray-700 mb-3 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />
-              금주 복귀 예정자
+              향후 7일 내 복귀 대상
               <span className="ml-auto text-muted font-normal">
-                {label(periods.weekMon)} ~ {label(periods.weekSun)}
+                {label(todayNum)} ~ {label(todayNum + 6)}
               </span>
             </h2>
             {returning.length === 0 ? (
-              <p className="text-sm text-muted py-4 text-center">이번 주 복귀 예정자 없음</p>
+              <p className="text-sm text-muted py-4 text-center">향후 7일 내 복귀 예정자 없음</p>
             ) : (
               <div className="space-y-1">
                 {returning.map(({ person: p, returnDay }) => (
@@ -533,6 +533,7 @@ export default function DashboardPage() {
         const latest   = workItems.find(w => w.id === detailWorkItem.id) ?? detailWorkItem
         const isClosed = (latest.status ?? latest.project_status ?? 'open') === 'closed'
         const canEditWI = !isClosed && (isAdmin() || canEdit('work_item', latest.id))
+        // v2.95: 대시보드에는 실제 편집 경로가 없으므로 onEdit 미전달 → 편집 버튼 미노출
         return (
           <WorkItemDetailModal
             workItem={latest}
@@ -540,8 +541,8 @@ export default function DashboardPage() {
             peopleMap={peopleMap}
             colorMap={colorMap}
             canEdit={canEditWI}
+            isHoliday={isHoliday}
             onClose={() => setDetailWorkItem(null)}
-            onEdit={() => setDetailWorkItem(null)}
           />
         )
       })()}

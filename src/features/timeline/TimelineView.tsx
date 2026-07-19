@@ -1889,10 +1889,6 @@ export default function TimelineView() {
     return tops
   }, [rowHeights])
 
-  // Ref kept in sync so RAF callbacks can read the latest rowTops after re-renders
-  const rowTopsRef = useRef<number[]>([])
-  useEffect(() => { rowTopsRef.current = rowTops }, [rowTops])
-
   // Scroll sync — vertical only (header X is native via single container)
   function handleGridScroll() {
     if (isSyncingRef.current) return
@@ -1956,16 +1952,19 @@ export default function TimelineView() {
     if (pid) {
       setHighlightedPersonIds(new Set([pid]))
       setViewMode('person')
+      // D-6① v2.95: 가로(오늘 focus)와 세로(대상 인력) 스크롤을 독립적으로 적용해 서로 덮어쓰지
+      // 않게 한다. 세로는 계산된 rowTops 오프셋(레인 패킹·타이밍에 따라 브라우저 실제 레이아웃과
+      // 어긋날 수 있었음) 대신, 행 렌더가 끝난 뒤 실제 DOM 요소를 data-row-key로 찾아
+      // scrollIntoView로 스크롤한다 — 계산 오차·타이밍에 영향받지 않는다.
       // Double RAF: first frame lets React flush state-update re-renders (setHighlightedPersonIds),
-      // second frame reads the fresh rowTopsRef and performs the scroll.
+      // second frame runs after rows have re-rendered into the DOM.
       requestAnimationFrame(() => requestAnimationFrame(() => {
         const el = gridBodyRef.current
         if (!el) return
-        const rowIdx = rows.findIndex(r => r.kind === 'person' && r.person.id === pid)
-        const freshTop = rowIdx >= 0 ? Math.max(0, rowTopsRef.current[rowIdx] - 60) : undefined
         const leftToday = Math.max(0, (todayNum - viewStart) * dayWidth - el.clientWidth / 2)
-        el.scrollTo({ left: leftToday, ...(freshTop !== undefined ? { top: freshTop } : {}), behavior: 'smooth' })
-        if (freshTop !== undefined) labelsBodyRef.current?.scrollTo({ top: freshTop, behavior: 'smooth' })
+        el.scrollTo({ left: leftToday, behavior: 'smooth' })
+        const rowEl = el.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(pid)}"]`)
+        rowEl?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
       }))
     }
 
@@ -2862,6 +2861,7 @@ export default function TimelineView() {
               {rows.map((row, i) => (
                 <div
                   key={row.key}
+                  data-row-key={row.key}
                   style={{
                     position: 'absolute', top: rowTops[i], left: 0,
                     width: totalWidth, height: rowHeights[i],
@@ -2904,6 +2904,7 @@ export default function TimelineView() {
             colorMap={colorMap}
             canEdit={canEditWI(latest)}
             canToggleStatus={canToggleWIStatus(latest)}
+            isHoliday={n => holidaySet.has(n)}
             onClose={() => setDetailWorkItem(null)}
             onEdit={() => { setDetailWorkItem(null); setEditWorkItem(latest) }}
           />

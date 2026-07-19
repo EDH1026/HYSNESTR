@@ -4,7 +4,7 @@ import Modal from '@/components/Modal'
 import { useUpdateWorkItem } from './hooks'
 import { useHistory } from '@/lib/history'
 import { makeWorkItemUpdate } from '@/lib/historyOps'
-import { dateToNum, numToStr } from '@/lib/date'
+import { dateToNum, numToStr, prevWorkday } from '@/lib/date'
 import { RANK_ORDER } from '@/features/timeline/constants'
 import { TYPE_FAMILY } from '@/lib/colors'
 import type { WorkItem, Person, Assignment } from '@/types'
@@ -72,12 +72,14 @@ interface Props {
   colorMap:         Map<string, string>
   canEdit:          boolean   // full edit: role OK + item open
   canToggleStatus?: boolean   // may toggle Open/Closed (role OK, ignores closed state)
+  isHoliday?:       (n: number) => boolean  // v2.95: Pre-study 종료일(main_start 직전 영업일) 계산용
   onClose:          () => void
-  onEdit:           () => void
+  onEdit?:          () => void  // v2.95: 없으면 편집 버튼을 렌더링하지 않음(호출부가 실제 편집 경로를 안 가진 경우)
 }
 
 export default function WorkItemDetailModal({
-  workItem: wi, assignments, peopleMap, colorMap, canEdit, canToggleStatus = canEdit, onClose, onEdit,
+  workItem: wi, assignments, peopleMap, colorMap, canEdit, canToggleStatus = canEdit,
+  isHoliday = () => false, onClose, onEdit,
 }: Props) {
   const update = useUpdateWorkItem()
   const { push } = useHistory()
@@ -101,11 +103,13 @@ export default function WorkItemDetailModal({
   return (
     <Modal title="Work Item 상세" onClose={onClose} size="lg">
 
-      {/* ── Closed lock banner (W-4) ───────────────────────── */}
+      {/* ── Closed lock banner (W-4) — v2.95: only mention editing when a real edit path exists ── */}
       {status === 'closed' && canToggleStatus && (
         <div className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
           <LockKeyhole size={13} className="flex-shrink-0 text-gray-400" />
-          <span>Closed 상태입니다. 위 상태 배지를 클릭해 <strong>Open</strong>으로 전환하면 편집할 수 있습니다.</span>
+          <span>
+            Closed 상태입니다. 위 상태 배지를 클릭해 <strong>Open</strong>으로 전환하면{onEdit ? ' 편집할 수 있습니다.' : ' 상태를 변경할 수 있습니다.'}
+          </span>
         </div>
       )}
 
@@ -172,8 +176,8 @@ export default function WorkItemDetailModal({
           </div>
         </div>
 
-        {/* Edit button — editor/admin only (W-4: disabled when Closed) */}
-        {canToggleStatus && (
+        {/* Edit button — editor/admin only (W-4: disabled when Closed); v2.95: only if caller has a real edit path */}
+        {canToggleStatus && onEdit && (
           status === 'open' ? (
             <button onClick={onEdit} className="btn-secondary flex items-center gap-1.5 text-xs flex-shrink-0">
               <Pencil size={12} />편집
@@ -198,7 +202,8 @@ export default function WorkItemDetailModal({
         {wi.main_start && wi.main_start > wi.start ? (
           <div className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-xs">
             <span className="text-muted">Pre-study</span>
-            <span className="font-mono text-gray-700">{wi.start} ~ {wi.main_start}</span>
+            {/* v2.95: Pre-study 종료일 = main_start 직전 마지막 영업일 (본 프로젝트와 하루도 겹치지 않게) */}
+            <span className="font-mono text-gray-700">{wi.start} ~ {numToStr(prevWorkday(dateToNum(wi.main_start), isHoliday))}</span>
             <span className="text-muted">본 프로젝트</span>
             <span className="font-mono text-gray-700">{wi.main_start} ~ {wi.end_date}</span>
           </div>
