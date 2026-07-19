@@ -156,7 +156,7 @@ function computeVirtualLeaveBlocks(
 import {
   TYPE_FAMILY, LEAVE_GREEN, buildWorkItemColorMap, barColorOf,
 } from '@/lib/colors'
-import { useAllAccruals }  from '@/features/leave/hooks'
+import { useAllAccruals, useLedgerData }  from '@/features/leave/hooks'
 import { computeLedger }   from '@/features/leave/ledger'
 
 import type { Accrual } from '@/types'
@@ -1518,6 +1518,12 @@ export default function TimelineView() {
   const { data: assignments = [] } = useAllAssignments()
   const { data: holidays  = [] } = useAllHolidays()
   const { data: accruals  = [] } = useAllAccruals() as { data: Accrual[] }
+  // PRD v2.100 LV-17: '휴가 배정 시뮬레이션'(virtualLeaveBlocksMap below) must compute the
+  // same result for a given person regardless of the caller's role — the bulk
+  // assignments/accruals/workItems above stay as-is for normal Gantt rendering (correctly
+  // role-scoped for general display), but the simulation reads from this RPC-backed,
+  // permission-checked source instead.
+  const { data: ledgerSrc } = useLedgerData('all')
   const { data: settings }       = useSettings()
   const updateAssignment = useUpdateAssignment()
   const deleteAssignment = useDeleteAssignment()
@@ -1753,25 +1759,34 @@ export default function TimelineView() {
     if (!showVirtualLeave || viewMode !== 'person') return new Map()
     const isHol = (n: number) => holidaySet.has(n)
     const map   = new Map<string, Array<{ start: number; end: number }>>()
+    // PRD v2.100 LV-17: use the RPC-backed source (role-consistent) instead of the bulk
+    // hooks above — those are correctly role-scoped for Gantt rendering but were feeding
+    // this simulation an incomplete picture for non-editor/admin callers (missing
+    // pipeline-linked assignments), making the same person's simulated result differ by
+    // the viewer's own role. Callers get complete data only for people they're permitted
+    // to see (viewer: self only — the RPC returns empty for anyone else, silently).
+    const ledgerAssignments = ledgerSrc?.assignments ?? []
+    const ledgerAccruals    = ledgerSrc?.accruals    ?? []
+    const ledgerWorkItems   = ledgerSrc?.workItems   ?? []
     for (const p of people) {
       // LV-1/P-3 v2.94: personRank must be passed so computeLedger excludes Partners from
       // auto-accrual the same way LeavePage's real Ledger does — otherwise the simulation
       // shows Partners with a nonzero projectedRemaining that the real Ledger never grants.
       const ledger = computeLedger(p.id, {
-        workItems,
-        assignments,
-        accruals,
+        workItems:   ledgerWorkItems,
+        assignments: ledgerAssignments,
+        accruals:    ledgerAccruals,
         isHoliday: isHol,
         today: todayNum,
         personRank: p.rank,
       })
       const blocks = computeVirtualLeaveBlocks(
-        p.id, ledger.projectedRemaining, assignments, todayNum, holidaySet,
+        p.id, ledger.projectedRemaining, ledgerAssignments, todayNum, holidaySet,
       )
       if (blocks.length > 0) map.set(p.id, blocks)
     }
     return map
-  }, [showVirtualLeave, viewMode, people, accruals, assignments, workItems, holidaySet, todayNum])
+  }, [showVirtualLeave, viewMode, people, ledgerSrc, holidaySet, todayNum])
 
   // Build row list — filtered and sorted (§5.2 F-1.8)
   const rows: RowData[] = useMemo(() => {
@@ -1792,9 +1807,10 @@ export default function TimelineView() {
       return fp.map(p => ({ kind: 'person' as const, person: p, key: p.id }))
     }
 
-    // viewer: confidential items mask name+client; pipeline items omit description
-    const isConf    = (wi: WorkItem) => !!wi.confidential && !globalEdit
-    const isPipelineViewer = (wi: WorkItem) => wi.type === 'pipeline' && !globalEdit
+    // PRD v2.101 W-7: applies to viewer AND assistant alike (anyone without global edit) —
+    // confidential items mask name/client/description/hashtags; pipeline rows never reach
+    // this array at all for either role (RLS excludes them server-side).
+    const isConf = (wi: WorkItem) => !!wi.confidential && !globalEdit
 
     const clientQ  = parseSearchQuery(clientFilter)
     const hashQ    = parseSearchQuery(hashFilter)
@@ -1809,23 +1825,24 @@ export default function TimelineView() {
       // sliver at the viewport's left edge; see overlapsViewport()).
       if (!overlapsViewport(dateToNum(wi.start), dateToNum(wi.end_date), viewStart, viewEnd)) return false
       if (typeFilter.length > 0 && !typeFilter.includes(wi.type)) return false
-      // Client search — skip match on confidential items (viewer sees null)
+      // Client search — skip match on confidential items (masked to null server-side)
       if (clientFilter && !isConf(wi)) {
         if (!clientQ([wi.client ?? ''])) return false
       } else if (clientFilter && isConf(wi)) {
         return false  // masked item can't match a client query
       }
-      // Hashtag search
-      if (hashFilter && !hashQ(wi.hashtags)) return false
+      // Hashtag search — masked items are already server-side [] (work_items_safe), so this
+      // naturally excludes them; isConf guard added for clarity/defense-in-depth.
+      if (hashFilter && !hashQ(isConf(wi) ? [] : wi.hashtags)) return false
       // Name search
       if (nameFilter && !nameQ2([isConf(wi) ? '' : wi.name])) return false
       // Unified search: OR across name · client · description · hashtags (field visibility respected)
       if (unifiedFilter) {
         const fields: string[] = [
-          ...wi.hashtags,
+          ...(isConf(wi) ? [] : wi.hashtags),
           isConf(wi) ? '' : wi.name,
           isConf(wi) ? '' : (wi.client ?? ''),
-          isPipelineViewer(wi) ? '' : (wi.description ?? ''),
+          isConf(wi) ? '' : (wi.description ?? ''),
         ]
         if (!unifiedQ(fields)) return false
       }

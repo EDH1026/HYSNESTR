@@ -7,8 +7,10 @@ import type { Holiday } from '@/types'
 
 export default function HolidaysPage() {
   const { data: holidays = [], isLoading, error } = useAllHolidays()
-  const { canEdit } = useAuthz()
-  const editable = canEdit('global')
+  const { isAdmin, isMobile } = useAuthz()
+  // PRD v2.100: holidays writes are admin-only now (RLS narrowed) — canEdit('global')
+  // would still say yes for editor, so check admin directly to match the DB policy.
+  const editable = isAdmin() && !isMobile
 
   const [modal, setModal] = useState<Holiday | null | false>(false)
   const open = modal !== false

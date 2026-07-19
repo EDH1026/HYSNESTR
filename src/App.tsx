@@ -48,6 +48,17 @@ function AdminGuard() {
   return <Outlet />
 }
 
+/**
+ * Guard for admin/assistant-only routes (연차 관리, 타임시트 지침 — PRD v2.100).
+ * admin edits, assistant is view-only (enforced inside the page). editor/viewer → /dashboard.
+ */
+function AdminOrAssistantGuard() {
+  const { profile } = useAuth()
+  const role = profile?.global_role
+  if (role !== 'admin' && role !== 'assistant') return <Navigate to="/dashboard" replace />
+  return <Outlet />
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -77,17 +88,21 @@ export default function App() {
 
                 {/* ── Editor / admin only ───────────────────── */}
                 <Route element={<EditorGuard />}>
-                  <Route path="people"        element={<PeoplePage />} />
                   <Route path="work-items"    element={<WorkItemsPage />} />
                   <Route path="holidays"      element={<HolidaysPage />} />
+                  <Route path="data-test"             element={<DataTestPage />} />
+                </Route>
+
+                {/* ── Admin / assistant only (assistant view-only, PRD v2.100) ── */}
+                <Route element={<AdminOrAssistantGuard />}>
                   <Route path="annual-leave"          element={<AnnualLeavePage />} />
                   <Route path="timesheet-guideline"   element={<TimesheetGuidelinePage />} />
-                  <Route path="data-test"             element={<DataTestPage />} />
                 </Route>
 
                 {/* ── Admin only ────────────────────────────── */}
                 <Route element={<AdminGuard />}>
-                  <Route path="admin" element={<AdminPage />} />
+                  <Route path="people" element={<PeoplePage />} />
+                  <Route path="admin"  element={<AdminPage />} />
                 </Route>
               </Route>
             </Route>

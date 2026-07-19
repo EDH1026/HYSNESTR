@@ -98,6 +98,8 @@ export function useCreateAssignment() {
           queryKey: queryKeys.assignments.byWorkItem(asgn.work_item_id),
         })
       }
+      // PRD v2.100 LV-17: ledgerData embeds assignments — keep it in sync.
+      qc.invalidateQueries({ queryKey: ['ledgerData'] })
     },
   })
 }
@@ -127,6 +129,8 @@ export function useUpdateAssignment() {
           queryKey: queryKeys.assignments.byWorkItem(asgn.work_item_id),
         })
       }
+      // PRD v2.100 LV-17: ledgerData embeds assignments — keep it in sync.
+      qc.invalidateQueries({ queryKey: ['ledgerData'] })
     },
   })
 }
@@ -142,6 +146,7 @@ export function useDeleteAssignment() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.assignments.all() })
       // Broad invalidation: we don't track personId/workItemId at this point
+      qc.invalidateQueries({ queryKey: ['ledgerData'] })
     },
   })
 }

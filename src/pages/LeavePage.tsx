@@ -7,9 +7,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAllPeople } from '@/features/people/hooks'
-import { useAllAssignments } from '@/features/timeline/hooks'
-import { useAllAccruals } from '@/features/leave/hooks'
-import { useAllWorkItems } from '@/features/workitems/hooks'
+import { useLedgerData } from '@/features/leave/hooks'
 import { useAllHolidays } from '@/features/admin/hooks'
 import { useAuth } from '@/context/AuthContext'
 import { useAuthz } from '@/hooks/useAuthz'
@@ -29,12 +27,17 @@ export default function LeavePage() {
   const isViewer = profile?.global_role === 'viewer' && !isAssistant()
 
   const { data: people      = [], isLoading: lP } = useAllPeople()
-  const { data: assignments = [], isLoading: lA } = useAllAssignments()
-  const { data: accruals    = [], isLoading: lB } = useAllAccruals()
-  const { data: workItems   = [], isLoading: lW } = useAllWorkItems()
+  // PRD v2.100 LV-17: RPC-backed source so this bulk summary matches per-person
+  // LeavePanel exactly regardless of the viewing session's role (admin/editor/
+  // assistant all get every person's full data here — 'all' is only ever fetched
+  // by non-viewer sessions since the isViewer branch below skips this computation).
+  const { data: ledgerSrc,  isLoading: lL } = useLedgerData('all')
+  const assignments = ledgerSrc?.assignments ?? []
+  const accruals    = ledgerSrc?.accruals    ?? []
+  const workItems    = ledgerSrc?.workItems   ?? []
   const { data: holidays    = [], isLoading: lH } = useAllHolidays()
 
-  const isLoading = lP || lA || lB || lW || lH
+  const isLoading = lP || lL || lH
 
   // Editor/admin — modal panel
   const [panel, setPanel] = useState<Person | null>(null)

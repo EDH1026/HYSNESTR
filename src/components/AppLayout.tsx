@@ -38,11 +38,12 @@ import WorkItemDetailModal from '@/features/workitems/WorkItemDetailModal'
 import type { GlobalRole, WorkItem } from '@/types'
 
 const NAV: {
-  to:           string
-  label:        string
-  icon:         LucideIcon
-  editorOnly?:  boolean   // hidden for viewer
-  adminOnly?:   boolean   // hidden for non-admin
+  to:                 string
+  label:              string
+  icon:               LucideIcon
+  editorOnly?:         boolean   // hidden for viewer (editor/assistant/admin)
+  adminOnly?:          boolean   // hidden for non-admin
+  adminOrAssistantOnly?: boolean // hidden for editor/viewer (PRD v2.100)
 }[] = [
   // ── Viewer-accessible (§6.3) ──────────────────────────────
   { to: '/dashboard',  label: 'Dashboard',       icon: LayoutDashboard },
@@ -52,14 +53,15 @@ const NAV: {
   // ── Viewer-accessible (cont.) ─────────────────────────────
   { to: '/hashtags',   label: 'Engagement 검색', icon: Hash            },
   { to: '/cv',         label: 'CV Generator',    icon: FileText        },
+  // ── Admin only (v2.100 — was editorOnly) ──────────────────
+  { to: '/people',       label: 'People',         icon: Users,           adminOnly: true },
   // ── Editor / admin only ───────────────────────────────────
-  { to: '/people',       label: 'People',         icon: Users,           editorOnly: true },
   { to: '/holidays',     label: 'Holidays',       icon: CalendarCheck,   editorOnly: true },
   // ── Viewer-accessible (cont.) ─────────────────────────────
   { to: '/leave',      label: 'Leave',           icon: Umbrella        },
-  // ── Editor / admin only ───────────────────────────────────
-  { to: '/annual-leave',         label: '연차 관리',     icon: CalendarCheck2, editorOnly: true },
-  { to: '/timesheet-guideline', label: '타임시트 지침', icon: ClipboardList,  editorOnly: true },
+  // ── Admin / assistant only (v2.100 — was editorOnly) ──────
+  { to: '/annual-leave',         label: '연차 관리',     icon: CalendarCheck2, adminOrAssistantOnly: true },
+  { to: '/timesheet-guideline', label: '타임시트 지침', icon: ClipboardList,  adminOrAssistantOnly: true },
   // ── Admin only ────────────────────────────────────────────
   { to: '/admin',      label: 'Admin',            icon: Settings,        adminOnly: true  },
 ]
@@ -84,6 +86,7 @@ export default function AppLayout() {
   const role           = profile?.global_role ?? 'viewer'
   const isAdmin        = role === 'admin'
   const isViewer       = role === 'viewer'
+  const isAssistantRole = role === 'assistant'
   const canUseHistory  = !isViewer && !isMobile
 
   // §5.11a: data for WorkItemDetailModal shown from global search
@@ -124,8 +127,9 @@ export default function AppLayout() {
   }, [canUseHistory, undo, redo])
 
   const navItems = NAV.filter(item => {
-    if (item.adminOnly)  return isAdmin
-    if (item.editorOnly) return !isViewer
+    if (item.adminOnly)           return isAdmin
+    if (item.adminOrAssistantOnly) return isAdmin || isAssistantRole
+    if (item.editorOnly)          return !isViewer
     return true
   })
 

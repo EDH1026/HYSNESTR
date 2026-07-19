@@ -11,7 +11,6 @@ import { useAllWorkItems }   from '@/features/workitems/hooks'
 import { useAllAssignments } from '@/features/timeline/hooks'
 import { useAllHolidays }    from '@/features/admin/hooks'
 import { useSettings }       from '@/features/admin/hooks'
-import { useAuth }           from '@/context/AuthContext'
 import { useAuthz }          from '@/hooks/useAuthz'
 import { buildWorkItemColorMap } from '@/lib/colors'
 import WorkItemDetailModal   from '@/features/workitems/WorkItemDetailModal'
@@ -45,14 +44,14 @@ const BUCKET_DATE_COLOR: Record<WeekBucket, string> = {
 // Sub-components
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ProjectWeekList({ title, rows, isViewer, label, dateLabel, accentColor, onClickWI }: {
-  title:       string
-  rows:        WiRow[]
-  isViewer:    boolean
-  label:       (n: number) => string
-  dateLabel:   string
-  accentColor: string
-  onClickWI:   (wi: WorkItem) => void  // D-6: drill-down
+function ProjectWeekList({ title, rows, hideConfidential, label, dateLabel, accentColor, onClickWI }: {
+  title:            string
+  rows:             WiRow[]
+  hideConfidential: boolean  // PRD v2.101 W-7: viewer AND assistant both mask confidential fields
+  label:            (n: number) => string
+  dateLabel:        string
+  accentColor:      string
+  onClickWI:        (wi: WorkItem) => void  // D-6: drill-down
 }) {
   return (
     <section className="card p-5">
@@ -66,7 +65,7 @@ function ProjectWeekList({ title, rows, isViewer, label, dateLabel, accentColor,
       ) : (
         <div className="space-y-1">
           {rows.map(({ wi, dateNum, bucket }) => {
-            const name    = isViewer && wi.confidential ? '(비공개)' : wi.name
+            const name    = hideConfidential && wi.confidential ? '(비공개)' : wi.name
             const masked  = name === '(비공개)'
             return (
               <div
@@ -78,7 +77,7 @@ function ProjectWeekList({ title, rows, isViewer, label, dateLabel, accentColor,
                 <span className={`text-sm font-medium truncate flex-1 ${masked ? 'text-muted italic' : 'text-gray-900'}`}>
                   {name}
                 </span>
-                {wi.client && (!wi.confidential || !isViewer) && (
+                {wi.client && (!wi.confidential || !hideConfidential) && (
                   <span className="text-xs text-muted truncate hidden sm:block max-w-[100px]">{wi.client}</span>
                 )}
                 <span className={`flex-shrink-0 text-[11px] font-medium tabular-nums rounded px-2 py-0.5 ${BUCKET_DATE_COLOR[bucket]}`}>
@@ -141,10 +140,13 @@ function DonutCard({ title, sub, num, den, color }: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
-  const { profile }         = useAuth()
-  const isViewer            = profile?.global_role === 'viewer'
   const { canEdit, isAdmin } = useAuthz()
   const navigate            = useNavigate()
+  // PRD v2.101 W-7: confidential fields are masked for anyone without global edit rights
+  // (admin/editor see real values; viewer AND assistant both see "(비공개)") — this used to
+  // check profile.global_role === 'viewer' only, which silently missed assistant (harmless
+  // today only because work_items_safe already masks the underlying fields server-side).
+  const hideConfidential = !canEdit('global')
 
   const { data: people      = [], isLoading: lP } = useAllPeople()
   const { data: workItems   = [], isLoading: lW } = useAllWorkItems()
@@ -410,7 +412,7 @@ export default function DashboardPage() {
           <ProjectWeekList
             title="프로젝트 Kick-off"
             rows={kickoffRows}
-            isViewer={isViewer}
+            hideConfidential={hideConfidential}
             label={label}
             dateLabel="시작"
             accentColor="bg-brand-400"
@@ -421,7 +423,7 @@ export default function DashboardPage() {
           <ProjectWeekList
             title="프로젝트 종료"
             rows={endingRows}
-            isViewer={isViewer}
+            hideConfidential={hideConfidential}
             label={label}
             dateLabel="종료"
             accentColor="bg-rose-400"

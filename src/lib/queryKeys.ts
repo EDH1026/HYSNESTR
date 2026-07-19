@@ -64,4 +64,10 @@ export const queryKeys = {
   timesheetSnapshot: {
     all: () => ['timesheetGuidelineSnapshot'] as const,
   },
+
+  // PRD v2.100 LV-17: server-computed, role-consistent ledger source data.
+  ledgerData: {
+    forPeople: (personIds: string[] | 'all') =>
+      ['ledgerData', personIds === 'all' ? 'all' : [...personIds].sort()] as const,
+  },
 } as const

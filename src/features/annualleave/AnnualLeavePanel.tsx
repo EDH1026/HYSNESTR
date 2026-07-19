@@ -25,9 +25,7 @@ import {
   useCreateAdjustment,
   useDeleteAdjustment,
 } from './hooks'
-import { useAssignmentsByPerson } from '@/features/timeline/hooks'
-import { useAccrualsByPerson }    from '@/features/leave/hooks'
-import { useAllWorkItems }        from '@/features/workitems/hooks'
+import { useLedgerData }          from '@/features/leave/hooks'
 import { useAllHolidays }         from '@/features/admin/hooks'
 import { useAllPeople }           from '@/features/people/hooks'
 import { dateToNum, numToStr, today } from '@/lib/date'
@@ -388,13 +386,16 @@ function AdjustmentsTab({ person, readOnly }: { person: Person; readOnly: boolea
 // ─────────────────────────────────────────────────────────────
 
 function usePersonData(personId: string, asOfStr: string, personRank?: string) {
-  const { data: assignments = [], isLoading: la } = useAssignmentsByPerson(personId)
-  const { data: accruals   = [], isLoading: lb } = useAccrualsByPerson(personId)
-  const { data: workItems  = [], isLoading: lw } = useAllWorkItems()
+  // PRD v2.100 LV-17: RPC-backed source so this ledger matches the same person's
+  // ledger regardless of the viewing session's role (admin vs assistant).
+  const { data: ledgerSrc, isLoading: ll } = useLedgerData([personId])
+  const assignments = ledgerSrc?.assignments ?? []
+  const accruals    = ledgerSrc?.accruals    ?? []
+  const workItems    = ledgerSrc?.workItems   ?? []
   const { data: holidays   = [], isLoading: lh } = useAllHolidays()
   const { data: adjustments= [], isLoading: lj } = useAdjustmentsByPerson(personId)
 
-  const isLoading = la || lb || lw || lh || lj
+  const isLoading = ll || lh || lj
 
   const holidaySet = useMemo(() => {
     const yr = new Date().getFullYear()

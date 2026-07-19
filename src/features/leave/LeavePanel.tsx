@@ -15,9 +15,7 @@ import Modal from '@/components/Modal'
 import { computeLedger, buildHolidaySet } from './ledger'
 import type { Ledger, LedgerAccrualEntry, LedgerUsageEntry } from './ledger'
 import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
-import { useAccrualsByPerson, useCreateAccrual, useDeleteAccrual } from './hooks'
-import { useAssignmentsByPerson } from '@/features/timeline/hooks'
-import { useAllWorkItems } from '@/features/workitems/hooks'
+import { useCreateAccrual, useDeleteAccrual, useLedgerData } from './hooks'
 import { useAllHolidays } from '@/features/admin/hooks'
 import { useCreateAssignment } from '@/features/timeline/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
@@ -392,12 +390,16 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
   const [isCreatingLeave, setIsCreatingLeave] = useState(false)
   const deleteAccrual = useDeleteAccrual(person.id)
 
-  const { data: assignments = [], isLoading: loadingA } = useAssignmentsByPerson(person.id)
-  const { data: accruals   = [], isLoading: loadingB } = useAccrualsByPerson(person.id)
-  const { data: workItems  = [], isLoading: loadingW } = useAllWorkItems()
+  // PRD v2.100 LV-17: single RPC-backed source so this ledger matches the same
+  // person's ledger regardless of the viewing session's role (was: separate
+  // per-role-filtered assignments/accruals/work_items reads).
+  const { data: ledgerSrc, isLoading: loadingLedgerSrc } = useLedgerData([person.id])
+  const assignments = ledgerSrc?.assignments ?? []
+  const accruals    = ledgerSrc?.accruals    ?? []
+  const workItems    = ledgerSrc?.workItems   ?? []
   const { data: holidays   = [], isLoading: loadingH } = useAllHolidays()
 
-  const isLoading = loadingA || loadingB || loadingW || loadingH
+  const isLoading = loadingLedgerSrc || loadingH
 
   async function handleDeleteAccrual(id: string, prompt: string) {
     const target = accruals.find(a => a.id === id)

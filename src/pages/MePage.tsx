@@ -8,9 +8,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { Loader2, BookOpen, FileText } from 'lucide-react'
 import { useMyPerson } from '@/hooks/useMyPerson'
-import { useAssignmentsByPerson } from '@/features/timeline/hooks'
-import { useAccrualsByPerson } from '@/features/leave/hooks'
-import { useAllWorkItems } from '@/features/workitems/hooks'
+import { useLedgerData } from '@/features/leave/hooks'
 import { useAllHolidays } from '@/features/admin/hooks'
 import { computeLedger, buildHolidaySet } from '@/features/leave/ledger'
 import { computeCv } from '@/features/cv/CvPanel'
@@ -283,12 +281,16 @@ export default function MePage() {
   const { data: person, isLoading: loadingPerson } = useMyPerson()
   const personId = person?.id
 
-  const { data: assignments = [], isLoading: loadingA } = useAssignmentsByPerson(personId)
-  const { data: accruals   = [], isLoading: loadingB } = useAccrualsByPerson(personId)
-  const { data: workItems  = [], isLoading: loadingW } = useAllWorkItems()
+  // PRD v2.100 LV-17: single RPC-backed source so this ledger matches what
+  // admin/editor/assistant see for this same person (was: viewer-role RLS
+  // silently narrowed the assignments/work_items feeding computeLedger/computeCv).
+  const { data: ledgerSrc, isLoading: loadingLedgerSrc } = useLedgerData(personId ? [personId] : undefined)
+  const assignments = ledgerSrc?.assignments ?? []
+  const accruals    = ledgerSrc?.accruals    ?? []
+  const workItems    = ledgerSrc?.workItems   ?? []
   const { data: holidays   = [], isLoading: loadingH } = useAllHolidays()
 
-  const isDataLoading = loadingA || loadingB || loadingW || loadingH
+  const isDataLoading = loadingLedgerSrc || loadingH
 
   const holidaySet = useMemo(() => {
     const yr = new Date().getFullYear()
@@ -300,8 +302,11 @@ export default function MePage() {
 
   const ledger = useMemo(() => {
     if (!personId || isDataLoading) return null
-    return computeLedger(personId, { workItems, assignments, accruals, isHoliday, today: asOf })
-  }, [personId, workItems, assignments, accruals, isHoliday, asOf, isDataLoading])
+    // v2.100: personRank was missing here (same bug class as the v2.94 LV-1 fix) —
+    // without it a Partner viewing their own leave would see auto-accrual that
+    // Ledger/LeavePanel (which do pass personRank) correctly withhold (§7-7).
+    return computeLedger(personId, { workItems, assignments, accruals, isHoliday, today: asOf, personRank: person?.rank })
+  }, [personId, workItems, assignments, accruals, isHoliday, asOf, isDataLoading, person?.rank])
 
   const cvEntries = useMemo(
     () => personId ? computeCv(personId, workItems, assignments) : [],
