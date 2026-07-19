@@ -20,5 +20,10 @@ export default function AuthGuard() {
   // <Outlet/> whenever profile was null.
   if (!profile || profile.must_set_password) return <Navigate to="/reset-password" replace />
 
+  // PRD v2.99 ADM-10⑦: LoginPage stashes the just-typed password for ResetPasswordPage's
+  // current_password handoff (see there). Wipe it here on every normal pass-through so it
+  // never lingers in sessionStorage for accounts that didn't need it.
+  sessionStorage.removeItem('eyp_login_password')
+
   return <Outlet />
 }

@@ -19,6 +19,12 @@ export default function LoginPage() {
     if (error) {
       setError(error.message)
     } else {
+      // PRD v2.99 ADM-10⑦: if this account still has must_set_password=true, AuthGuard
+      // will redirect to /reset-password. Supabase requires `current_password` on that
+      // updateUser call (GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_CURRENT_PASSWORD), so the
+      // just-verified password is handed off via sessionStorage (read once, then cleared —
+      // see ResetPasswordPage). No-op for accounts that don't need it.
+      sessionStorage.setItem('eyp_login_password', password)
       navigate('/')
     }
   }

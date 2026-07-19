@@ -12,6 +12,9 @@ function friendlyAuthError(message: string): string {
   if (m.includes('session') || m.includes('expired') || m.includes('token') || m.includes('jwt')) {
     return 'This link has expired or has already been used. Please request a new invitation or reset link.'
   }
+  if (m.includes('current_password') || m.includes('current password')) {
+    return 'We could not verify your current password. Please sign out and sign in again with the password you were given, then retry.'
+  }
   return message
 }
 
@@ -22,6 +25,15 @@ export default function ResetPasswordPage() {
   const [password, setPassword] = useState('')
   const [confirm,  setConfirm]  = useState('')
   const [error,    setError]    = useState<string | null>(null)
+
+  // PRD v2.99 ADM-10⑦: captured once from LoginPage's sessionStorage handoff (see there for
+  // why). undefined when arriving via a magic link, which is fine — accounts with no password
+  // yet don't need one. Read-and-clear on mount so it never lingers in storage.
+  const [currentPassword] = useState<string | undefined>(() => {
+    const pw = sessionStorage.getItem('eyp_login_password') ?? undefined
+    sessionStorage.removeItem('eyp_login_password')
+    return pw
+  })
 
   // ── Detect recovery session ────────────────────────────────
   // Supabase processes the #access_token from the reset-link URL and fires
@@ -77,7 +89,12 @@ export default function ResetPasswordPage() {
 
     setStatus('saving')
 
-    const { error: pwError } = await supabase.auth.updateUser({ password })
+    // current_password is required by Supabase whenever the account already has a password
+    // set (GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_CURRENT_PASSWORD) — true for admin-issued
+    // temp passwords. Omitted when unknown (e.g. magic-link accounts with no password yet).
+    const { error: pwError } = await supabase.auth.updateUser(
+      currentPassword ? { password, current_password: currentPassword } : { password },
+    )
     if (pwError) {
       setError(friendlyAuthError(pwError.message))
       setStatus('ready')
