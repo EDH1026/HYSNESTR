@@ -169,6 +169,13 @@ function idx<T extends { id: string }>(arr: T[]): Map<string, T> {
   return new Map(arr.map(x => [x.id, x]))
 }
 
+// T-17⑥ v2.96: shared overlap test — AssignmentBar, WorkItemBand, and lane packing (T-22)
+// all use this same predicate on the ORIGINAL (unclamped) start/end so a decision to render/
+// lane-pack is never based on a min-width-floored or otherwise clamped value.
+function overlapsViewport(start: number, end: number, viewStart: number, viewEnd: number): boolean {
+  return end >= viewStart && start <= viewEnd
+}
+
 
 // Color derivation uses barColorOf from @/lib/colors (PRD v2.3 §4/§9.1).
 // barColor is now a thin wrapper used inside GridRow where colorMap is available.
@@ -335,11 +342,12 @@ interface WorkItemBandProps {
   viewStart:     number
   viewEnd:       number
   canEdit:       boolean
+  isClosed?:     boolean   // T-2 v2.96: Closed badge
   onUpdate:      (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
   onOpenDetail?: () => void
 }
 
-function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, onUpdate, onOpenDetail }: WorkItemBandProps) {
+function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, isClosed, onUpdate, onOpenDetail }: WorkItemBandProps) {
   const startNum   = useMemo(() => dateToNum(wi.start), [wi.start])
   const endNum     = useMemo(() => dateToNum(wi.end_date), [wi.end_date])
   const mainNum    = useMemo(() => wi.main_start ? dateToNum(wi.main_start) : null, [wi.main_start])
@@ -355,6 +363,14 @@ function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, onUpda
   useEffect(() => {
     setLive({ start: startNum, end: endNum, main: mainNum })
   }, [startNum, endNum, mainNum])
+
+  // T-17⑥ v2.96: skip render entirely when the ORIGINAL (unclamped) span doesn't overlap the
+  // viewport at all — no hooks below this point, so this is safe (unlike AssignmentBar's T-17,
+  // where this exact ordering mistake caused React error #300; see T-17④/v2.91).
+  // Root cause this fixes: the old visStart/visEnd clamp alone let end<viewStart cases collapse
+  // to a zero-or-negative span, and `Math.max(visEnd, visStart)` in the width formula silently
+  // floored that back to a 1-day sliver at x=0 (viewStart) instead of not rendering at all.
+  if (!overlapsViewport(live.start, live.end, viewStart, viewEnd)) return null
 
   // T-17: clamp to viewport
   const visStart = Math.max(live.start, viewStart)
@@ -458,6 +474,18 @@ function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, onUpda
           onPointerDown={e => { e.stopPropagation(); handlePointerDown(e, 'right') }}
         />
       )}
+
+      {/* T-2 v2.96: Closed indicator — small, non-intrusive badge (same style as AssignmentBar's) */}
+      {isClosed && (
+        <div title="🔒 Closed — 편집 잠금" style={{
+          position: 'absolute', top: 2, left: 3,
+          display: 'flex', alignItems: 'center',
+          zIndex: 5, pointerEvents: 'none',
+          opacity: 0.85,
+        }}>
+          <Lock size={9} color="white" strokeWidth={2.5} />
+        </div>
+      )}
     </div>
   )
 }
@@ -483,6 +511,7 @@ interface AssignmentBarProps {
   isLeave:      boolean
   holidaySet:   Set<number>
   canEdit:      boolean
+  isClosed?:    boolean     // T-2 v2.96: Closed work_item (work bar) or Closed leave block — small badge
   hasConflict?: boolean     // §9.3: same person has overlapping work assignments
   preStudyStart?: number | null // §5.6: main_start day of the work item; bars before this get hatched pre-study style
   tooltipInfo?: TooltipInfo
@@ -505,7 +534,7 @@ function AssignmentBar({
   assignment, label, color, dayWidth, viewStart, viewEnd,
   topOffset = BAR_PAD,
   height    = ROW_H - 2 * BAR_PAD,
-  isLeave, holidaySet, canEdit, hasConflict, preStudyStart, tooltipInfo,
+  isLeave, holidaySet, canEdit, isClosed, hasConflict, preStudyStart, tooltipInfo,
   clampStart, onDragLive, onDragEnd,
   onUpdate, onClick, onContextMenu, onDoubleClick,
   isSelected, multiMoveDelta, multiResizeEndDelta, multiResizeStartDelta, onToggleSelect,
@@ -539,7 +568,8 @@ function AssignmentBar({
   const isHolidayFn = useCallback((n: number) => holidaySet.has(n), [holidaySet])
 
   // T-17: skip render entirely if the bar is fully outside the viewport
-  if (origEnd < viewStart || origStart > viewEnd) return null
+  // (T-17⑥ v2.96: shared overlapsViewport predicate, same one WorkItemBand and lane packing use)
+  if (!overlapsViewport(origStart, origEnd, viewStart, viewEnd)) return null
 
   // T-14: follower bars show offset position during multi-drag / bulk-resize
   const dispStart = multiMoveDelta      != null ? origStart + multiMoveDelta      :
@@ -783,8 +813,9 @@ function AssignmentBar({
                     zIndex: 20, pointerEvents: 'none',
                   }} />
                 )}
-                {/* PRD v2.88: Closed leave lock indicator */}
-                {isLeave && assignment.status === 'closed' && (
+                {/* T-2 v2.96: Closed indicator — Closed leave block OR Closed work item's work bar
+                    (was leave-only since v2.88; now covers both via the shared isAsgnClosed check) */}
+                {isClosed && (
                   <div title="🔒 Closed — 편집 잠금" style={{
                     position: 'absolute', top: 2, left: 3,
                     display: 'flex', alignItems: 'center',
@@ -1579,12 +1610,15 @@ export default function TimelineView() {
   const [personSort,   setPersonSort]   = useState<'name' | 'rank'>('rank')
   const [personDir,    setPersonDir]    = useState<'asc' | 'desc'>('asc')
   const [showResigned,      setShowResigned]      = useState(false)
-  const [rankFilter,        setRankFilter]        = useState<string[]>([])
+  // T-21 v2.96: Person 탭 기본 필터 — Partner 제외 전체 직급 선택(초기 진입 상태; RANKS 순서 재사용)
+  const [rankFilter,        setRankFilter]        = useState<string[]>(() => RANKS.filter(r => r !== 'Partner'))
   const [personNameSearch,  setPersonNameSearch]  = useState('')
   // Work-item view
   const [wiSort,       setWiSort]       = useState<'start' | 'name' | 'status' | 'type'>('start')
   const [wiDir,        setWiDir]        = useState<'asc' | 'desc'>('asc')
-  const [showClosed,   setShowClosed]   = useState(false)
+  // T-21 v2.96: 초기 진입은 Person 탭(viewMode 기본값)이므로 기본값 = ON (Person 탭 요구사항).
+  // Work Item 탭 자체 로직·필터는 변경하지 않는다 — 토글은 두 탭이 공유하는 기존 상태 그대로.
+  const [showClosed,   setShowClosed]   = useState(true)
   const [typeFilter,   setTypeFilter]   = useState<string[]>([])
   const [clientFilter,  setClientFilter]  = useState('')
   const [hashFilter,    setHashFilter]    = useState('')
@@ -1623,12 +1657,18 @@ export default function TimelineView() {
   const canToggleWIStatus = (wi: WorkItem) =>
     wi.type === 'pipeline' ? canEdit('work_item', wi.id) || globalEdit : globalEdit || canEdit('work_item', wi.id)
   // Assignment edit: blocked when leave is Closed (PRD v2.88), or linked work item is Closed (W-5/W-6)
-  const canEditAsgn = (a: Assignment) => {
-    if (a.kind === 'leave' && a.status === 'closed') return false
+  // T-2 v2.96: shared Closed predicate — leave block's own status, or the linked work_item's
+  // status for a work assignment. Reused by canEditAsgn (edit gating) and the bar's Closed badge.
+  const isAsgnClosed = (a: Assignment): boolean => {
+    if (a.kind === 'leave') return a.status === 'closed'
     if (a.work_item_id) {
       const wi = workItemMap.get(a.work_item_id)
-      if (wi && isWIClosed(wi)) return false
+      return !!(wi && isWIClosed(wi))
     }
+    return false
+  }
+  const canEditAsgn = (a: Assignment) => {
+    if (isAsgnClosed(a)) return false
     return globalEdit ||
       canEdit('person', a.person_id) ||
       (a.work_item_id ? canEdit('work_item', a.work_item_id) : false)
@@ -1763,6 +1803,11 @@ export default function TimelineView() {
 
     let fw = workItems.filter(wi => {
       if (!showClosed && (wi.status ?? wi.project_status) === 'closed') return false
+      // T-17⑥ v2.96: work item row itself doesn't appear unless its span overlaps the current
+      // query range — previously the row list was unfiltered by date, so a project that ended
+      // long before the selected FY still got a row (and its WorkItemBand rendered a min-width
+      // sliver at the viewport's left edge; see overlapsViewport()).
+      if (!overlapsViewport(dateToNum(wi.start), dateToNum(wi.end_date), viewStart, viewEnd)) return false
       if (typeFilter.length > 0 && !typeFilter.includes(wi.type)) return false
       // Client search — skip match on confidential items (viewer sees null)
       if (clientFilter && !isConf(wi)) {
@@ -1846,7 +1891,7 @@ export default function TimelineView() {
     viewMode, people, workItems, assignments, peopleMap,
     personSort, personDir, showResigned, rankFilter, personNameSearch,
     wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter, nameFilter, unifiedFilter,
-    expandedWorkItems, expandedLeave,
+    expandedWorkItems, expandedLeave, viewStart, viewEnd,
   ])
 
   // T-16/T-22 v2.94: lane packing per person row (only in person view) — packed over the
@@ -1861,8 +1906,7 @@ export default function TimelineView() {
       let rowAsgns = assignments.filter(a => {
         if (a.person_id !== row.person.id) return false
         if (!isVisibleUnderClosedToggle(a)) return false
-        const s = dateToNum(a.start), e = dateToNum(a.end_date)
-        return !(e < viewStart || s > viewEnd)
+        return overlapsViewport(dateToNum(a.start), dateToNum(a.end_date), viewStart, viewEnd)
       })
       // T-16: apply live drag position for Partner rows so lanes recompute in real-time during drag
       if (draggingLive && row.person.rank === 'Partner') {
@@ -2437,7 +2481,9 @@ export default function TimelineView() {
         canCreate={canCreate}
         globalEdit={globalEdit}
         canEditAsgn={canEditAsgn}
+        isAsgnClosed={isAsgnClosed}
         canEditWI={canEditWI}
+        isWIClosed={isWIClosed}
         clientXToDay={clientXToDay}
         peopleMap={peopleMap}
         workItemMap={workItemMap}
@@ -2616,6 +2662,20 @@ export default function TimelineView() {
           <span className="flex items-center gap-1 text-[11px] text-muted">
             <span style={{ display: 'inline-block', width: 14, height: 10, borderRadius: 2, background: LEAVE_GREEN['지정휴가'] }} />
             Leave
+          </span>
+
+          {/* divider */}
+          <span style={{ width: 1, height: 14, background: '#d1d5db', display: 'inline-block', flexShrink: 0 }} />
+
+          {/* T-2 v2.96: Closed status badge legend (separate from the 4 type/kind swatches above) */}
+          <span className="flex items-center gap-1 text-[11px] text-muted">
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 14, height: 10, borderRadius: 2, background: '#6b7280',
+            }}>
+              <Lock size={7} color="white" strokeWidth={3} />
+            </span>
+            Closed
           </span>
 
           {/* T-17: virtual leave legend */}
@@ -2976,7 +3036,9 @@ interface GridRowProps {
   canCreate:      boolean
   globalEdit:     boolean
   canEditAsgn:    (a: Assignment) => boolean
+  isAsgnClosed:   (a: Assignment) => boolean   // T-2 v2.96: Closed badge on the bar
   canEditWI:      (wi: WorkItem)  => boolean
+  isWIClosed:     (wi: WorkItem)  => boolean   // T-2 v2.96: Closed badge on the WorkItemBand
   clientXToDay:   (clientX: number) => number
   peopleMap:      Map<string, Person>
   workItemMap:    Map<string, WorkItem>
@@ -3004,7 +3066,7 @@ interface GridRowProps {
 
 function GridRow({
   row, rowAssignments, laneMap, dayWidth, viewStart, viewEnd,
-  canCreate, globalEdit, canEditAsgn, canEditWI, clientXToDay,
+  canCreate, globalEdit, canEditAsgn, isAsgnClosed, canEditWI, isWIClosed, clientXToDay,
   peopleMap, workItemMap, colorMap, holidaySet,
   virtualLeaveBlocks,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
@@ -3206,6 +3268,7 @@ function GridRow({
           viewStart={viewStart}
           viewEnd={viewEnd}
           canEdit={canEditWI(row.workItem)}
+          isClosed={isWIClosed(row.workItem)}
           onUpdate={onUpdateWI}
           onOpenDetail={onOpenDetail ? () => onOpenDetail(row.workItem) : undefined}
         />
@@ -3271,6 +3334,7 @@ function GridRow({
             isLeave={a.kind === 'leave'}
             holidaySet={holidaySet}
             canEdit={canEditAsgn(a)}
+            isClosed={isAsgnClosed(a)}
             hasConflict={conflictIds.has(a.id)}
             preStudyStart={getPreStudyStart(a)}
             tooltipInfo={barTooltip(a)}
