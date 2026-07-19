@@ -55,8 +55,8 @@ const NAV: {
   { to: '/cv',         label: 'CV Generator',    icon: FileText        },
   // ── Admin only (v2.100 — was editorOnly) ──────────────────
   { to: '/people',       label: 'People',         icon: Users,           adminOnly: true },
-  // ── Editor / admin only ───────────────────────────────────
-  { to: '/holidays',     label: 'Holidays',       icon: CalendarCheck,   editorOnly: true },
+  // ── Admin only (v2.103 — was editorOnly) ──────────────────
+  { to: '/holidays',     label: 'Holidays',       icon: CalendarCheck,   adminOnly: true },
   // ── Viewer-accessible (cont.) ─────────────────────────────
   { to: '/leave',      label: 'Leave',           icon: Umbrella        },
   // ── Admin / assistant only (v2.100 — was editorOnly) ──────

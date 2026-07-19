@@ -89,7 +89,6 @@ export default function App() {
                 {/* ── Editor / admin only ───────────────────── */}
                 <Route element={<EditorGuard />}>
                   <Route path="work-items"    element={<WorkItemsPage />} />
-                  <Route path="holidays"      element={<HolidaysPage />} />
                   <Route path="data-test"             element={<DataTestPage />} />
                 </Route>
 
@@ -101,8 +100,9 @@ export default function App() {
 
                 {/* ── Admin only ────────────────────────────── */}
                 <Route element={<AdminGuard />}>
-                  <Route path="people" element={<PeoplePage />} />
-                  <Route path="admin"  element={<AdminPage />} />
+                  <Route path="people"    element={<PeoplePage />} />
+                  <Route path="holidays"  element={<HolidaysPage />} />
+                  <Route path="admin"     element={<AdminPage />} />
                 </Route>
               </Route>
             </Route>

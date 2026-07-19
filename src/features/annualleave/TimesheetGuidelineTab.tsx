@@ -18,6 +18,7 @@ import { useAllAssignments }                  from '@/features/timeline/hooks'
 import { useAllAccruals }                     from '@/features/leave/hooks'
 import { useAllWorkItems, useUpdateWorkItem } from '@/features/workitems/hooks'
 import { useAllHolidays }                     from '@/features/admin/hooks'
+import { useAuthz }                           from '@/hooks/useAuthz'
 import { useAllAdjustments, useGuidelineDocuments, useSaveGuidelineDocument } from './hooks'
 import type { GuidelineDocument }             from './hooks'
 import { computeLedger, buildHolidaySet }     from '@/features/leave/ledger'
@@ -703,6 +704,7 @@ export default function TimesheetGuidelineTab() {
   const { data: allWorkItems   = [], isLoading: lw } = useAllWorkItems()
   const { data: allHolidays    = [], isLoading: lh } = useAllHolidays()
   const { data: allAdjustments = [], isLoading: lj } = useAllAdjustments()
+  const { isAssistant } = useAuthz()
   const queryClient = useQueryClient()
 
   const dataLoading = lp || la || lc || lw || lh || lj
@@ -1527,7 +1529,8 @@ export default function TimesheetGuidelineTab() {
       editCellState?.date === col.date &&
       editCellState?.code === code
 
-    const canEdit = !isSnapshotMode && !viewingDoc && c.changeKind !== 'removed'
+    // PRD v2.103 TSG-16: assistant is view-only — never mount the cell-edit input.
+    const canEdit = !isSnapshotMode && !viewingDoc && c.changeKind !== 'removed' && !isAssistant()
 
     return (
       <td
@@ -1583,38 +1586,44 @@ export default function TimesheetGuidelineTab() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
-          {/* 라이브 워크플로우 버튼 — 저장된 지침 열람 중에는 숨김 */}
+          {/* 라이브 워크플로우 버튼 — 저장된 지침 열람 중에는 숨김. PRD v2.103 TSG-16:
+              assistant는 열람 전용이라 "저장된 지침" 토글 외 아래 전부 렌더링하지 않는다
+              (disabled 처리가 아니라 컴포넌트 트리에서 제외 — 서버 RLS는 이미 admin만 쓰기 허용). */}
           {!viewingDoc && (
             <>
-              <button onClick={() => setShowResetModal(true)} disabled={anyBusy || isLoading}
-                title="최신 주를 제외한 과거 7주를 현재 데이터로 재설정"
-                className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
-                {isResetting
-                  ? <><Loader2 size={13} className="animate-spin" />
-                      {resetProgress
-                        ? `${resetProgress.done + 1}/${resetProgress.total} 처리 중…`
-                        : '초기화 중…'}
-                    </>
-                  : <><RotateCcw size={13} /> 초기화</>}
-              </button>
+              {!isAssistant() && (
+                <>
+                  <button onClick={() => setShowResetModal(true)} disabled={anyBusy || isLoading}
+                    title="최신 주를 제외한 과거 7주를 현재 데이터로 재설정"
+                    className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                    {isResetting
+                      ? <><Loader2 size={13} className="animate-spin" />
+                          {resetProgress
+                            ? `${resetProgress.done + 1}/${resetProgress.total} 처리 중…`
+                            : '초기화 중…'}
+                        </>
+                      : <><RotateCcw size={13} /> 초기화</>}
+                  </button>
 
-              <button onClick={handlePreview} disabled={anyBusy || isLoading}
-                className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
-                {isPreviewing
-                  ? <><Loader2 size={13} className="animate-spin" />
-                      {resetProgress
-                        ? `${resetProgress.done + 1}/${resetProgress.total} 계산 중…`
-                        : '생성 중…'}
-                    </>
-                  : <><RefreshCw size={13} /> 지침 자동생성</>}
-              </button>
+                  <button onClick={handlePreview} disabled={anyBusy || isLoading}
+                    className="btn-secondary text-xs py-1 gap-1 disabled:opacity-40">
+                    {isPreviewing
+                      ? <><Loader2 size={13} className="animate-spin" />
+                          {resetProgress
+                            ? `${resetProgress.done + 1}/${resetProgress.total} 계산 중…`
+                            : '생성 중…'}
+                        </>
+                      : <><RefreshCw size={13} /> 지침 자동생성</>}
+                  </button>
+                </>
+              )}
 
               <button onClick={() => { setShowDocList(v => !v); setViewingDoc(null) }}
                 className={`btn-secondary text-xs py-1 gap-1 ${showDocList ? 'bg-brand-50 border-brand-300 text-brand-700' : ''}`}>
                 <BookOpen size={13} /> 저장된 지침 {guidelineDocs.length > 0 ? `(${guidelineDocs.length})` : ''}
               </button>
 
-              {previewed && (
+              {previewed && !isAssistant() && (
                 <>
                   <button
                     onClick={() => triggerDownload(
@@ -1641,23 +1650,27 @@ export default function TimesheetGuidelineTab() {
             </>
           )}
 
-          {/* 저장된 지침 열람 전용 버튼 */}
+          {/* 저장된 지침 열람 전용 버튼 — PRD v2.103 TSG-16: assistant는 HTML 내보내기만 */}
           {viewingDoc && (
             <>
-              <button
-                onClick={() => setShowApplyDocModal(true)}
-                disabled={isApplyingDoc}
-                className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
-                {isApplyingDoc
-                  ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
-                  : <><Save size={13} /> 이 지침 반영</>}
-              </button>
-              <button
-                onClick={handleDeleteDocument}
-                disabled={isApplyingDoc}
-                className="btn-danger text-xs py-1 gap-1 disabled:opacity-40">
-                <Trash2 size={13} /> 삭제
-              </button>
+              {!isAssistant() && (
+                <>
+                  <button
+                    onClick={() => setShowApplyDocModal(true)}
+                    disabled={isApplyingDoc}
+                    className="btn-primary text-xs py-1 gap-1 disabled:opacity-40">
+                    {isApplyingDoc
+                      ? <><Loader2 size={13} className="animate-spin" /> 반영 중…</>
+                      : <><Save size={13} /> 이 지침 반영</>}
+                  </button>
+                  <button
+                    onClick={handleDeleteDocument}
+                    disabled={isApplyingDoc}
+                    className="btn-danger text-xs py-1 gap-1 disabled:opacity-40">
+                    <Trash2 size={13} /> 삭제
+                  </button>
+                </>
+              )}
               <button
                 onClick={() => triggerDownload(
                   generateGuidelineHtml(displayWeeks, displayPeople, displayEntries,
@@ -1873,7 +1886,7 @@ export default function TimesheetGuidelineTab() {
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-amber-100" /> 정정(신규 코드)</span>
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-rose-100" /> 정정(이전 코드 삭제)</span>
               <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded bg-purple-100" /> 관리자 수정</span>
-              {!viewingDoc && <span className="ml-auto text-[10px]">셀 클릭 → 시간 수정 (TSG-8)</span>}
+              {!viewingDoc && !isAssistant() && <span className="ml-auto text-[10px]">셀 클릭 → 시간 수정 (TSG-8)</span>}
             </div>
           )}
 

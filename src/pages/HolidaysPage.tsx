@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { CalendarPlus, Pencil, RefreshCw, Calendar } from 'lucide-react'
 import { useAllHolidays } from '@/features/admin/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
@@ -8,11 +9,17 @@ import type { Holiday } from '@/types'
 export default function HolidaysPage() {
   const { data: holidays = [], isLoading, error } = useAllHolidays()
   const { isAdmin, isMobile } = useAuthz()
+  const [modal, setModal] = useState<Holiday | null | false>(false)
+
+  // PRD v2.103: this screen leaked to editor/assistant via the route/menu (both already
+  // fixed) — third layer of defense, matching AdminPage's own internal isAdmin() check.
+  // Placed after every hook call above (React error #300 — early returns must never
+  // change the hook call count/order between renders).
+  if (!isAdmin()) return <Navigate to="/timeline" replace />
+
   // PRD v2.100: holidays writes are admin-only now (RLS narrowed) — canEdit('global')
   // would still say yes for editor, so check admin directly to match the DB policy.
-  const editable = isAdmin() && !isMobile
-
-  const [modal, setModal] = useState<Holiday | null | false>(false)
+  const editable = !isMobile
   const open = modal !== false
 
   if (isLoading) return <div className="p-8 text-sm text-muted">Loading…</div>
