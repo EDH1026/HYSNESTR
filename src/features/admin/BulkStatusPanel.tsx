@@ -7,6 +7,7 @@
  */
 import { useState } from 'react'
 import { Info, Lock, Unlock, Eye, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { today, addMonths, numToStr } from '@/lib/date'
 import {
   useBulkStatusPreview,
   useBulkStatusTransition,
@@ -14,8 +15,10 @@ import {
   type BulkStatusTransitionResult,
 } from './adminHooks'
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10)
+// ADM-9① v2.94: default range prefill — 2008-01-01 (fixed anchor) ~ 오늘−2개월 (render-time calc)
+const DEFAULT_FROM = '2008-01-01'
+function defaultToDate(): string {
+  return numToStr(addMonths(today(), -2))
 }
 
 interface ConfirmModalProps {
@@ -111,8 +114,8 @@ function ConfirmModal({ preview, params, executing, onConfirm, onCancel }: Confi
 }
 
 export default function BulkStatusPanel() {
-  const [fromDate,    setFromDate]    = useState('')
-  const [toDate,      setToDate]      = useState(today())
+  const [fromDate,    setFromDate]    = useState(DEFAULT_FROM)
+  const [toDate,      setToDate]      = useState(defaultToDate)
   const [includeWI,   setIncludeWI]   = useState(true)
   const [includeLA,   setIncludeLA]   = useState(true)
   const [direction,   setDirection]   = useState<'close' | 'open'>('close')

@@ -46,7 +46,6 @@ import { useAuthz }         from '@/hooks/useAuthz'
 import { useHistory }       from '@/lib/history'
 import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete, combine } from '@/lib/historyOps'
 import type { HistoryEntry } from '@/lib/history'
-import { useAuth }          from '@/hooks/useAuth'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import { parseSearchQuery } from '@/lib/searchQuery'
 import AssignmentModal      from './AssignmentModal'
@@ -1042,7 +1041,7 @@ interface CtxMenuProps {
   hasEditRole:         boolean   // user has edit permission (ignoring Closed status)
   isClosed:            boolean   // linked work item is Closed, OR leave is status='closed'
   leaveLocked:         boolean   // leave assignment is specifically status='closed'
-  canSeeLeave:         boolean   // viewer: only own person; editor+: always
+  canSeeLeave:         boolean   // T-12 v2.94: editor/admin only (viewer never sees '이 사람 휴가 보기', even on own leave block)
   onClose:             () => void
   onEdit:              () => void
   onDuplicate:         () => void
@@ -1079,8 +1078,10 @@ function AssignmentContextMenu({
   const left = Math.min(x + 4, window.innerWidth  - MENU_W - 8)
   const top  = Math.min(y + 4, window.innerHeight - 220)
 
-  const hasDetail    = !!assignment.work_item_id
-  const hasViewItems = hasDetail || canSeeLeave
+  const hasDetail = !!assignment.work_item_id
+  // T-12 v2.94: '이 사람 휴가 보기' only makes sense on a leave block, not a work block
+  const canViewLeaveItem = canSeeLeave && assignment.kind === 'leave'
+  const hasViewItems = hasDetail || canViewLeaveItem
   const hasDivider   = hasEditRole && hasViewItems
 
   const item = (disabled?: boolean) => [
@@ -1155,7 +1156,7 @@ function AssignmentContextMenu({
           <FileText size={13} /> 작업 상세 열기
         </button>
       )}
-      {canSeeLeave && (
+      {canViewLeaveItem && (
         <button
           className={item()}
           onClick={() => { onClose(); onLeave() }}
@@ -1492,7 +1493,6 @@ export default function TimelineView() {
   const updateWorkItem   = useUpdateWorkItem()
   const { canEdit }      = useAuthz()
   const { push }         = useHistory()
-  const { myPersonId }   = useAuth()
   const startMonth       = settings?.fiscal_year_start_month ?? 7
 
   useLayoutEffect(() => {
@@ -1635,6 +1635,17 @@ export default function TimelineView() {
   }
   const canEditPipeline = canEdit('global') ||
     workItems.some(w => w.type === 'pipeline' && canEdit('work_item', w.id))
+  // T-21/T-22 v2.94: shared "Closed 표시" visibility predicate — reused by rowAssignments
+  // (renderRowContent) AND lane packing (rowLaneData) so both agree on what's actually shown.
+  const isVisibleUnderClosedToggle = (a: Assignment) => {
+    if (showClosed) return true
+    if (a.kind === 'leave') return a.status !== 'closed'
+    if (a.work_item_id) {
+      const wi = workItemMap.get(a.work_item_id)
+      if (wi && isWIClosed(wi)) return false
+    }
+    return true
+  }
 
   // View range — T-11 v2.92: period preset/FY/range sets ONLY viewStart/viewEnd.
   // It must never touch dayWidth or scroll position (those are independent controls —
@@ -1703,12 +1714,16 @@ export default function TimelineView() {
     const isHol = (n: number) => holidaySet.has(n)
     const map   = new Map<string, Array<{ start: number; end: number }>>()
     for (const p of people) {
+      // LV-1/P-3 v2.94: personRank must be passed so computeLedger excludes Partners from
+      // auto-accrual the same way LeavePage's real Ledger does — otherwise the simulation
+      // shows Partners with a nonzero projectedRemaining that the real Ledger never grants.
       const ledger = computeLedger(p.id, {
         workItems,
         assignments,
         accruals,
         isHoliday: isHol,
         today: todayNum,
+        personRank: p.rank,
       })
       const blocks = computeVirtualLeaveBlocks(
         p.id, ledger.projectedRemaining, assignments, todayNum, holidaySet,
@@ -1834,13 +1849,21 @@ export default function TimelineView() {
     expandedWorkItems, expandedLeave,
   ])
 
-  // T-16: lane packing per person row (only in person view)
+  // T-16/T-22 v2.94: lane packing per person row (only in person view) — packed over the
+  // currently VISIBLE assignment set only (same Closed-toggle + viewport rules AssignmentBar
+  // itself uses to decide whether to render at all — T-21/T-17), so hiding items via those
+  // filters actually shrinks the lane count / row height instead of leaving empty lanes.
   const rowLaneData = useMemo(() => {
     const m = new Map<string, { laneMap: Map<string, number>; laneCount: number }>()
     if (viewMode !== 'person') return m
     for (const row of rows) {
       if (row.kind !== 'person') continue
-      let rowAsgns = assignments.filter(a => a.person_id === row.person.id)
+      let rowAsgns = assignments.filter(a => {
+        if (a.person_id !== row.person.id) return false
+        if (!isVisibleUnderClosedToggle(a)) return false
+        const s = dateToNum(a.start), e = dateToNum(a.end_date)
+        return !(e < viewStart || s > viewEnd)
+      })
       // T-16: apply live drag position for Partner rows so lanes recompute in real-time during drag
       if (draggingLive && row.person.rank === 'Partner') {
         rowAsgns = rowAsgns.map(a =>
@@ -1852,7 +1875,7 @@ export default function TimelineView() {
       m.set(row.key, packLanes(rowAsgns))
     }
     return m
-  }, [rows, assignments, viewMode, draggingLive])
+  }, [rows, assignments, viewMode, draggingLive, showClosed, workItemMap, viewStart, viewEnd])
 
   const rowHeights = useMemo(
     () => rows.map(row => (rowLaneData.get(row.key)?.laneCount ?? 1) * ROW_H),
@@ -2072,13 +2095,9 @@ export default function TimelineView() {
     })
   }
 
+  // T-12 v2.94: '이 사람 휴가 보기' opens that person's Leave Ledger (§5.10), not a Timeline filter
   function handleCtxViewLeave(personId: string) {
-    setViewMode('person')
-    const p = peopleMap.get(personId)
-    if (p) setPersonNameSearch(p.name)
-    setShowFilter(true)
-    // Scroll to today so the person's leave bars are visible
-    requestAnimationFrame(() => scrollToToday())
+    navigate('/leave', { state: { openPersonId: personId } })
   }
 
   // ─── T-14: Multi-select handlers ─────────────────────────────────────────
@@ -2405,16 +2424,7 @@ export default function TimelineView() {
     // and Closed leave blocks (LV-15) when off, in both Person and Work Item tabs. Row.kind==='workitem-sub'
     // is already covered upstream (fw filters out Closed work items entirely when showClosed is false),
     // so this only has visible effect on person rows and the leave rows.
-    if (!showClosed) {
-      rowAssignments = rowAssignments.filter(a => {
-        if (a.kind === 'leave') return a.status !== 'closed'
-        if (a.work_item_id) {
-          const wi = workItemMap.get(a.work_item_id)
-          if (wi && isWIClosed(wi)) return false
-        }
-        return true
-      })
-    }
+    rowAssignments = rowAssignments.filter(isVisibleUnderClosedToggle)
 
     return (
       <GridRow
@@ -2923,7 +2933,8 @@ export default function TimelineView() {
         // "has edit role" = user has role permission, independent of Closed status
         const hasRole   = globalEdit || canEdit('person', a.person_id) ||
                           (a.work_item_id ? canEdit('work_item', a.work_item_id) : false)
-        const seeLeave  = hasRole || a.person_id === myPersonId
+        // T-12 v2.94: '이 사람 휴가 보기'는 editor/admin 전용 — viewer는 본인 휴가 블록이어도 비노출
+        const seeLeave  = hasRole
         return (
           <AssignmentContextMenu
             assignment={a}

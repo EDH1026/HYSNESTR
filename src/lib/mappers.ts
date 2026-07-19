@@ -107,7 +107,8 @@ export function toWorkItem(row: RawWorkItem): WorkItem {
 }
 
 export function toAssignment(row: RawAssignment): Assignment {
-  const r = row as typeof row & { daily_hours?: number | null }
+  // database.ts is regenerated after migrations; status (PRD v2.88 LV-15) isn't in it yet.
+  const r = row as typeof row & { daily_hours?: number | null; status?: 'open' | 'closed' | null }
   return {
     id:            row.id,
     person_id:     row.person_id,
@@ -119,6 +120,7 @@ export function toAssignment(row: RawAssignment): Assignment {
     end_date:      row.end_date,
     note:          row.note,
     daily_hours:   r.daily_hours ?? null,
+    status:        r.status ?? 'open',
   }
 }
 

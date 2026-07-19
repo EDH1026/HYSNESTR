@@ -4,7 +4,8 @@
  * Editor/admin: filterable people list (name · rank · status) + modal LeavePanel.
  * Viewer: own leave data rendered inline (no modal, no filter).
  */
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAllPeople } from '@/features/people/hooks'
 import { useAllAssignments } from '@/features/timeline/hooks'
 import { useAllAccruals } from '@/features/leave/hooks'
@@ -37,6 +38,21 @@ export default function LeavePage() {
 
   // Editor/admin — modal panel
   const [panel, setPanel] = useState<Person | null>(null)
+
+  // T-12 v2.94: Timeline '이 사람 휴가 보기' (editor/admin only) navigates here with
+  // state.openPersonId — open that person's panel once people has loaded.
+  const location = useLocation()
+  const navigate  = useNavigate()
+  const openPersonId = (location.state as { openPersonId?: string } | null)?.openPersonId
+  const handledOpenId = useRef<string>('')
+  useEffect(() => {
+    if (!openPersonId || isViewer || people.length === 0) return
+    if (handledOpenId.current === openPersonId) return
+    handledOpenId.current = openPersonId
+    navigate(location.pathname, { replace: true, state: null })
+    const p = people.find(pp => pp.id === openPersonId)
+    if (p) setPanel(p)
+  }, [openPersonId, isViewer, people, navigate, location.pathname])
 
   // Editor/admin — filter state (재직만 기본 표시)
   const [nameSearch,   setNameSearch]   = useState('')
