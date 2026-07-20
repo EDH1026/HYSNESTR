@@ -181,34 +181,40 @@ export default function AppLayout() {
         ))}
       </nav>
 
-      {/* Undo / Redo — editor/admin only */}
-      {canUseHistory && (
-        <div className="border-t border-border px-3 py-2 flex items-center gap-1">
-          <button
-            onClick={() => void undo()}
-            disabled={!canUndo}
-            title={undoLabel ? `실행취소: ${undoLabel} (Ctrl+Z)` : '실행취소 (Ctrl+Z)'}
-            className={[
-              'flex items-center gap-1.5 px-2 py-1.5 rounded text-xs font-medium transition-colors flex-1 truncate',
-              canUndo ? 'text-gray-700 hover:bg-surface-100' : 'text-muted/40 cursor-not-allowed',
-            ].join(' ')}
-          >
-            <Undo2 size={13} className="flex-shrink-0" />
-            <span className="truncate">{undoLabel ?? '실행취소'}</span>
-          </button>
-          <button
-            onClick={() => void redo()}
-            disabled={!canRedo}
-            title={redoLabel ? `재실행: ${redoLabel} (Ctrl+Y)` : '재실행 (Ctrl+Y)'}
-            className={[
-              'flex-shrink-0 p-1.5 rounded transition-colors',
-              canRedo ? 'text-gray-700 hover:bg-surface-100' : 'text-muted/40 cursor-not-allowed',
-            ].join(' ')}
-          >
-            <Redo2 size={13} />
-          </button>
-        </div>
-      )}
+      {/* PRD v2.107 §5.1: 작업내역(실행취소/재실행) 패널 상단 보안 경고 — 전 역할 공통,
+          undo/redo 버튼 자체는 기존처럼 editor/admin(canUseHistory)에게만 노출 */}
+      <div className="border-t border-border">
+        <p className="sticky top-0 bg-surface-0 px-3 pt-2 pb-1 text-[10px] leading-snug text-muted">
+          프로젝트 수행 및 제안 내역은 법적 문제를 유발할 수 있으므로 회사의 명시적 허락없이 외부 공개 불가
+        </p>
+        {canUseHistory && (
+          <div className="px-3 pb-2 flex items-center gap-1">
+            <button
+              onClick={() => void undo()}
+              disabled={!canUndo}
+              title={undoLabel ? `실행취소: ${undoLabel} (Ctrl+Z)` : '실행취소 (Ctrl+Z)'}
+              className={[
+                'flex items-center gap-1.5 px-2 py-1.5 rounded text-xs font-medium transition-colors flex-1 truncate',
+                canUndo ? 'text-gray-700 hover:bg-surface-100' : 'text-muted/40 cursor-not-allowed',
+              ].join(' ')}
+            >
+              <Undo2 size={13} className="flex-shrink-0" />
+              <span className="truncate">{undoLabel ?? '실행취소'}</span>
+            </button>
+            <button
+              onClick={() => void redo()}
+              disabled={!canRedo}
+              title={redoLabel ? `재실행: ${redoLabel} (Ctrl+Y)` : '재실행 (Ctrl+Y)'}
+              className={[
+                'flex-shrink-0 p-1.5 rounded transition-colors',
+                canRedo ? 'text-gray-700 hover:bg-surface-100' : 'text-muted/40 cursor-not-allowed',
+              ].join(' ')}
+            >
+              <Redo2 size={13} />
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* User info + sign-out + credit */}
       <div className="border-t border-border p-3 space-y-2">

@@ -15,6 +15,8 @@ import { Search, Users, Briefcase, X, ChevronDown, ChevronUp } from 'lucide-reac
 import { useAllPeople }    from '@/features/people/hooks'
 import { useAllWorkItems } from '@/features/workitems/hooks'
 import { parseSearchQuery } from '@/lib/searchQuery'
+import { useAuth }  from '@/context/AuthContext'
+import { useAuthz } from '@/hooks/useAuthz'
 import type { Person, WorkItem } from '@/types'
 
 interface Props {
@@ -31,6 +33,13 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
   const [q,   setQ]   = useState('')
   const [peopleCollapsed, setPeopleCollapsed] = useState(false)
   const [wiCollapsed,     setWiCollapsed]     = useState(false)
+
+  // PRD v2.106 G-7: viewer·assistant only — light deterrent against right-click/drag-select
+  // on result items (not a real security control; admin/editor unaffected; the search input
+  // itself is untouched — this only wraps the results container below).
+  const { profile } = useAuth()
+  const { isAssistant } = useAuthz()
+  const restrictInteraction = profile?.global_role === 'viewer' || isAssistant()
 
   const { data: people    = [] } = useAllPeople()
   const { data: workItems = [] } = useAllWorkItems()
@@ -113,8 +122,11 @@ export default function GlobalSearchPalette({ onClose, onSelectWorkItem }: Props
           </kbd>
         </div>
 
-        {/* Results */}
-        <div className="max-h-[60vh] overflow-y-auto">
+        {/* Results — G-7: viewer/assistant get right-click + drag-select disabled here */}
+        <div
+          className={`max-h-[60vh] overflow-y-auto ${restrictInteraction ? 'select-none' : ''}`}
+          onContextMenu={restrictInteraction ? e => e.preventDefault() : undefined}
+        >
           {/* Empty / too-short hint */}
           {!raw && (
             <p className="px-4 py-6 text-center text-sm text-muted">이름, 고객사, 해시태그 등으로 검색하세요</p>

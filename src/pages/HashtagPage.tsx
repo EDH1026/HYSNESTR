@@ -12,6 +12,8 @@ import { useAllAssignments } from '@/features/timeline/hooks'
 import { useAllPeople }      from '@/features/people/hooks'
 import { buildWorkItemColorMap }  from '@/lib/colors'
 import { parseSearchQuery }       from '@/lib/searchQuery'
+import { useAuth }  from '@/context/AuthContext'
+import { useAuthz } from '@/hooks/useAuthz'
 import WorkItemDetailPanel, { TYPE_PILL, periodStr } from '@/features/workitems/WorkItemDetailPanel'
 import type { WorkItem } from '@/types'
 
@@ -106,6 +108,12 @@ export default function HashtagPage() {
   const [query,    setQuery]    = useState('')
   const [selected, setSelected] = useState<WorkItem | null>(null)
 
+  // PRD v2.106 G-7: viewer·assistant only — light deterrent against right-click/drag-select
+  // on the results list and detail panel (not the search input). admin/editor unaffected.
+  const { profile } = useAuth()
+  const { isAssistant } = useAuthz()
+  const restrictInteraction = profile?.global_role === 'viewer' || isAssistant()
+
   const isLoading  = lW || lA || lP
 
   const peopleMap = useMemo(
@@ -177,11 +185,15 @@ export default function HashtagPage() {
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* Results column */}
-        <div className={[
-          'overflow-y-auto transition-all duration-200',
-          showDetail ? 'w-80 flex-shrink-0 border-r border-border' : 'flex-1',
-        ].join(' ')}>
+        {/* Results column — G-7: viewer/assistant get right-click + drag-select disabled */}
+        <div
+          className={[
+            'overflow-y-auto transition-all duration-200',
+            showDetail ? 'w-80 flex-shrink-0 border-r border-border' : 'flex-1',
+            restrictInteraction ? 'select-none' : '',
+          ].join(' ')}
+          onContextMenu={restrictInteraction ? e => e.preventDefault() : undefined}
+        >
           {!q ? (
             <div className="flex flex-col items-center justify-center h-full text-center p-8">
               <Search size={32} className="text-border mb-3" />
@@ -212,9 +224,12 @@ export default function HashtagPage() {
           )}
         </div>
 
-        {/* Detail panel */}
+        {/* Detail panel — G-7: viewer/assistant get right-click + drag-select disabled */}
         {showDetail && (
-          <div className="flex-1 overflow-hidden flex flex-col bg-surface-0">
+          <div
+            className={`flex-1 overflow-hidden flex flex-col bg-surface-0 ${restrictInteraction ? 'select-none' : ''}`}
+            onContextMenu={restrictInteraction ? e => e.preventDefault() : undefined}
+          >
             <WorkItemDetailPanel
               wi={selected}
               assignments={assignments}
