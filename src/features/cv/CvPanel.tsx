@@ -289,7 +289,7 @@ export default function CvPanel({ person, onClose, inline }: Props) {
             />
             필터링된 항목만 내보내기
           </label>
-          <button onClick={handleDownload} className="btn-primary gap-1.5 text-xs">
+          <button onClick={handleDownload} className="btn-secondary gap-1.5 text-xs">
             <Download size={13} /> Download HTML
           </button>
         </div>

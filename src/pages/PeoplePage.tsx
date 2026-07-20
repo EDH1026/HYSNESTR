@@ -99,7 +99,7 @@ export default function PeoplePage() {
           </p>
         </div>
         {editable && (
-          <button className="btn-primary gap-1.5 text-xs" onClick={() => setEditModal(null)}>
+          <button className="btn-secondary gap-1.5 text-xs" onClick={() => setEditModal(null)}>
             <UserPlus size={14} /> 구성원 추가
           </button>
         )}

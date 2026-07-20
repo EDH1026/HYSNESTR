@@ -39,7 +39,7 @@ export default function HolidaysPage() {
           </p>
         </div>
         {editable && (
-          <button className="btn-primary gap-1.5 text-xs" onClick={() => setModal(null)}>
+          <button className="btn-secondary gap-1.5 text-xs" onClick={() => setModal(null)}>
             <CalendarPlus size={14} /> 휴일 추가
           </button>
         )}

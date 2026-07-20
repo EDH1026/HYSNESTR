@@ -26,7 +26,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye, Pencil, Copy, Trash2, FileText, CalendarDays, Lock, Unlock } from 'lucide-react'
+import { ZoomIn, ZoomOut, Calendar, Users, Briefcase, Info, SlidersHorizontal, ChevronUp, ChevronDown, ChevronRight, Eye, Pencil, Copy, Trash2, FileText, CalendarDays, Lock, Unlock, FolderPlus } from 'lucide-react'
 
 import {
   dateToNum, numToStr, today, isWeekend, isSaturday,
@@ -2851,8 +2851,9 @@ export default function TimelineView() {
         {globalEdit && (
           <button
             onClick={() => setModal({ open: true, mode: 'create', prefill: { startNum: todayNum, endNum: todayNum } })}
-            className="btn-primary gap-1.5"
+            className="btn-secondary gap-1.5 text-xs"
           >
+            <CalendarDays size={13} />
             업무배정
           </button>
         )}
@@ -2861,8 +2862,9 @@ export default function TimelineView() {
         {globalEdit && (
           <button
             onClick={() => setShowCreateWI(true)}
-            className="btn-secondary gap-1.5"
+            className="btn-secondary gap-1.5 text-xs"
           >
+            <FolderPlus size={13} />
             업무생성
           </button>
         )}
