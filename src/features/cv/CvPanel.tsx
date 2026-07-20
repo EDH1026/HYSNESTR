@@ -6,14 +6,17 @@
  * - Open/Closed 무관 전체 표시
  * - 읽기: work_items_safe 뷰 사용 (기밀 마스킹)
  */
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Download, Search } from 'lucide-react'
 import Modal from '@/components/Modal'
 import { useAllWorkItems } from '@/features/workitems/hooks'
-import { useAssignmentsByPerson } from '@/features/timeline/hooks'
+import { useAssignmentsByPerson, useAllAssignments } from '@/features/timeline/hooks'
+import { useAllPeople } from '@/features/people/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
 import { dateToNum } from '@/lib/date'
+import { buildWorkItemColorMap } from '@/lib/colors'
 import { parseSearchQuery } from '@/lib/searchQuery'
+import WorkItemDetailPanel from '@/features/workitems/WorkItemDetailPanel'
 import type { Person, WorkItem, Assignment } from '@/types'
 
 // ── CV entry (one row per project / proposal) ─────────────────
@@ -183,11 +186,27 @@ export default function CvPanel({ person, onClose, inline }: Props) {
   const { canView } = useAuthz()
   const { data: workItems   = [] } = useAllWorkItems()
   const { data: assignments = [] } = useAssignmentsByPerson(person.id)
+  // §5.8 reuse: WorkItemDetailPanel's participant list needs everyone assigned to a
+  // work item, not just this person's own assignments — so a bulk read is required
+  // here even though `assignments` above (person-scoped) already covers computeCv().
+  const { data: allAssignments = [] } = useAllAssignments()
+  const { data: allPeople      = [] } = useAllPeople()
 
   // Default: projects only; toggle to also include proposals
   const [includeProposal, setIncludeProposal] = useState(false)
   const [engSearch,       setEngSearch]       = useState('')
   const [filterOnly,      setFilterOnly]      = useState(false)
+  const [detailWI,        setDetailWI]        = useState<WorkItem | null>(null)
+
+  const peopleMap = useMemo(() => new Map(allPeople.map(p => [p.id, p])), [allPeople])
+  const colorMap  = useMemo(() => buildWorkItemColorMap(workItems), [workItems])
+
+  useEffect(() => {
+    if (!detailWI) return
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetailWI(null) }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  }, [detailWI])
 
   const entries = useMemo(
     () => computeCv(person.id, workItems, assignments, includeProposal),
@@ -295,54 +314,82 @@ export default function CvPanel({ person, onClose, inline }: Props) {
         · Pipeline 제외 · Open/Closed 전체
       </p>
 
-      {/* Entry list */}
-      {filteredEntries.length === 0 ? (
-        <div className="text-center py-12 text-muted text-sm">
-          {entries.length === 0 ? emptyMsg : '검색 결과 없음'}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filteredEntries.map(e => (
-            <article key={e.workItem.id} className="rounded-lg border border-border p-4 space-y-2">
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  {e.workItem.type === 'proposal' && (
-                    <span className="pill bg-sky-100 text-sky-700 text-[10px] flex-shrink-0">제안서</span>
+      {/* PRD V-19: entry list + right-side detail panel — same master-detail split as
+          Engagement 검색 (§5.8 HashtagPage), reusing WorkItemDetailPanel as-is. */}
+      <div className="flex items-start gap-4">
+        <div className={detailWI ? 'w-72 flex-shrink-0 space-y-3' : 'flex-1 space-y-3'}>
+          {filteredEntries.length === 0 ? (
+            <div className="text-center py-12 text-muted text-sm">
+              {entries.length === 0 ? emptyMsg : '검색 결과 없음'}
+            </div>
+          ) : (
+            filteredEntries.map(e => {
+              const selected = detailWI?.id === e.workItem.id
+              return (
+                <article
+                  key={e.workItem.id}
+                  onClick={() => setDetailWI(e.workItem)}
+                  className={[
+                    'rounded-lg border p-4 space-y-2 cursor-pointer transition-colors',
+                    selected
+                      ? 'border-brand-500 bg-brand-50 shadow-card'
+                      : 'border-border hover:border-brand-300 hover:bg-surface-50',
+                  ].join(' ')}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {e.workItem.type === 'proposal' && (
+                        <span className="pill bg-sky-100 text-sky-700 text-[10px] flex-shrink-0">제안서</span>
+                      )}
+                      <h3 className="text-sm font-semibold text-gray-900 truncate">{e.workItem.name}</h3>
+                    </div>
+                    <span className="flex-shrink-0 font-mono text-xs text-muted">
+                      {e.periods.map(p => `${p.start} – ${p.end}`).join(', ')}
+                    </span>
+                  </div>
+
+                  <dl className="grid grid-cols-[130px_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-muted font-medium">Engagement No.</dt>
+                    <dd className="text-gray-700">{e.workItem.engagement_number ?? '—'}</dd>
+                    <dt className="text-muted font-medium">Client</dt>
+                    <dd className="text-gray-700">{e.workItem.client ?? '—'}</dd>
+                  </dl>
+
+                  {e.workItem.hashtags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {e.workItem.hashtags.map(h => (
+                        <span key={h} className="pill bg-brand-100 text-brand-700 text-[11px]">#{h}</span>
+                      ))}
+                    </div>
                   )}
-                  <h3 className="text-sm font-semibold text-gray-900 truncate">{e.workItem.name}</h3>
-                </div>
-                <span className="flex-shrink-0 font-mono text-xs text-muted">
-                  {e.periods.map(p => `${p.start} – ${p.end}`).join(', ')}
-                </span>
-              </div>
-
-              <dl className="grid grid-cols-[130px_1fr] gap-x-3 gap-y-1 text-xs">
-                <dt className="text-muted font-medium">Engagement No.</dt>
-                <dd className="text-gray-700">{e.workItem.engagement_number ?? '—'}</dd>
-                <dt className="text-muted font-medium">Client</dt>
-                <dd className="text-gray-700">{e.workItem.client ?? '—'}</dd>
-              </dl>
-
-              {e.workItem.hashtags.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {e.workItem.hashtags.map(h => (
-                    <span key={h} className="pill bg-brand-100 text-brand-700 text-[11px]">#{h}</span>
-                  ))}
-                </div>
-              )}
-            </article>
-          ))}
+                </article>
+              )
+            })
+          )}
         </div>
-      )}
+
+        {detailWI && (
+          <div className="flex-1 min-w-0 rounded-lg border border-border overflow-hidden bg-surface-0">
+            <WorkItemDetailPanel
+              wi={detailWI}
+              assignments={allAssignments}
+              peopleMap={peopleMap}
+              colorMap={colorMap}
+              onClose={() => setDetailWI(null)}
+            />
+          </div>
+        )}
+      </div>
     </>
   )
 
   if (inline) {
-    return <div className="p-6 space-y-4 max-w-3xl">{content}</div>
+    // V-19: widened from max-w-3xl so the list+detail split (§5.8 layout) has room.
+    return <div className="p-6 space-y-4 max-w-4xl">{content}</div>
   }
 
   return (
-    <Modal title={`${person.name} — CV`} onClose={onClose!} size="lg">
+    <Modal title={`${person.name} — CV`} onClose={onClose!} size="xl">
       {content}
     </Modal>
   )

@@ -35,7 +35,9 @@ import {
   snapLeaveEnd, workdayCount, nextWorkday,
 } from '@/lib/date'
 import { useAllPeople }                          from '@/features/people/hooks'
-import { useAllWorkItems, useUpdateWorkItem }     from '@/features/workitems/hooks'
+import {
+  useAllWorkItems, useUpdateWorkItem, useCreateWorkItem, useDeleteWorkItem,
+} from '@/features/workitems/hooks'
 import {
   useAllAssignments,
   useUpdateAssignment,
@@ -44,7 +46,10 @@ import {
 import { useAllHolidays, useSettings }   from '@/features/admin/hooks'
 import { useAuthz }         from '@/hooks/useAuthz'
 import { useHistory }       from '@/lib/history'
-import { makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete, combine } from '@/lib/historyOps'
+import {
+  makeAssignmentDrag, makeWorkItemUpdate, makeAssignmentDelete, combine,
+  makeWorkItemCreate, makeWorkItemDelete,
+} from '@/lib/historyOps'
 import type { HistoryEntry } from '@/lib/history'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import { parseSearchQuery } from '@/lib/searchQuery'
@@ -52,6 +57,7 @@ import AssignmentModal      from './AssignmentModal'
 import { computeSpecialLeaveBalance, hasAssignmentOverlap } from '@/features/leave/validateLeave'
 import WorkItemDetailModal  from '@/features/workitems/WorkItemDetailModal'
 import WorkItemModal        from '@/features/workitems/WorkItemModal'
+import WorkItemDeleteConfirmModal from '@/features/workitems/WorkItemDeleteConfirmModal'
 
 import type { Assignment, Person, WorkItem } from '@/types'
 import type { ViewMode, RowData, ModalState } from './types'
@@ -346,14 +352,17 @@ interface WorkItemBandProps {
   isClosed?:     boolean   // T-2 v2.96: Closed badge
   onUpdate:      (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
   onOpenDetail?: () => void
+  onCtxMenu?:    (wi: WorkItem, x: number, y: number) => void   // T-23: kebab action menu
 }
 
-function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, isClosed, onUpdate, onOpenDetail }: WorkItemBandProps) {
+function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, isClosed, onUpdate, onOpenDetail, onCtxMenu }: WorkItemBandProps) {
   const startNum   = useMemo(() => dateToNum(wi.start), [wi.start])
   const endNum     = useMemo(() => dateToNum(wi.end_date), [wi.end_date])
   const mainNum    = useMemo(() => wi.main_start ? dateToNum(wi.main_start) : null, [wi.main_start])
 
   const [live, setLive] = useState({ start: startNum, end: endNum, main: mainNum })
+  // T-23: hover state drives kebab button visibility (same pattern as AssignmentBar's T-12)
+  const [hovered, setHovered] = useState(false)
   const dragRef = useRef<{
     edge: 'left' | 'right' | 'body'
     origStart: number; origEnd: number; origMain: number | null
@@ -440,6 +449,8 @@ function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, isClos
         setLive({ start: startNum, end: endNum, main: mainNum })
       }}
       onDoubleClick={onOpenDetail ? (e) => { e.stopPropagation(); onOpenDetail() } : undefined}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       {/* Left resize handle */}
       {canEdit && (
@@ -486,6 +497,27 @@ function WorkItemBand({ wi, color, dayWidth, viewStart, viewEnd, canEdit, isClos
         }}>
           <Lock size={9} color="white" strokeWidth={2.5} />
         </div>
+      )}
+
+      {/* T-23: kebab action button — same left-click pattern as AssignmentBar's T-12 */}
+      {onCtxMenu && hovered && w >= 16 && (
+        <button
+          style={{
+            position: 'absolute',
+            right: 2,
+            top: '50%', transform: 'translateY(-50%)',
+            width: 20, height: 20,
+            zIndex: 6,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(0,0,0,0.38)',
+            borderRadius: 3, border: 'none', cursor: 'pointer',
+            color: 'white', fontSize: 13, lineHeight: '1',
+          }}
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); onCtxMenu(wi, e.clientX, e.clientY) }}
+        >
+          ⋯
+        </button>
       )}
     </div>
   )
@@ -1208,6 +1240,119 @@ function AssignmentContextMenu({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: WorkItemContextMenu (T-23)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface WICtxMenuProps {
+  workItem:        WorkItem
+  x:               number
+  y:               number
+  hasEditRole:     boolean   // editor/admin, or a grant on this specific work_item (mirrors canToggleWIStatus)
+  isClosed:        boolean
+  onClose:         () => void
+  onDetail:        () => void
+  onEdit:          () => void
+  onDuplicate:     () => void
+  onToggleStatus:  () => void
+  onDeleteRequest: () => void
+}
+
+function WorkItemContextMenu({
+  x, y, hasEditRole, isClosed,
+  onClose, onDetail, onEdit, onDuplicate, onToggleStatus, onDeleteRequest,
+}: WICtxMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function onMouseDown(e: MouseEvent) {
+      if (!menuRef.current?.contains(e.target as Node)) onClose()
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown',   onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown',   onKeyDown)
+    }
+  }, [onClose])
+
+  // Clamp to viewport
+  const MENU_W = 196
+  const left = Math.min(x + 4, window.innerWidth  - MENU_W - 8)
+  const top  = Math.min(y + 4, window.innerHeight - 220)
+
+  const item = (disabled?: boolean) => [
+    'w-full flex items-center gap-2 px-3 py-[5px] text-[13px] text-left rounded transition-colors',
+    disabled
+      ? 'text-muted cursor-not-allowed opacity-50'
+      : 'text-gray-700 hover:bg-surface-100 cursor-pointer',
+  ].join(' ')
+
+  const dangerItem = (disabled?: boolean) => [
+    item(disabled),
+    !disabled ? 'hover:bg-red-50 hover:text-red-700 text-red-600' : '',
+  ].join(' ')
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      style={{ position: 'fixed', left, top, zIndex: 9999, minWidth: MENU_W }}
+      className="bg-white border border-border rounded-lg shadow-card-md py-1"
+      onContextMenu={e => e.preventDefault()}
+    >
+      {/* ① 상세보기 — all roles (W-7 masking/pipeline-exclusion already applied upstream) */}
+      <button
+        className={item()}
+        onClick={() => { onClose(); onDetail() }}
+      >
+        <FileText size={13} /> 상세보기
+      </button>
+
+      {/* ②~⑤ editor/admin only (viewer/assistant: not rendered at all, PRD v2.104 T-23) */}
+      {hasEditRole && (
+        <>
+          <div className="border-t border-border/50 my-1" />
+          <button
+            className={item(isClosed)}
+            disabled={isClosed}
+            title={isClosed ? 'Closed 상태 — 편집 불가' : undefined}
+            onClick={isClosed ? undefined : () => { onClose(); onEdit() }}
+          >
+            <Pencil size={13} /> 편집
+            {isClosed && <span className="ml-auto text-[10px] text-muted">Closed</span>}
+          </button>
+          <button
+            className={item()}
+            onClick={() => { onClose(); onDuplicate() }}
+          >
+            <Copy size={13} /> 복제
+          </button>
+          <button
+            className={item()}
+            onClick={() => { onClose(); onToggleStatus() }}
+          >
+            {isClosed
+              ? <><Unlock size={13} /> Open으로 전환</>
+              : <><Lock   size={13} /> Closed로 전환</>}
+          </button>
+          <button
+            className={dangerItem(isClosed)}
+            disabled={isClosed}
+            title={isClosed ? 'Closed 상태 — 먼저 Open으로 전환하세요' : undefined}
+            onClick={isClosed ? undefined : () => { onClose(); onDeleteRequest() }}
+          >
+            <Trash2 size={13} /> 삭제
+          </button>
+        </>
+      )}
+    </div>,
+    document.body,
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Legend
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1535,6 +1680,8 @@ export default function TimelineView() {
   const updateAssignment = useUpdateAssignment()
   const deleteAssignment = useDeleteAssignment()
   const updateWorkItem   = useUpdateWorkItem()
+  const createWorkItem   = useCreateWorkItem()   // T-23③: duplicate
+  const deleteWorkItem   = useDeleteWorkItem()   // T-23⑤: delete
   const { canEdit, isAssistant } = useAuthz()
   const { myPersonId }   = useAuth()
   const { push }         = useHistory()
@@ -1564,6 +1711,10 @@ export default function TimelineView() {
 
   // T-12: right-click context menu
   const [ctxMenu, setCtxMenu] = useState<{ assignment: Assignment; x: number; y: number } | null>(null)
+
+  // T-23: workitem-band kebab menu + delete confirmation
+  const [wiCtxMenu,      setWiCtxMenu]      = useState<{ workItem: WorkItem; x: number; y: number } | null>(null)
+  const [deleteConfirmWI, setDeleteConfirmWI] = useState<WorkItem | null>(null)
 
   // T-14: multi-select
   const [selectedIds,          setSelectedIds]          = useState<Set<string>>(new Set())
@@ -2178,6 +2329,56 @@ export default function TimelineView() {
     navigate('/leave', { state: { openPersonId: personId } })
   }
 
+  // ─── T-23: Workitem-band kebab handlers ──────────────────────────────────
+
+  function handleWIToggleStatus(wi: WorkItem) {
+    const next: 'open' | 'closed' = isWIClosed(wi) ? 'open' : 'closed'
+    updateWorkItem.mutate({ id: wi.id, status: next } as any)
+    push(makeWorkItemUpdate(wi, { status: next }))
+  }
+
+  function handleWIDuplicate(wi: WorkItem) {
+    // T-23③: copies type/name(+" (복사본)")/dates/client/description/hashtags/confidential.
+    // engagement_number is never copied (must stay unique — §5.11b CSV upsert key), status is
+    // always Open regardless of source, and no assignments are duplicated (avoids accidental
+    // double-booking people across both the original and the copy).
+    const payload: Record<string, unknown> = {
+      type:              wi.type,
+      name:              `${wi.name} (복사본)`,
+      start:             wi.start,
+      main_start:        wi.type === 'project' && wi.main_start ? wi.main_start : null,
+      end_date:          wi.end_date,
+      engagement_number: null,
+      client:            wi.client,
+      description:       wi.description,
+      hashtags:          wi.hashtags,
+      confidential:      wi.confidential,
+      status:            'open',
+    }
+    createWorkItem.mutate(payload as any, {
+      onSuccess: created => {
+        push(makeWorkItemCreate(created))
+        // Open the edit form right away so the user can fill in Main Engagement No. etc.
+        setEditWorkItem(created)
+      },
+    })
+  }
+
+  function handleWIDeleteRequest(wi: WorkItem) {
+    setDeleteConfirmWI(wi)
+  }
+
+  function handleWIDeleteConfirm() {
+    if (!deleteConfirmWI) return
+    const target = deleteConfirmWI
+    deleteWorkItem.mutate(target.id, {
+      onSuccess: () => {
+        push(makeWorkItemDelete(target))
+        setDeleteConfirmWI(null)
+      },
+    })
+  }
+
   // ─── T-14: Multi-select handlers ─────────────────────────────────────────
 
   function handleToggleSelect(a: Assignment) {
@@ -2534,6 +2735,7 @@ export default function TimelineView() {
         onDragLive={handleDragLive}
         onDragEnd={handleDragEnd}
         onBarCtxMenu={(a, x, y) => setCtxMenu({ assignment: a, x, y })}
+        onWICtxMenu={(wi, x, y) => setWiCtxMenu({ workItem: wi, x, y })}
         onPersonDblClick={globalEdit ? toggleHighlight : undefined}
         selectedIds={selectedIds}
         multiDragLeaderId={multiDragLeaderId}
@@ -3055,6 +3257,40 @@ export default function TimelineView() {
           />
         )
       })()}
+
+      {/* ── T-23: Workitem-band kebab menu ── */}
+      {wiCtxMenu && (() => {
+        const wi     = wiCtxMenu.workItem
+        const closed = isWIClosed(wi)
+        // Same "role permission independent of Closed status" pattern as T-12's hasRole above.
+        const hasRole = canToggleWIStatus(wi)
+        return (
+          <WorkItemContextMenu
+            workItem={wi}
+            x={wiCtxMenu.x}
+            y={wiCtxMenu.y}
+            hasEditRole={hasRole}
+            isClosed={closed}
+            onClose={() => setWiCtxMenu(null)}
+            onDetail={() => setDetailWorkItem(wi)}
+            onEdit={() => setEditWorkItem(wi)}
+            onDuplicate={() => handleWIDuplicate(wi)}
+            onToggleStatus={() => handleWIToggleStatus(wi)}
+            onDeleteRequest={() => handleWIDeleteRequest(wi)}
+          />
+        )
+      })()}
+
+      {/* ── T-23⑤: delete confirmation (assignment count preview) ── */}
+      {deleteConfirmWI && (
+        <WorkItemDeleteConfirmModal
+          workItem={deleteConfirmWI}
+          assignmentCount={assignments.filter(a => a.work_item_id === deleteConfirmWI.id).length}
+          isDeleting={deleteWorkItem.isPending}
+          onConfirm={handleWIDeleteConfirm}
+          onClose={() => setDeleteConfirmWI(null)}
+        />
+      )}
     </div>
   )
 }
@@ -3093,6 +3329,7 @@ interface GridRowProps {
   onDragLive?:     (id: string, liveStart: number, liveEnd: number) => void
   onDragEnd?:      () => void
   onBarCtxMenu?:   (a: Assignment, x: number, y: number) => void   // T-12
+  onWICtxMenu?:    (wi: WorkItem, x: number, y: number) => void    // T-23
   onPersonDblClick?: (personId: string) => void   // T-15: workitem-sub person dblclick
   // T-14: multi-select / bulk-resize
   selectedIds?:          Set<string>
@@ -3109,7 +3346,7 @@ function GridRow({
   peopleMap, workItemMap, colorMap, holidaySet,
   virtualLeaveBlocks,
   onUpdate, onUpdateWI, onOpenCreate, onOpenEdit, onDropPerson, onOpenDetail,
-  onDragLive, onDragEnd, onBarCtxMenu, onPersonDblClick,
+  onDragLive, onDragEnd, onBarCtxMenu, onWICtxMenu, onPersonDblClick,
   selectedIds, multiDragLeaderId, multiDragDelta, multiResizeEndDelta, multiResizeStartDelta, onToggleSelect,
 }: GridRowProps) {
   const rowRef    = useRef<HTMLDivElement>(null)
@@ -3310,6 +3547,7 @@ function GridRow({
           isClosed={isWIClosed(row.workItem)}
           onUpdate={onUpdateWI}
           onOpenDetail={onOpenDetail ? () => onOpenDetail(row.workItem) : undefined}
+          onCtxMenu={onWICtxMenu}
         />
       )}
 

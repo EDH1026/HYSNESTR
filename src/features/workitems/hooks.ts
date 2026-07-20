@@ -141,6 +141,9 @@ export function useDeleteWorkItem() {
       qc.invalidateQueries({ queryKey: queryKeys.workItems.all() })
       qc.removeQueries({ queryKey: queryKeys.workItems.byId(id) })
       qc.invalidateQueries({ queryKey: queryKeys.assignments.all() })
+      // PRD v2.104 T-23: deleting a work item cascade-deletes its assignments server-side
+      // (ON DELETE CASCADE) — keep the LV-17 ledger RPC cache in sync, same as useDeleteAssignment.
+      qc.invalidateQueries({ queryKey: ['ledgerData'] })
     },
   })
 }

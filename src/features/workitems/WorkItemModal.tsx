@@ -1,7 +1,9 @@
 import { useState, useRef, useMemo, type FormEvent, type KeyboardEvent } from 'react'
 import { Loader2, Trash2, X as XIcon, LockKeyhole } from 'lucide-react'
 import Modal from '@/components/Modal'
+import WorkItemDeleteConfirmModal from './WorkItemDeleteConfirmModal'
 import { useCreateWorkItem, useUpdateWorkItem, useDeleteWorkItem } from './hooks'
+import { useAssignmentsByWorkItem } from '@/features/timeline/hooks'
 import { useAllPeople } from '@/features/people/hooks'
 import { useHistory } from '@/lib/history'
 import { makeWorkItemCreate, makeWorkItemUpdate, makeWorkItemDelete } from '@/lib/historyOps'
@@ -59,6 +61,11 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
   const [hashInput, setHashInput] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const hashInputRef = useRef<HTMLInputElement>(null)
+
+  // PRD v2.104 T-23⑤: shared delete-confirm modal (assignment count + explicit click,
+  // replaces the old window.confirm) — same component the workitem-band kebab uses.
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const { data: linkedAssignments } = useAssignmentsByWorkItem(showDeleteConfirm ? workItem?.id : undefined)
 
   const engWarn = useMemo(() => {
     if (form.type === 'proposal') return null  // NBD 코드는 별도 형식 허용
@@ -153,16 +160,17 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
     }
   }
 
-  async function handleDelete() {
+  async function handleDeleteConfirm() {
     if (!isEdit) return
-    if (!confirm(`Delete "${workItem.name}" and all its assignments?`)) return
     const target = workItem
     try {
       await remove.mutateAsync(target.id)
       push(makeWorkItemDelete(target))
+      setShowDeleteConfirm(false)
       onClose()
     } catch (err) {
       setErr(err instanceof Error ? err.message : 'Delete failed')
+      setShowDeleteConfirm(false)
     }
   }
 
@@ -436,7 +444,7 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
               {isPending ? <Loader2 size={14} className="animate-spin" /> : isEdit ? 'Save' : 'Create'}
             </button>
             {isEdit && (
-              <button type="button" onClick={handleDelete} disabled={remove.isPending} className="btn-danger">
+              <button type="button" onClick={() => setShowDeleteConfirm(true)} disabled={remove.isPending} className="btn-danger">
                 <Trash2 size={14} />
               </button>
             )}
@@ -448,6 +456,16 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
           </div>
         )}
       </form>
+
+      {showDeleteConfirm && workItem && (
+        <WorkItemDeleteConfirmModal
+          workItem={workItem}
+          assignmentCount={linkedAssignments ? linkedAssignments.length : null}
+          isDeleting={remove.isPending}
+          onConfirm={handleDeleteConfirm}
+          onClose={() => setShowDeleteConfirm(false)}
+        />
+      )}
     </Modal>
   )
 }
