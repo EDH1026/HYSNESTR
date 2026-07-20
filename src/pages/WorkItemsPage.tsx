@@ -139,7 +139,7 @@ export default function WorkItemsPage() {
           )}
           {editable && (
             <button className="btn-primary gap-1.5 text-xs" onClick={() => setModal(null)}>
-              <FolderPlus size={14} /> Add Work Item
+              <FolderPlus size={14} /> 업무생성
             </button>
           )}
         </div>

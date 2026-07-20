@@ -137,7 +137,11 @@ export default function AuditLogViewer() {
                     {fmtAt(e.at)}
                   </td>
                   <td className="px-3 py-2 text-gray-800">
-                    {e.user_name ?? <span className="text-muted">{e.user_id.slice(0, 8)}…</span>}
+                    {e.user_name ?? (
+                      e.user_id
+                        ? <span className="text-muted">{e.user_id.slice(0, 8)}…</span>
+                        : <span className="text-muted italic">(삭제된 계정)</span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     <span className={`pill text-[10px] ${actionPill(e.action)}`}>{e.action}</span>

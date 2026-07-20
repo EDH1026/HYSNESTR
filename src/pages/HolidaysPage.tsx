@@ -40,7 +40,7 @@ export default function HolidaysPage() {
         </div>
         {editable && (
           <button className="btn-primary gap-1.5 text-xs" onClick={() => setModal(null)}>
-            <CalendarPlus size={14} /> Add Holiday
+            <CalendarPlus size={14} /> 휴일 추가
           </button>
         )}
       </div>
@@ -48,7 +48,7 @@ export default function HolidaysPage() {
       <div className="flex-1 overflow-auto p-6 space-y-6">
         {holidays.length === 0 && (
           <div className="text-center py-16 text-muted text-sm">
-            No holidays configured.{editable && ' Click "Add Holiday" to add one.'}
+            No holidays configured.{editable && ' Click "휴일 추가" to add one.'}
           </div>
         )}
 

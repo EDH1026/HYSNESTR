@@ -1706,6 +1706,8 @@ export default function TimelineView() {
   const [highlightedPersonIds, setHighlightedPersonIds] = useState<Set<string>>(new Set())
   const [detailWorkItem,    setDetailWorkItem]     = useState<WorkItem | null>(null)
   const [editWorkItem,      setEditWorkItem]       = useState<WorkItem | null>(null)
+  // T-24: 업무생성 — WorkItemModal을 create 모드(workItem=undefined)로 연다(W-8과 동일 컴포넌트 재사용)
+  const [showCreateWI,      setShowCreateWI]       = useState(false)
   // T-17: virtual leave preview toggle
   const [showVirtualLeave, setShowVirtualLeave] = useState(false)
 
@@ -2845,13 +2847,23 @@ export default function TimelineView() {
           </button>
         )}
 
-        {/* New assignment */}
+        {/* T-24: 업무배정 (신규 배정, 기존 "+ New") — editor/admin만 */}
         {globalEdit && (
           <button
             onClick={() => setModal({ open: true, mode: 'create', prefill: { startNum: todayNum, endNum: todayNum } })}
             className="btn-primary gap-1.5"
           >
-            + New
+            업무배정
+          </button>
+        )}
+
+        {/* T-24: 업무생성 — Work Item 목록(W-8)과 동일한 WorkItemModal 생성 폼을 그대로 재사용 */}
+        {globalEdit && (
+          <button
+            onClick={() => setShowCreateWI(true)}
+            className="btn-secondary gap-1.5"
+          >
+            업무생성
           </button>
         )}
 
@@ -3223,6 +3235,14 @@ export default function TimelineView() {
               : undefined
           }
           onClose={() => setEditWorkItem(null)}
+        />
+      )}
+
+      {/* ── T-24: 업무생성 — W-8과 동일한 WorkItemModal을 create 모드로 재사용 ── */}
+      {showCreateWI && (
+        <WorkItemModal
+          readOnly={!globalEdit}
+          onClose={() => setShowCreateWI(false)}
         />
       )}
 

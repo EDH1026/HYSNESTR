@@ -165,10 +165,10 @@ export interface TimesheetGuidelineSnapshot {
 /** Immutable audit trail for all data and permission changes. */
 export interface AuditLog {
   id: string
-  user_id: string
+  user_id: string | null      // ON DELETE SET NULL — null when the acting profile was later deleted
   action: string              // e.g. "create", "update", "delete", "grant"
   target_type: string         // table name, e.g. "people", "assignments"
-  target_id: string
+  target_id: string | null
   at: string                  // ISO timestamp
 }
 
