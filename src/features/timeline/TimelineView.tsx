@@ -161,16 +161,15 @@ interface DateHeaderProps {
   viewEnd:    number
   dayWidth:   number
   totalWidth: number
-  // T-25 ②: 특정 날짜 클릭 → 그 날짜의 유휴 인력 칩 일괄 활성화 (단순 클릭만; 드래그 시작은 무시)
+  // T-25 ②: 특정 날짜(좌클릭) → 그 날짜의 유휴 인력 칩 일괄 활성화
   onDayClick?: (dayNum: number) => void
+  // v2.110 신설: Week 눈금 단위일 때 주 컬럼(좌클릭) → 그 주 7일 전체가 유휴인 인력 칩 일괄 활성화
+  onWeekClick?: (weekStart: number, weekEnd: number) => void
 }
 
-function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth, onDayClick }: DateHeaderProps) {
+function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth, onDayClick, onWeekClick }: DateHeaderProps) {
   const showWeek = dayWidth >= ZOOM_WEEK
   const showDay  = dayWidth >= ZOOM_DAY
-  // T-25 ②: mousedown 좌표를 기록해 mouseup 시 이동 거리가 작을 때만 "클릭"으로 간주—
-  // 헤더 자체엔 기존 드래그 동작이 없지만, 이후 드래그 기능이 추가돼도 오작동하지 않도록 방어.
-  const dayMouseDownPos = useRef<{ x: number; y: number } | null>(null)
 
   const months = useMemo(
     () => monthBoundaries(viewStart, viewEnd),
@@ -215,7 +214,12 @@ function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth, onDayClick }: Da
               <div
                 key={ws}
                 style={{ position: 'absolute', left, width, height: HEADER_ROW_H }}
-                className="flex items-center px-1 border-r border-border/50 text-[11px] text-muted overflow-hidden whitespace-nowrap"
+                className={[
+                  'flex items-center px-1 border-r border-border/50 text-[11px] text-muted overflow-hidden whitespace-nowrap',
+                  onWeekClick ? 'cursor-pointer hover:bg-brand-50' : '',
+                ].join(' ')}
+                title={onWeekClick ? '클릭: 이 주(7일) 전체가 유휴인 인력 칩 활성화' : undefined}
+                onClick={onWeekClick ? e => { e.stopPropagation(); onWeekClick(ws, ws + 6) } : undefined}
               >
                 {width > 20 ? dayOfMonthLabel(ws) : ''}
               </div>
@@ -246,17 +250,11 @@ function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth, onDayClick }: Da
                   onDayClick ? 'cursor-pointer hover:bg-brand-50' : '',
                 ].join(' ')}
                 title={onDayClick ? `${dayOfMonthLabel(d)} — 클릭: 이 날짜 유휴 인력 칩 활성화` : undefined}
-                onMouseDown={onDayClick ? e => { dayMouseDownPos.current = { x: e.clientX, y: e.clientY } } : undefined}
-                onMouseUp={onDayClick ? e => {
-                  const down = dayMouseDownPos.current
-                  dayMouseDownPos.current = null
-                  if (!down) return
-                  const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
-                  if (moved < 4) {
-                    e.stopPropagation()   // don't let handleGridBodyClick clear the chips we just set
-                    onDayClick(d)
-                  }
-                } : undefined}
+                // v2.110: plain onClick only fires for the primary (left) mouse button — right-click
+                // never reaches this handler, so the browser's native context menu shows untouched.
+                // stopPropagation here (on the same click event) is required so the outer grid
+                // container's handleGridBodyClick doesn't immediately clear what we just set.
+                onClick={onDayClick ? e => { e.stopPropagation(); onDayClick(d) } : undefined}
               >
                 {dayWidth >= 14 && <span>{dayOfMonthLabel(d)}</span>}
                 {dayWidth >= 22 && <span>{weekdayLabel(d).slice(0, 1)}</span>}
@@ -1557,16 +1555,6 @@ function FilterBar({
               <ChipBtn key={r} label={r} active={rankFilter.includes(r)} onClick={() => onRankFilter(r)} />
             ))}
           </div>
-          {/* T-25 ①: 활성 인력만 표시 — 조회 보조 기능, 전 역할 제공 */}
-          <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
-            <input
-              type="checkbox"
-              checked={activeOnly}
-              onChange={e => onActiveOnly(e.target.checked)}
-              className="accent-brand-600"
-            />
-            활성 인력만 표시
-          </label>
         </>
       ) : (
         <>
@@ -1610,6 +1598,17 @@ function FilterBar({
         </>
       )}
 
+      {/* T-25 ①/v2.110: 활성 인력만 표시 — Person·Work Item 탭 공유(highlightedPersonIds도 탭 무관 전역 상태),
+          조회 보조 기능이라 전 역할 제공. Work Item 탭에서는 "활성 인력이 하나라도 참여하는 작업항목만" 표시. */}
+      <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
+        <input
+          type="checkbox"
+          checked={activeOnly}
+          onChange={e => onActiveOnly(e.target.checked)}
+          className="accent-brand-600"
+        />
+        활성 인력만 표시
+      </label>
       {/* T-21 v2.92: 퇴직자/Closed 표시 — shared toggles, available in both Person and Work Item tabs */}
       <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
         <input
@@ -1987,7 +1986,18 @@ export default function TimelineView() {
     const nameQ2   = parseSearchQuery(nameFilter)
     const unifiedQ = parseSearchQuery(unifiedFilter)
 
+    // v2.110: '활성 인력만 표시' (Work Item 탭) — 활성화된 칩의 인력이 하나라도 work 배정으로
+    // 참여하는 작업항목만 남긴다. highlightedPersonIds는 Person 탭과 공유되는 전역 상태.
+    const activeWorkItemIds = activeOnly
+      ? new Set(
+          assignments
+            .filter(a => a.kind === 'work' && highlightedPersonIds.has(a.person_id))
+            .map(a => a.work_item_id),
+        )
+      : null
+
     let fw = workItems.filter(wi => {
+      if (activeWorkItemIds && !activeWorkItemIds.has(wi.id)) return false
       if (!showClosed && (wi.status ?? wi.project_status) === 'closed') return false
       // T-17⑥ v2.96: work item row itself doesn't appear unless its span overlaps the current
       // query range — previously the row list was unfiltered by date, so a project that ended
@@ -2275,13 +2285,14 @@ export default function TimelineView() {
     })
   }
 
-  // T-25 ②: 날짜 헤더 클릭 → 그 날짜에 배정(work·leave 불문)이 하나도 걸쳐 있지 않은
-  // 유휴 인력의 칩을 전부 활성화하고, 배정이 있는 인력은 비활성화(교체, 토글 아님).
-  // 주말·공휴일 여부와 무관하게 배정 유무만 본다. 조회 보조 기능이라 전 역할에서 호출 가능.
-  function activateIdlePeopleOnDate(dayNum: number) {
+  // T-25 ②/v2.110: 날짜(또는 주) 헤더 클릭 → [fromDay, toDay] 구간에 배정(work·leave 불문)이
+  // 하루라도 걸쳐 있지 않은 유휴 인력의 칩을 전부 활성화하고, 하루라도 걸쳐 있는 인력은
+  // 비활성화(교체, 토글 아님). 단일 날짜 클릭은 fromDay===toDay로 호출한다. 주말·공휴일 여부와
+  // 무관하게 배정 유무만 본다. 조회 보조 기능이라 전 역할에서 호출 가능.
+  function activateIdlePeopleInRange(fromDay: number, toDay: number) {
     const busyPersonIds = new Set(
       assignments
-        .filter(a => dateToNum(a.start) <= dayNum && dateToNum(a.end_date) >= dayNum)
+        .filter(a => dateToNum(a.start) <= toDay && dateToNum(a.end_date) >= fromDay)
         .map(a => a.person_id),
     )
     const idleIds = people
@@ -3165,7 +3176,8 @@ export default function TimelineView() {
               <DateHeader
                 viewStart={viewStart} viewEnd={viewEnd}
                 dayWidth={dayWidth} totalWidth={totalWidth}
-                onDayClick={activateIdlePeopleOnDate}
+                onDayClick={d => activateIdlePeopleInRange(d, d)}
+                onWeekClick={(ws, we) => activateIdlePeopleInRange(ws, we)}
               />
             </div>
 
