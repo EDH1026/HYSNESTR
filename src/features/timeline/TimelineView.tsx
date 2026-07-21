@@ -1348,9 +1348,12 @@ interface PersonChipStripProps {
   highlightedPersonIds: Set<string>
   onToggleHighlight:   (personId: string) => void
   onClearAll:          () => void
+  // v2.111 T-7: 드래그로 캔버스에 놓아 배정을 생성하는 동작만 editor/admin 전용.
+  // 표시·클릭 활성화(선택 토글)는 서버 데이터를 바꾸지 않는 로컬 UI 상태라 전 역할 허용.
+  canDragAssign:       boolean
 }
 
-function PersonChipStrip({ people, highlightedPersonIds, onToggleHighlight, onClearAll }: PersonChipStripProps) {
+function PersonChipStrip({ people, highlightedPersonIds, onToggleHighlight, onClearAll, canDragAssign }: PersonChipStripProps) {
   // §5.2 T-7: active + upcoming people by rank; resigned excluded
   const groups = RANKS
     .map(rank => ({
@@ -1374,25 +1377,28 @@ function PersonChipStrip({ people, highlightedPersonIds, onToggleHighlight, onCl
           )}
           {/* Rank label */}
           <span className="text-[10px] font-bold text-blue-400 whitespace-nowrap flex-shrink-0">{g.rank}</span>
-          {/* Person chips — T-12: click toggles highlight, drag creates assignment */}
+          {/* Person chips — click toggles highlight(전 역할), drag creates assignment(editor/admin 전용) */}
           {g.people.map(p => {
             const lit = highlightedPersonIds.has(p.id)
             return (
               <div
                 key={p.id}
-                draggable
-                onDragStart={e => {
+                draggable={canDragAssign}
+                onDragStart={canDragAssign ? e => {
                   e.dataTransfer.setData('text/plain', p.id)
                   e.dataTransfer.effectAllowed = 'copy'
-                }}
+                } : undefined}
                 onClick={() => onToggleHighlight(p.id)}
                 className={[
-                  'px-2 py-0.5 rounded-full border text-[11px] font-medium cursor-grab transition-all select-none',
+                  'px-2 py-0.5 rounded-full border text-[11px] font-medium transition-all select-none',
+                  canDragAssign ? 'cursor-grab' : 'cursor-pointer',
                   lit
                     ? 'bg-yellow-300 border-yellow-400 text-yellow-900 shadow-sm ring-1 ring-yellow-500'
                     : 'bg-white border-blue-200 text-blue-800 hover:bg-blue-50 hover:border-blue-400 hover:shadow-sm',
                 ].join(' ')}
-                title={`${p.name} (${p.rank}) — 클릭: 선택/해제 · 드래그: 배정 생성`}
+                title={canDragAssign
+                  ? `${p.name} (${p.rank}) — 클릭: 선택/해제 · 드래그: 배정 생성`
+                  : `${p.name} (${p.rank}) — 클릭: 선택/해제`}
               >
                 {p.name}
               </div>
@@ -2260,6 +2266,27 @@ export default function TimelineView() {
     })
   }
 
+  // T-26 v2.111: 현재 화면에 보이는(필터링된) 작업항목 행만 대상으로 일괄 펼치기/접기.
+  // 숨겨진 행의 폴드 상태는 건드리지 않는다 — 조회 보조 기능이라 전 역할 제공(권한 체크 없음).
+  const visibleWorkItemIds = useMemo(
+    () => (viewMode === 'workitem' ? rows.filter(r => r.kind === 'workitem').map(r => r.workItem.id) : []),
+    [rows, viewMode],
+  )
+  const allVisibleWIExpanded = visibleWorkItemIds.length > 0 &&
+    visibleWorkItemIds.every(id => expandedWorkItems.has(id))
+
+  function toggleAllVisibleWorkItems() {
+    setExpandedWorkItems(prev => {
+      const next = new Set(prev)
+      if (allVisibleWIExpanded) {
+        for (const id of visibleWorkItemIds) next.delete(id)
+      } else {
+        for (const id of visibleWorkItemIds) next.add(id)
+      }
+      return next
+    })
+  }
+
   function handleDropPerson(personId: string, row: RowData) {
     const wi = row.kind === 'workitem' || row.kind === 'workitem-sub' ? row.workItem : null
     if (!wi) return
@@ -2873,6 +2900,19 @@ export default function TimelineView() {
           </button>
         )}
 
+        {/* T-26 v2.111: Work Item 탭 — 보이는(필터링된) 행만 대상으로 일괄 펼치기/접기, 전 역할 제공 */}
+        {viewMode === 'workitem' && (
+          <button
+            onClick={toggleAllVisibleWorkItems}
+            disabled={visibleWorkItemIds.length === 0}
+            title="현재 화면에 보이는 작업항목 행만 일괄 펼치기/접기"
+            className="btn-secondary gap-1.5 text-xs"
+          >
+            {allVisibleWIExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            {allVisibleWIExpanded ? '전체 접기' : '전체 펼치기'}
+          </button>
+        )}
+
         {/* T-24: 업무배정 (신규 배정, 기존 "+ New") — editor/admin만 */}
         {globalEdit && (
           <button
@@ -2991,13 +3031,15 @@ export default function TimelineView() {
         </div>
       </div>
 
-      {/* ── Person chip palette (T-11/T-12: both views, editor/admin only) ── */}
-      {globalEdit && <PersonChipStrip
+      {/* ── Person chip palette (T-11/T-12, both views): 표시·클릭 활성화는 전 역할,
+          드래그-배정만 editor/admin(canDragAssign)으로 내부 분기 — v2.111 T-7 */}
+      <PersonChipStrip
         people={people}
         highlightedPersonIds={highlightedPersonIds}
         onToggleHighlight={toggleHighlight}
         onClearAll={() => setHighlightedPersonIds(new Set())}
-      />}
+        canDragAssign={globalEdit}
+      />
 
       {/* ── Filter / Sort panel ── */}
       {showFilter && (
@@ -3112,9 +3154,10 @@ export default function TimelineView() {
                   (row.kind === 'leave-all' && expandedLeave)
                 }
                 highlighted={
-                  globalEdit && row.kind === 'person' && viewMode === 'person'
+                  // v2.111 T-7: 표시는 로컬 UI 상태 반영일 뿐이라 전 역할 동일 — 드래그만 editor/admin 전용
+                  row.kind === 'person' && viewMode === 'person'
                     ? highlightedPersonIds.has(row.person.id)
-                    : globalEdit && row.kind === 'workitem-sub' && viewMode === 'workitem'
+                    : row.kind === 'workitem-sub' && viewMode === 'workitem'
                     ? highlightedPersonIds.has(row.person.id)
                     : undefined
                 }
@@ -3125,9 +3168,10 @@ export default function TimelineView() {
                 }
                 onOpenDetail={row.kind === 'workitem' ? () => setDetailWorkItem(row.workItem) : undefined}
                 onDoubleClick={
-                  globalEdit && row.kind === 'person' && viewMode === 'person'
+                  // v2.111 T-7: 더블클릭도 highlightedPersonIds 토글일 뿐인 로컬 상태 조작 — 전 역할 허용
+                  row.kind === 'person' && viewMode === 'person'
                     ? () => toggleHighlight(row.person.id)
-                    : globalEdit && row.kind === 'workitem-sub' && viewMode === 'workitem'
+                    : row.kind === 'workitem-sub' && viewMode === 'workitem'
                     ? () => toggleHighlight(row.person.id)
                     : undefined
                 }
