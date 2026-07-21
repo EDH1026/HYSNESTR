@@ -9,17 +9,31 @@
  *   • Read-only mode (no save button) when readOnly=true
  */
 import { useState, useEffect, useMemo, type FormEvent } from 'react'
-import { Loader2, Trash2, Plus, X as XIcon } from 'lucide-react'
+import { Loader2, Trash2, Plus, X as XIcon, AlertTriangle } from 'lucide-react'
 import { dateToNum, numToStr, isWeekend, numToDate, nextWorkday, weekendHolidayAccrual } from '@/lib/date'
 import Modal                            from '@/components/Modal'
 import { useAllHolidays, useLeaveTypes }  from '@/features/admin/hooks'
-import { useCreateAssignment, useUpdateAssignment, useDeleteAssignment } from './hooks'
+import { useCreateAssignment, useCreateAssignmentExcludingConflicts, useUpdateAssignment, useDeleteAssignment } from './hooks'
 import { useHistory }  from '@/lib/history'
 import { makeAssignmentCreate, makeAssignmentModalEdit, makeAssignmentDelete, combine } from '@/lib/historyOps'
 import type { HistoryEntry } from '@/lib/history'
 import type { WorkItem, Person, Assignment, Accrual, LeaveType } from '@/types'
-import { computeSpecialLeaveBalance, hasAssignmentOverlap } from '@/features/leave/validateLeave'
+import {
+  computeSpecialLeaveBalance, hasAssignmentOverlap, findOverlaps,
+  previewExcludingConflicts, type OverlapItem,
+} from '@/features/leave/validateLeave'
+import type { CreateAssignmentInput } from '@/lib/mappers'
 import type { ModalState } from './types'
+
+// ── E-3b: conflict confirmation state (PRD v2.109) ─────────────
+interface ConflictState {
+  overlaps:          OverlapItem[]
+  segments:          { start: string; end: string }[]
+  totalBusinessDays: number
+  base:              CreateAssignmentInput
+  personName:        string
+  personRank:        Person['rank']
+}
 
 // ── Leave paid/unpaid metadata (client-side; not stored in DB) ──
 const LEAVE_PAID: Record<string, boolean> = {
@@ -143,6 +157,7 @@ export default function AssignmentModal({
   state, people, workItems, accruals, assignments, canEditPipeline, readOnly = false, onClose, onWorkItemExpand,
 }: Props) {
   const create = useCreateAssignment()
+  const excludeConflicts = useCreateAssignmentExcludingConflicts()
   const update = useUpdateAssignment()
   const remove = useDeleteAssignment()
   const { push } = useHistory()
@@ -191,6 +206,8 @@ export default function AssignmentModal({
   const [err, setErr] = useState<string | null>(null)
   // Track whether user has manually overridden the auto-filled dates
   const [datesLocked, setDatesLocked] = useState(false)
+  // E-3b: pending conflict confirmation (create mode only)
+  const [conflict, setConflict] = useState<ConflictState | null>(null)
 
   // Re-initialize form every time the modal opens in create mode.
   // AssignmentModal is always mounted (never unmounts), so useState() only
@@ -201,6 +218,7 @@ export default function AssignmentModal({
     setForm(blankForm())
     setDatesLocked(false)
     setErr(null)
+    setConflict(null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.open, state.prefill])
 
@@ -292,20 +310,8 @@ export default function AssignmentModal({
       }
     }
 
-    // E-3a: block overlapping assignments for non-Partner ranks
-    if (form.start && form.end) {
-      const person = people.find(p => p.id === form.personId)
-      if (person && person.rank !== 'Partner') {
-        const excludeId = state.mode === 'edit' ? state.editTarget?.id : undefined
-        if (hasAssignmentOverlap(form.personId, form.start, form.end, assignments, excludeId)) {
-          setErr(`배정 기간이 겹칩니다. ${person.name}(${person.rank})는 중복 배정이 허용되지 않습니다.`)
-          return
-        }
-      }
-    }
-
     const selectedPerson = people.find(p => p.id === form.personId)
-    const base = {
+    const base: CreateAssignmentInput = {
       person_id:    form.personId,
       kind:         form.kind,
       work_item_id: form.kind === 'work'  ? (form.workItemId || null) : null,
@@ -318,6 +324,34 @@ export default function AssignmentModal({
         ? (isNaN(parseFloat(form.dailyHours)) ? null : parseFloat(form.dailyHours))
         : null,
     }
+
+    if (form.start && form.end && selectedPerson) {
+      if (state.mode === 'create') {
+        // E-3b: offer an alternative before rejecting, instead of an immediate hard block
+        const overlaps = findOverlaps(form.personId, form.start, form.end, assignments, holidaySet)
+        if (overlaps.length > 0) {
+          const { segments, totalBusinessDays } = previewExcludingConflicts(form.start, form.end, overlaps, holidaySet)
+          setConflict({
+            overlaps, segments, totalBusinessDays, base,
+            personName: selectedPerson.name, personRank: selectedPerson.rank,
+          })
+          return
+        }
+      } else if (selectedPerson.rank !== 'Partner') {
+        // Edit mode keeps the original E-3a hard block (splitting an edited row isn't supported)
+        const excludeId = state.editTarget?.id
+        if (hasAssignmentOverlap(form.personId, form.start, form.end, assignments, excludeId)) {
+          setErr(`배정 기간이 겹칩니다. ${selectedPerson.name}(${selectedPerson.rank})는 중복 배정이 허용되지 않습니다.`)
+          return
+        }
+      }
+    }
+
+    await submitCreateOrUpdate(base)
+  }
+
+  /** Normal single-record create/update path (no conflict, or Partner overlapping anyway). */
+  async function submitCreateOrUpdate(base: CreateAssignmentInput) {
     try {
       // E-5: compute work item expansion (fires mutation inside callback, returns HistoryEntry)
       const wiEnt = base.kind === 'work' && base.work_item_id
@@ -338,6 +372,38 @@ export default function AssignmentModal({
     }
   }
 
+  // ── E-3b conflict modal handlers ───────────────────────────────
+  async function handleExcludeConflicts() {
+    if (!conflict) return
+    try {
+      const createdList = await excludeConflicts.mutateAsync(conflict.base)
+      let wiEnt: HistoryEntry | null = null
+      if (conflict.base.kind === 'work' && conflict.base.work_item_id && createdList.length > 0) {
+        const minStart = createdList.reduce((m, c) => (c.start < m ? c.start : m), createdList[0].start)
+        const maxEnd   = createdList.reduce((m, c) => (c.end_date > m ? c.end_date : m), createdList[0].end_date)
+        wiEnt = onWorkItemExpand?.(conflict.base.work_item_id, minStart, maxEnd) ?? null
+      }
+      const asgnEntries = createdList.map(makeAssignmentCreate)
+      push(combine('배정 생성 (충돌 제외)', ...asgnEntries, ...(wiEnt ? [wiEnt] : [])))
+      setConflict(null)
+      onClose()
+    } catch (err) {
+      setErr(err instanceof Error ? err.message : 'Save failed')
+      setConflict(null)
+    }
+  }
+
+  async function handleOverlapAnyway() {
+    if (!conflict) return
+    const base = conflict.base
+    setConflict(null)
+    await submitCreateOrUpdate(base)
+  }
+
+  function handleCancelConflict() {
+    setConflict(null)
+  }
+
   async function handleDelete() {
     if (!state.editTarget) return
     if (!confirm('Delete this assignment?')) return
@@ -354,10 +420,11 @@ export default function AssignmentModal({
   if (!state.open) return null
 
   const isEdit    = state.mode === 'edit'
-  const isPending = create.isPending || update.isPending
+  const isPending = create.isPending || update.isPending || excludeConflicts.isPending
   const effectiveReadOnly = readOnly
 
   return (
+    <>
     <Modal
       title={effectiveReadOnly ? 'View Assignment' : isEdit ? 'Edit Assignment' : 'New Assignment'}
       onClose={onClose}
@@ -578,6 +645,68 @@ export default function AssignmentModal({
         )}
       </form>
     </Modal>
+
+    {/* ── E-3b: 배정 기간 겹침 확인 모달 ── */}
+    {conflict && (
+      <Modal title="배정 기간 겹침" onClose={handleCancelConflict} size="md">
+        <div className="space-y-3">
+          <div className="flex items-start gap-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+            <p>
+              {conflict.personName}({conflict.personRank})의 요청 기간 중 아래 {conflict.overlaps.length}건과 겹칩니다.
+              "충돌 제외하고 배정"을 선택하면 겹치는 구간을 뺀 나머지 기간에만 배정을 생성합니다
+              {conflict.segments.length > 1 ? ` (${conflict.segments.length}개 구간으로 분할)` : ''}.
+            </p>
+          </div>
+
+          <div className="max-h-56 overflow-y-auto rounded border border-border divide-y divide-border">
+            {conflict.overlaps.map(o => {
+              const reason = o.assignment.kind === 'work'
+                ? (() => {
+                    const wi = workItems.find(w => w.id === o.assignment.work_item_id)
+                    return wi ? `${wi.name}${wi.client ? ` — ${wi.client}` : ''}` : '(알 수 없는 작업항목)'
+                  })()
+                : (o.assignment.leave_type ?? '(휴가)')
+              return (
+                <div key={o.assignment.id} className="px-3 py-2 text-xs">
+                  <p className="font-medium text-gray-800">{o.overlapStart} ~ {o.overlapEnd}</p>
+                  <p className="text-muted">{reason} · 겹치는 영업일 {o.businessDays}일</p>
+                </div>
+              )
+            })}
+          </div>
+
+          <p className="text-xs font-medium text-gray-700">총 겹침 영업일: {conflict.totalBusinessDays}일</p>
+
+          {conflict.segments.length > 0 && (
+            <div className="rounded bg-surface-50 px-3 py-2 text-[11px] text-muted">
+              충돌 제외 시 생성될 구간: {conflict.segments.map(s => `${s.start} ~ ${s.end}`).join(', ')}
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleExcludeConflicts}
+              disabled={isPending}
+              className="btn-primary flex-1"
+            >
+              {excludeConflicts.isPending
+                ? <Loader2 size={14} className="animate-spin mx-auto" />
+                : '충돌 제외하고 배정'}
+            </button>
+            {conflict.personRank === 'Partner' ? (
+              <button type="button" onClick={handleOverlapAnyway} disabled={isPending} className="btn-secondary flex-1">
+                그대로 겹쳐서 배정(중복 저장)
+              </button>
+            ) : (
+              <button type="button" onClick={handleCancelConflict} className="btn-secondary flex-1">취소</button>
+            )}
+          </div>
+        </div>
+      </Modal>
+    )}
+    </>
   )
 }
 

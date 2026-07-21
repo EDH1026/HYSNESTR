@@ -12,7 +12,7 @@
 import { useState, useMemo, useCallback, Fragment, type FormEvent } from 'react'
 import { Loader2, Plus, CalendarCheck, Trash2, ChevronDown, ChevronRight, Download } from 'lucide-react'
 import Modal from '@/components/Modal'
-import { computeLedger, buildHolidaySet } from './ledger'
+import { computeLedger, buildHolidaySet, findEmptyWorkdayRanges } from './ledger'
 import type { Ledger, LedgerAccrualEntry, LedgerUsageEntry } from './ledger'
 import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
 import { useCreateAccrual, useDeleteAccrual, useLedgerData } from './hooks'
@@ -21,7 +21,7 @@ import { useCreateAssignment } from '@/features/timeline/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
 import { useHistory } from '@/lib/history'
 import { makeAccrualCreate, makeAccrualDelete } from '@/lib/historyOps'
-import { dateToNum, numToStr, today, isWeekend, nextWorkday } from '@/lib/date'
+import { dateToNum, numToStr, today, nextWorkday } from '@/lib/date'
 import type { Person, AccrualType, WorkItem } from '@/types'
 
 const MANUAL_TYPES: AccrualType[] = ['포상휴가', '특별휴가', '지연보상', '프로젝트휴가', '주말/휴일대체']
@@ -443,41 +443,19 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
         for (let d = s; d <= e; d++) occupied.add(d)
       }
 
-      // §7.4 LV-1 (PRD v2.11): search starts from the first workday after the
-      // person's latest existing assignment end — not from the reference date.
+      // §7.4 LV-1 (PRD v2.11): search starts from the first workday after the person's
+      // latest existing assignment end — not from the reference date. PRD v2.109 LV-19:
+      // but if nothing reaches/covers today, today itself may still be genuinely empty,
+      // so start the scan AT asOf (inclusive) instead of unconditionally +1'ing past it.
       const maxEnd = assignments.reduce((m, a) => Math.max(m, dateToNum(a.end_date)), 0)
-      const searchFrom = nextWorkday(Math.max(maxEnd, asOf), isHoliday)
-      const availDays: number[] = []
-      let search = searchFrom
-      while (availDays.length < totalDays && search < searchFrom + 730) {
-        if (!isWeekend(search) && !isHoliday(search) && !occupied.has(search))
-          availDays.push(search)
-        search++
-      }
-      if (availDays.length === 0) return
+      const searchFrom = maxEnd >= asOf ? nextWorkday(maxEnd, isHoliday) : asOf
 
       // §7.4 LV-1 v2.88: 항상 프로젝트휴가 유형 하나로 배정 생성
       // 차감 원천 FIFO(주말대체→프로젝트→포상→지연보상)는 computeLedger에서 독립적으로 계산
+      const ranges = findEmptyWorkdayRanges(searchFrom, totalDays, occupied, isHoliday)
+      if (ranges.length === 0) return
 
-      // Group contiguous available workdays into date ranges
-      function toRanges(days: number[]): [number, number][] {
-        if (days.length === 0) return []
-        const out: [number, number][] = []
-        let start = days[0], prev = days[0]
-        for (let i = 1; i < days.length; i++) {
-          const curr = days[i]
-          let gapHasWorkday = false
-          for (let d = prev + 1; d < curr; d++) {
-            if (!isWeekend(d) && !isHoliday(d)) { gapHasWorkday = true; break }
-          }
-          if (gapHasWorkday) { out.push([start, prev]); start = curr }
-          prev = curr
-        }
-        out.push([start, prev])
-        return out
-      }
-
-      for (const [s, e] of toRanges(availDays)) {
+      for (const { start: s, end: e } of ranges) {
         await createAssignment.mutateAsync({
           person_id:    person.id,
           kind:         'leave',

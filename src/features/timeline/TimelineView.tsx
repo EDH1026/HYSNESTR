@@ -119,52 +119,17 @@ function computeVirtualLeaveBlocks(
     for (let d = s; d <= e; d++) occupied.add(d)
   }
 
-  // Scan forward, collecting empty workdays until quota is exhausted
-  const virtualDays: number[] = []
-  let remaining = daysToFill
-  let scan      = todayNum + 1
-  const maxScan = todayNum + 730   // 2-year horizon
-
-  while (remaining > 0 && scan <= maxScan) {
-    if (!isWeekend(scan) && !holidaySet.has(scan) && !occupied.has(scan)) {
-      virtualDays.push(scan)
-      remaining--
-    }
-    scan++
-  }
-
-  if (virtualDays.length === 0) return []
-
-  // Group consecutive virtual days into visual blocks.
-  // A new block starts whenever a real-assignment day falls between two virtual days.
-  // Non-working days (weekends/holidays) between virtual days are included in the same block.
-  const blocks: Array<{ start: number; end: number }> = []
-  let blockStart       = virtualDays[0]
-  let blockLastVirtual = virtualDays[0]
-
-  for (let i = 1; i < virtualDays.length; i++) {
-    const prev = virtualDays[i - 1]
-    const curr = virtualDays[i]
-    let gap = false
-    for (let d = prev + 1; d < curr; d++) {
-      if (occupied.has(d)) { gap = true; break }
-    }
-    if (gap) {
-      blocks.push({ start: blockStart, end: blockLastVirtual })
-      blockStart = curr
-    }
-    blockLastVirtual = curr
-  }
-  blocks.push({ start: blockStart, end: blockLastVirtual })
-
-  return blocks
+  // PRD v2.109 LV-19: scan starts AT todayNum (inclusive) so a genuinely empty today
+  // is filled instead of skipped — was todayNum + 1. Shared with LeavePanel's
+  // '잔여 소진 배정' via findEmptyWorkdayRanges (src/features/leave/ledger.ts).
+  return findEmptyWorkdayRanges(todayNum, daysToFill, occupied, n => holidaySet.has(n))
 }
 import {
   TYPE_FAMILY, LEAVE_GREEN, buildWorkItemColorMap, barColorOf,
 } from '@/lib/colors'
 import { useAllAccruals, useLedgerData }  from '@/features/leave/hooks'
 import { useAuth }          from '@/context/AuthContext'
-import { computeLedger }   from '@/features/leave/ledger'
+import { computeLedger, findEmptyWorkdayRanges }   from '@/features/leave/ledger'
 
 import type { Accrual } from '@/types'
 
@@ -196,11 +161,16 @@ interface DateHeaderProps {
   viewEnd:    number
   dayWidth:   number
   totalWidth: number
+  // T-25 ②: 특정 날짜 클릭 → 그 날짜의 유휴 인력 칩 일괄 활성화 (단순 클릭만; 드래그 시작은 무시)
+  onDayClick?: (dayNum: number) => void
 }
 
-function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth }: DateHeaderProps) {
+function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth, onDayClick }: DateHeaderProps) {
   const showWeek = dayWidth >= ZOOM_WEEK
   const showDay  = dayWidth >= ZOOM_DAY
+  // T-25 ②: mousedown 좌표를 기록해 mouseup 시 이동 거리가 작을 때만 "클릭"으로 간주—
+  // 헤더 자체엔 기존 드래그 동작이 없지만, 이후 드래그 기능이 추가돼도 오작동하지 않도록 방어.
+  const dayMouseDownPos = useRef<{ x: number; y: number } | null>(null)
 
   const months = useMemo(
     () => monthBoundaries(viewStart, viewEnd),
@@ -273,7 +243,20 @@ function DateHeader({ viewStart, viewEnd, dayWidth, totalWidth }: DateHeaderProp
                 className={[
                   'flex flex-col items-center justify-center border-r border-border/30 text-[10px] leading-none',
                   wd ? (sat ? 'text-blue-500' : 'text-red-500') : 'text-muted',
+                  onDayClick ? 'cursor-pointer hover:bg-brand-50' : '',
                 ].join(' ')}
+                title={onDayClick ? `${dayOfMonthLabel(d)} — 클릭: 이 날짜 유휴 인력 칩 활성화` : undefined}
+                onMouseDown={onDayClick ? e => { dayMouseDownPos.current = { x: e.clientX, y: e.clientY } } : undefined}
+                onMouseUp={onDayClick ? e => {
+                  const down = dayMouseDownPos.current
+                  dayMouseDownPos.current = null
+                  if (!down) return
+                  const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y)
+                  if (moved < 4) {
+                    e.stopPropagation()   // don't let handleGridBodyClick clear the chips we just set
+                    onDayClick(d)
+                  }
+                } : undefined}
               >
                 {dayWidth >= 14 && <span>{dayOfMonthLabel(d)}</span>}
                 {dayWidth >= 22 && <span>{weekdayLabel(d).slice(0, 1)}</span>}
@@ -1448,6 +1431,7 @@ interface FilterBarProps {
   personSort:    PersonSortBy; personDir: 'asc' | 'desc'
   showResigned:  boolean;      rankFilter: string[]
   personNameSearch: string
+  activeOnly:    boolean       // T-25: 활성 인력만 표시
   // workitem
   wiSort:        WiSortBy;     wiDir: 'asc' | 'desc'
   showClosed:    boolean;      typeFilter: string[]
@@ -1458,6 +1442,7 @@ interface FilterBarProps {
   onShowResigned:    (v: boolean) => void
   onRankFilter:      (rank: string) => void
   onPersonNameSearch:(v: string) => void
+  onActiveOnly:      (v: boolean) => void
   onWiSort:          (by: WiSortBy) => void
   onShowClosed:      (v: boolean) => void
   onTypeFilter:      (type: string) => void
@@ -1502,9 +1487,9 @@ function ChipBtn({ label, active, onClick }: { label: string; active: boolean; o
 
 function FilterBar({
   viewMode,
-  personSort, personDir, showResigned, rankFilter, personNameSearch,
+  personSort, personDir, showResigned, rankFilter, personNameSearch, activeOnly,
   wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter, nameFilter, unifiedFilter,
-  onPersonSort, onShowResigned, onRankFilter, onPersonNameSearch,
+  onPersonSort, onShowResigned, onRankFilter, onPersonNameSearch, onActiveOnly,
   onWiSort, onShowClosed, onTypeFilter, onClientFilter, onHashFilter, onNameFilter, onUnifiedFilter,
 }: FilterBarProps) {
   // §9.3: debounce text-filter inputs (200 ms) so each keystroke doesn't rerender the whole grid
@@ -1572,6 +1557,16 @@ function FilterBar({
               <ChipBtn key={r} label={r} active={rankFilter.includes(r)} onClick={() => onRankFilter(r)} />
             ))}
           </div>
+          {/* T-25 ①: 활성 인력만 표시 — 조회 보조 기능, 전 역할 제공 */}
+          <label className="flex items-center gap-1.5 cursor-pointer text-gray-600">
+            <input
+              type="checkbox"
+              checked={activeOnly}
+              onChange={e => onActiveOnly(e.target.checked)}
+              className="accent-brand-600"
+            />
+            활성 인력만 표시
+          </label>
         </>
       ) : (
         <>
@@ -1780,6 +1775,8 @@ export default function TimelineView() {
   // T-21 v2.96: Person 탭 기본 필터 — Partner 제외 전체 직급 선택(초기 진입 상태; RANKS 순서 재사용)
   const [rankFilter,        setRankFilter]        = useState<string[]>(() => RANKS.filter(r => r !== 'Partner'))
   const [personNameSearch,  setPersonNameSearch]  = useState('')
+  // T-25: '활성 인력만 표시' — highlightedPersonIds(§5.2 T-7)에 켜진 칩의 행만 남긴다. 조회 보조 기능 — 전 역할 제공.
+  const [activeOnly,        setActiveOnly]        = useState(false)
   // Work-item view
   const [wiSort,       setWiSort]       = useState<'start' | 'name' | 'status' | 'type'>('start')
   const [wiDir,        setWiDir]        = useState<'asc' | 'desc'>('asc')
@@ -1967,6 +1964,8 @@ export default function TimelineView() {
         .filter(p => showResigned || p.status !== 'resigned')
         .filter(p => rankFilter.length === 0 || rankFilter.includes(p.rank))
         .filter(p => !nameQ || p.name.toLowerCase().includes(nameQ))
+        // T-25: '활성 인력만 표시' — 현재 활성화된 칩(highlightedPersonIds)의 인력만 남긴다
+        .filter(p => !activeOnly || highlightedPersonIds.has(p.id))
 
       fp = [...fp].sort((a, b) => {
         let cmp = 0
@@ -2078,6 +2077,7 @@ export default function TimelineView() {
   }, [
     viewMode, people, workItems, assignments, peopleMap,
     personSort, personDir, showResigned, rankFilter, personNameSearch,
+    activeOnly, highlightedPersonIds,
     wiSort, wiDir, showClosed, typeFilter, clientFilter, hashFilter, nameFilter, unifiedFilter,
     expandedWorkItems, expandedLeave, viewStart, viewEnd,
   ])
@@ -2273,6 +2273,21 @@ export default function TimelineView() {
       if (next.has(personId)) next.delete(personId); else next.add(personId)
       return next
     })
+  }
+
+  // T-25 ②: 날짜 헤더 클릭 → 그 날짜에 배정(work·leave 불문)이 하나도 걸쳐 있지 않은
+  // 유휴 인력의 칩을 전부 활성화하고, 배정이 있는 인력은 비활성화(교체, 토글 아님).
+  // 주말·공휴일 여부와 무관하게 배정 유무만 본다. 조회 보조 기능이라 전 역할에서 호출 가능.
+  function activateIdlePeopleOnDate(dayNum: number) {
+    const busyPersonIds = new Set(
+      assignments
+        .filter(a => dateToNum(a.start) <= dayNum && dateToNum(a.end_date) >= dayNum)
+        .map(a => a.person_id),
+    )
+    const idleIds = people
+      .filter(p => p.status !== 'resigned' && !busyPersonIds.has(p.id))
+      .map(p => p.id)
+    setHighlightedPersonIds(new Set(idleIds))
   }
   // T-12/T-14: click on empty grid area clears highlights and multi-selection
   function handleGridBodyClick(e: ReactMouseEvent) {
@@ -2981,6 +2996,7 @@ export default function TimelineView() {
             personSort={personSort}  personDir={personDir}
             showResigned={showResigned}  rankFilter={rankFilter}
             personNameSearch={personNameSearch}
+            activeOnly={activeOnly}
             wiSort={wiSort}          wiDir={wiDir}
             showClosed={showClosed}  typeFilter={typeFilter}
             clientFilter={clientFilter}  hashFilter={hashFilter}
@@ -2994,6 +3010,7 @@ export default function TimelineView() {
               prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r]
             )}
             onPersonNameSearch={setPersonNameSearch}
+            onActiveOnly={setActiveOnly}
             onWiSort={(by) => {
               if (wiSort === by) setWiDir(d => d === 'asc' ? 'desc' : 'asc')
               else { setWiSort(by); setWiDir('asc') }
@@ -3148,6 +3165,7 @@ export default function TimelineView() {
               <DateHeader
                 viewStart={viewStart} viewEnd={viewEnd}
                 dayWidth={dayWidth} totalWidth={totalWidth}
+                onDayClick={activateIdlePeopleOnDate}
               />
             </div>
 

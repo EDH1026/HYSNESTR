@@ -487,3 +487,52 @@ export function buildHolidaySet(
   }
   return s
 }
+
+/**
+ * PRD v2.109 LV-19: shared empty-business-day search, used by both the Timeline
+ * '휴가 배정 시뮬레이션' (computeVirtualLeaveBlocks) and the Leave Ledger
+ * '잔여 소진 배정' feature (LeavePanel.handleAssignRemaining) — previously each
+ * screen re-implemented this scan independently.
+ *
+ * Scans forward from `fromDay` INCLUSIVE (callers must pass todayNum itself, not
+ * todayNum + 1, so a genuinely empty today is filled instead of skipped) collecting
+ * up to `count` workdays that are neither weekend/holiday nor in `occupied`, then
+ * groups the collected days into contiguous ranges — a range only breaks where an
+ * occupied day falls between two collected days (weekends/holidays don't break it).
+ */
+export function findEmptyWorkdayRanges(
+  fromDay:     number,
+  count:       number,
+  occupied:    ReadonlySet<number>,
+  isHoliday:   (n: number) => boolean,
+  maxScanDays = 730,
+): Array<{ start: number; end: number }> {
+  if (count <= 0) return []
+
+  const days: number[] = []
+  const maxScan = fromDay + maxScanDays
+  let scan = fromDay
+  while (days.length < count && scan <= maxScan) {
+    if (!isWeekend(scan) && !isHoliday(scan) && !occupied.has(scan)) days.push(scan)
+    scan++
+  }
+  if (days.length === 0) return []
+
+  const ranges: Array<{ start: number; end: number }> = []
+  let rangeStart = days[0]
+  let rangeLast  = days[0]
+  for (let i = 1; i < days.length; i++) {
+    const prev = days[i - 1], curr = days[i]
+    let gap = false
+    for (let d = prev + 1; d < curr; d++) {
+      if (occupied.has(d)) { gap = true; break }
+    }
+    if (gap) {
+      ranges.push({ start: rangeStart, end: rangeLast })
+      rangeStart = curr
+    }
+    rangeLast = curr
+  }
+  ranges.push({ start: rangeStart, end: rangeLast })
+  return ranges
+}

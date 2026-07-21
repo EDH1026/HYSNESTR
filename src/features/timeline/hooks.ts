@@ -104,6 +104,44 @@ export function useCreateAssignment() {
   })
 }
 
+/**
+ * PRD v2.109 E-3b: create an assignment while excluding conflicting sub-ranges.
+ * The server RPC recomputes overlaps against the latest data and splits the
+ * requested range into one or more non-overlapping assignment rows — the
+ * client never sends pre-computed split ranges.
+ */
+export function useCreateAssignmentExcludingConflicts() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: CreateAssignmentInput): Promise<Assignment[]> => {
+      const { data, error } = await (supabase.rpc as any)('create_assignment_excluding_conflicts', {
+        p_person_id:     input.person_id,
+        p_kind:          input.kind,
+        p_work_item_id:  input.work_item_id,
+        p_leave_type:    input.leave_type,
+        p_start:         input.start,
+        p_end_date:      input.end_date,
+        p_weekend_dates: input.weekend_dates ?? [],
+        p_note:          input.note,
+        p_daily_hours:   input.daily_hours ?? null,
+      })
+      if (error) throw error
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return ((data ?? []) as any[]).map(toAssignment)
+    },
+    onSuccess: created => {
+      qc.invalidateQueries({ queryKey: queryKeys.assignments.all() })
+      for (const asgn of created) {
+        qc.invalidateQueries({ queryKey: queryKeys.assignments.byPerson(asgn.person_id) })
+        if (asgn.work_item_id) {
+          qc.invalidateQueries({ queryKey: queryKeys.assignments.byWorkItem(asgn.work_item_id) })
+        }
+      }
+      qc.invalidateQueries({ queryKey: ['ledgerData'] })
+    },
+  })
+}
+
 export function useUpdateAssignment() {
   const qc = useQueryClient()
   return useMutation({
