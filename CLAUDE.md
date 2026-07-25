@@ -2,19 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Commands
-
-```bash
-npm run dev       # Vite dev server at http://localhost:5173
-npm run build     # tsc -b && vite build → dist/
-npm run preview   # serve dist/ locally
-```
-
-There are no test or lint scripts yet; add them to `package.json` as needed.
-
 ## Architecture
-
-**Stack**: Vite 5 · React 18 · TypeScript 5 · TanStack Query v5 · React Router v6 · Supabase JS v2 · Tailwind CSS v3 · Lucide React
 
 Single-page app. All data lives in **Supabase Postgres** with **RLS enforced on every table**. The client holds only the `anon` key; `service_role` must never appear in this codebase.
 
@@ -65,20 +53,6 @@ src/
 
 Wire format for Supabase: `"YYYY-MM-DD"` strings (use `numToStr` / `dateToNum`).
 
-### Design tokens (Tailwind)
-
-Defined in `tailwind.config.ts → theme.extend`:
-
-| Token group | CSS class prefix | Notes |
-|---|---|---|
-| `brand` | `bg-brand-*`, `text-brand-*` | Indigo — primary accent |
-| `surface` | `bg-surface-*` | Off-white layers (0=white, 50, 100, 200) |
-| `border` | `border-border`, `border-border-light` | Subtle dividers |
-| `muted` | `text-muted`, `text-muted-light` | Secondary text |
-| `shadow-card` / `shadow-card-md` | `shadow-card` | Soft Astra-style card shadow |
-
-Component shorthands in `src/index.css`: `.card`, `.btn-primary`, `.btn-secondary`, `.btn-danger`, `.input`, `.pill`.
-
 ### Data model summary (Supabase tables)
 
 | Table | Key columns |
@@ -93,13 +67,6 @@ Component shorthands in `src/index.css`: `.card`, `.btn-primary`, `.btn-secondar
 | `audit_log` | `id`, `user_id`, `action`, `target_type`, `target_id`, `at` |
 
 Types for all of the above live in `src/types/index.ts`.
-
-### Leave business rules (PRD §7)
-
-- **Project leave**: `round(calendar days in (assignment ∩ main_phase) / 10, 0)` — `main_start` to `end_date` only.
-- **Weekend sub**: 0.5 days per Saturday worked, 1.0 day per Sunday/holiday worked. Only dates listed in `assignment.weekend_dates[]`.
-- **Delay compensation**: if accrued leave sits unused ≥ 15 days after project end (not pre-scheduled): ≤1 day → +0; 1.5–3 → +1; 3.5–5 → +2; ≥5.5 → +3.
-- **Paid leave deduction**: working days only (`workdayCount`). FIFO across accrual records.
 
 ### Supabase RLS pattern
 
