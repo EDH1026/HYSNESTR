@@ -9,6 +9,7 @@
  * 5. 프로젝트휴가·포상·지연보상·지정휴가 → A vs S 비교 (AL-7 ②③④ 재사용)
  * 6. 프로젝트 배정 → engagement_number (없으면 provisional flag)
  *    Partner + 다중 프로젝트 배정: daily_hours 기준 분할 (TSG-14, PRD v2.78)
+ *    engagement_code_splits 설정 시: 그 project 시간을 코드별 비율로 재분할 (W-10, PRD v2.114)
  * 7. 제안 배정 → 배정된 Partner의 nbd_code
  * 8. 그 외 → "unassigned"
  *
@@ -133,6 +134,7 @@ export function resolveTimesheetCode(
     // Project(s) present but none have explicit hours → full 8 h on first project
     if (projectAsgns.length > 0 && withHours.length === 0) {
       const wi = ctx.workItems.find(w => w.id === projectAsgns[0].work_item_id)!
+      if (wi.engagement_code_splits?.length) return splitByCodeRatio(8, wi.engagement_code_splits)
       if (wi.engagement_number)    return [{ code: wi.engagement_number }]
       if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, provisional: true }]
       return [{ code: '(코드 미정)', provisional: true }]
@@ -145,8 +147,13 @@ export function resolveTimesheetCode(
     for (const wa of withHours) {
       if ((wa.daily_hours ?? 0) <= 0) continue  // daily_hours=0 → 해당 프로젝트 0h, NBD에 귀속
       const wi = ctx.workItems.find(w => w.id === wa.work_item_id)!
-      const code = wi.engagement_number ?? (wi.temp_engagement_code ?? '(코드 미정)')
-      results.push({ code, hours: wa.daily_hours!, provisional: wi.engagement_number ? undefined : true })
+      // W-10: 이 project에 코드 비율 배분이 설정돼 있으면 daily_hours를 다시 비율대로 세분화 (TSG-14②)
+      if (wi.engagement_code_splits?.length) {
+        results.push(...splitByCodeRatio(wa.daily_hours!, wi.engagement_code_splits))
+      } else {
+        const code = wi.engagement_number ?? (wi.temp_engagement_code ?? '(코드 미정)')
+        results.push({ code, hours: wa.daily_hours!, provisional: wi.engagement_number ? undefined : true })
+      }
       totalH += wa.daily_hours!
     }
     const remaining = Math.round((8 - totalH) * 10) / 10
@@ -161,6 +168,11 @@ export function resolveTimesheetCode(
   if (workAsgn?.work_item_id) {
     const wi = ctx.workItems.find(w => w.id === workAsgn.work_item_id)
     if (wi?.type === 'project') {
+      // W-10: 코드 비율 배분이 설정된 project는 그날 기록 시간(기본 8h, daily_hours 설정 시 그 값)을
+      // 비율대로 나눠 코드별 별도 행으로 반환한다 (TSG-1⑥).
+      if (wi.engagement_code_splits?.length) {
+        return splitByCodeRatio(workAsgn.daily_hours ?? 8, wi.engagement_code_splits)
+      }
       if (wi.engagement_number)    return [{ code: wi.engagement_number }]
       if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, provisional: true }]
       return [{ code: '(코드 미정)', provisional: true }]
@@ -186,6 +198,28 @@ export function resolveTimesheetCode(
 }
 
 // ── Internal helpers ──────────────────────────────────────────
+
+/**
+ * W-10: totalHours를 engagement_code_splits의 percent 비율대로 나눈다.
+ * 마지막 항목은 (총합 − 이전 항목들의 합)으로 계산해, 반올림 오차 없이
+ * 합계가 totalHours와 정확히 일치하도록 보정한다.
+ */
+function splitByCodeRatio(
+  totalHours: number,
+  splits:     NonNullable<WorkItem['engagement_code_splits']>,
+): TimesheetCodeResult[] {
+  const results: TimesheetCodeResult[] = []
+  let allocated = 0
+  splits.forEach((s, i) => {
+    const isLast = i === splits.length - 1
+    const hours = isLast
+      ? Math.round((totalHours - allocated) * 100) / 100
+      : Math.round((totalHours * s.percent / 100) * 100) / 100
+    results.push({ code: s.code, hours })
+    allocated += hours
+  })
+  return results
+}
 
 function mostRecentEngagementCode(
   assignments: Assignment[],

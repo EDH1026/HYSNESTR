@@ -63,6 +63,12 @@ export interface Person {
  * Projects have a pre-study phase (start → main_start - 1) and a main phase (main_start → end_date).
  * Proposals have no pre-study split.
  */
+/** W-10: 하나의 project를 여러 engagement 코드로 비율 분할할 때 각 항목 (PRD v2.114) */
+export interface EngagementCodeSplit {
+  code: string
+  percent: number
+}
+
 export interface WorkItem {
   id: string
   type: WorkItemType
@@ -73,6 +79,8 @@ export interface WorkItem {
   end_date: string            // YYYY-MM-DD
   engagement_number: string | null
   temp_engagement_code?: string | null        // AL-17: 정식 코드 미확정 시 임시 타임시트 코드 (PRD v2.54)
+  // W-10: project 전용, percent 합계 100 (서버 트리거 검증). NULL → 기존처럼 단일 코드. (PRD v2.114)
+  engagement_code_splits?: EngagementCodeSplit[] | null
   client: string | null
   hashtags: string[]
   status?: 'open' | 'closed' | null           // 전 유형 공통 (PRD v2.4 §3); optional until database.ts regenerated

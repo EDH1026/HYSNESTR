@@ -11,7 +11,7 @@ import {
   makeWorkItemCreate, makeWorkItemUpdate, makeWorkItemDelete,
   makeAssignmentCreate, makeAssignmentDelete, combine,
 } from '@/lib/historyOps'
-import type { WorkItem, WorkItemType, Assignment } from '@/types'
+import type { WorkItem, WorkItemType, Assignment, EngagementCodeSplit } from '@/types'
 
 const WI_TYPES: { value: WorkItemType; label: string }[] = [
   { value: 'project',  label: 'Project'  },
@@ -85,6 +85,22 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
       : pendingPartnerIds.map(id => ({ key: id, personId: id, assignment: null as Assignment | null })),
     [isEdit, assignedPartners, pendingPartnerIds],
   )
+
+  // W-10: project 전용 — engagement 코드 비율 배분 (TSG-1⑥/TSG-14②)
+  const [splits, setSplits] = useState<EngagementCodeSplit[]>(workItem?.engagement_code_splits ?? [])
+  const splitTotal = useMemo(
+    () => Math.round(splits.reduce((sum, s) => sum + (s.percent || 0), 0) * 100) / 100,
+    [splits],
+  )
+  function addSplitRow() {
+    setSplits(s => [...s, { code: '', percent: 0 }])
+  }
+  function updateSplitRow(i: number, patch: Partial<EngagementCodeSplit>) {
+    setSplits(s => s.map((row, idx) => (idx === i ? { ...row, ...patch } : row)))
+  }
+  function removeSplitRow(i: number) {
+    setSplits(s => s.filter((_, idx) => idx !== i))
+  }
 
   const [hashInput, setHashInput] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -169,6 +185,12 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
       if (form.end_date && form.main_start > form.end_date)
         return 'Main start must be ≤ end date'
     }
+    if (form.type === 'project' && splits.length > 0) {
+      if (splits.some(s => !s.code.trim()))
+        return 'Engagement 코드 배분: 코드를 입력하세요'
+      if (splitTotal !== 100)
+        return `Engagement 코드 배분의 비율 합계는 100%여야 합니다 (현재: ${splitTotal}%)`
+    }
     return null
   }
 
@@ -189,6 +211,10 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
       main_start:        form.type === 'project' && form.main_start ? form.main_start : null,
       end_date:          form.end_date,
       engagement_number: form.engagement_number || null,
+      // W-10: proposal/pipeline은 항상 NULL(서버 트리거도 강제). project만 값을 가질 수 있음.
+      engagement_code_splits: form.type === 'project' && splits.length > 0
+        ? splits.map(s => ({ code: s.code.trim(), percent: s.percent }))
+        : null,
       client:            form.client            || null,
       description:       form.description || null,
       hashtags:          form.hashtags,
@@ -439,6 +465,61 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
             />
           </div>
         </div>
+
+        {/* project: Engagement 코드 비율 배분 (W-10 / TSG-1⑥·TSG-14②) */}
+        {form.type === 'project' && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700">
+              Engagement 코드 배분
+              <span className="ml-1 text-[10px] text-muted">설정 시 타임시트 생성 시간을 코드별 비율로 자동 분할(합계 100%)</span>
+            </label>
+            <div className="space-y-1.5">
+              {splits.map((s, i) => (
+                <div key={i} className="flex items-center gap-1.5">
+                  <input
+                    className="input flex-1"
+                    placeholder="코드"
+                    value={s.code}
+                    onChange={e => updateSplitRow(i, { code: e.target.value })}
+                    disabled={readOnly}
+                  />
+                  <input
+                    type="number" min={0} max={100} step="0.1"
+                    className="input w-20"
+                    placeholder="%"
+                    value={s.percent}
+                    onChange={e => updateSplitRow(i, { percent: parseFloat(e.target.value) || 0 })}
+                    disabled={readOnly}
+                  />
+                  <span className="text-xs text-muted">%</span>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={() => removeSplitRow(i)}
+                      className="text-muted hover:text-red-600"
+                    >
+                      <XIcon size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={addSplitRow}
+                  className="text-xs font-medium text-brand-600 hover:text-brand-800"
+                >
+                  + 코드 추가
+                </button>
+              )}
+            </div>
+            {splits.length > 0 && (
+              <p className={`mt-1 text-[11px] ${splitTotal === 100 ? 'text-muted' : 'text-red-600'}`}>
+                합계: {splitTotal}%{splitTotal !== 100 ? ' (100%가 되어야 저장됩니다)' : ''}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Description */}
         <div>
