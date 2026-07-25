@@ -14,6 +14,7 @@
  *    Partner + 다중 프로젝트 배정: daily_hours 기준 분할 (TSG-14, PRD v2.78)
  *    engagement_code_splits 설정 시: 그 project 시간을 코드별 비율로 재분할 (W-10, PRD v2.114)
  *    temp_engagement_code(대체 코드)면 detail 끝에 "*대체" 추가 (TSG-17①, v2.115)
+ *    TSG-14② 잔여 시간을 본인 NBD 코드로 자동 채우는 행도 detail: "{본인 이름} NBD" 병기 (v2.116)
  * 7. 제안 배정 → code: 배정된 Partner의 nbd_code(들, 콤마 join), detail: "{파트너명} NBD"(들, 콤마 join)
  *    — detail에 코드 값을 다시 넣지 않는다 (TSG-17②, v2.115)
  * 8. 그 외 → "unassigned"
@@ -170,7 +171,9 @@ export function resolveTimesheetCode(
     }
     const remaining = Math.round((8 - totalH) * 10) / 10
     if (remaining > 0) {
-      results.push({ code: _person.nbd_code ?? '(NBD코드 없음)', hours: remaining, provisional: _person.nbd_code ? undefined : true })
+      // TSG-17②와 동일한 형식으로 부가정보 병기 — 본인 NBD 코드로 자동 채워지는 잔여 시간임을 명시.
+      const detail = _person.nbd_code ? `${_person.name} NBD` : undefined
+      results.push({ code: _person.nbd_code ?? '(NBD코드 없음)', hours: remaining, provisional: _person.nbd_code ? undefined : true, detail })
     }
     return results
   }

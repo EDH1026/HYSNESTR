@@ -118,27 +118,29 @@ describe('W-10 engagement_code_splits — Partner multi-project path (TSG-14②)
     ])
   })
 
-  it('Partner, daily_hours=5 on a split project → 3.75 + 1.25, plus NBD remainder for the other 3h', () => {
-    const p = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD-1' })
+  it('Partner, daily_hours=5 on a split project → 3.75 + 1.25, plus NBD remainder for the other 3h ' +
+     '(remainder detail = "{본인 이름} NBD")', () => {
+    const p = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD-1', name: '김재승' })
     const wi = workItem({ engagement_code_splits: [{ code: 'A', percent: 75 }, { code: 'B', percent: 25 }] })
     const asgn = assignment({ id: 'a1', person_id: 'partner1', daily_hours: 5 })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
     expect(results).toEqual([
       { code: 'A', hours: 3.75 },
       { code: 'B', hours: 1.25 },
-      { code: 'NBD-1', hours: 3, provisional: undefined },
+      { code: 'NBD-1', hours: 3, provisional: undefined, detail: '김재승 NBD' },
     ])
     expect(results.reduce((s, r) => s + (r.hours ?? 0), 0)).toBe(8)
   })
 
-  it('regression: Partner, daily_hours set, no splits → unchanged single-code-per-project + NBD remainder', () => {
-    const p = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD-1' })
+  it('regression: Partner, daily_hours set, no splits → unchanged single-code-per-project + NBD remainder ' +
+     '(remainder now carries "{본인 이름} NBD" detail)', () => {
+    const p = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD-1', name: '김재승' })
     const wi = workItem({ engagement_code_splits: null })
     const asgn = assignment({ id: 'a1', person_id: 'partner1', daily_hours: 5 })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
     expect(results).toEqual([
       { code: 'E-00000001', hours: 5, provisional: undefined },
-      { code: 'NBD-1', hours: 3, provisional: undefined },
+      { code: 'NBD-1', hours: 3, provisional: undefined, detail: '김재승 NBD' },
     ])
   })
 })
@@ -186,6 +188,24 @@ describe('TSG-17 코드/부가정보 컬럼 분리 (PRD v2.115)', () => {
     // 코드 값이 detail 안에 다시 등장하지 않아야 한다 (과거 버그: "I-00000000 파트너명" 식 중복)
     expect(results[0].detail).not.toContain('NBD00123')
     expect(results[0].detail).not.toContain('NBD00456')
+  })
+
+  it('② Partner 자동 NBD 잔여 시간(TSG-14②)도 "{본인 이름} NBD"로 부가정보 병기된다', () => {
+    const p = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD-99', name: '박정인' })
+    const wi = workItem({ engagement_number: 'E-00000002' })
+    const asgn = assignment({ id: 'a1', person_id: 'partner1', daily_hours: 6 })
+    const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
+    const nbdRow = results.find(r => r.code === 'NBD-99')
+    expect(nbdRow).toEqual({ code: 'NBD-99', hours: 2, provisional: undefined, detail: '박정인 NBD' })
+  })
+
+  it('② nbd_code가 없는 Partner의 잔여 시간은 "(NBD코드 없음)"이고 detail도 없다', () => {
+    const p = person({ id: 'partner1', rank: 'Partner', nbd_code: null, name: '박정인' })
+    const wi = workItem({ engagement_number: 'E-00000002' })
+    const asgn = assignment({ id: 'a1', person_id: 'partner1', daily_hours: 6 })
+    const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
+    const nbdRow = results.find(r => r.code === '(NBD코드 없음)')
+    expect(nbdRow).toEqual({ code: '(NBD코드 없음)', hours: 2, provisional: true })
   })
 
   it('③ 무급휴가/유급휴가는 code만, detail 없음', () => {
