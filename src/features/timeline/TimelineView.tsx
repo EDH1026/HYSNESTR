@@ -53,6 +53,7 @@ import {
 import type { HistoryEntry } from '@/lib/history'
 import FYPicker, { type FYFilter, resolveFYFilter } from '@/components/FYPicker'
 import { parseSearchQuery } from '@/lib/searchQuery'
+import Modal                 from '@/components/Modal'
 import AssignmentModal      from './AssignmentModal'
 import { computeSpecialLeaveBalance, hasAssignmentOverlap } from '@/features/leave/validateLeave'
 import WorkItemDetailModal  from '@/features/workitems/WorkItemDetailModal'
@@ -1660,6 +1661,76 @@ function packLanes(
   return { laneMap, laneCount: Math.max(1, laneEnds.length) }
 }
 
+// E-5 (v2.116): pure — collapse a batch of assignment changes into per-work-item
+// min-start/max-end expansion patches. Closed work items never expand (edits are already
+// blocked for them, same as before this redesign). Module-level so it's independently
+// unit-testable without mounting TimelineView.
+export interface WIExpansion { wiId: string; wi: WorkItem; patch: { start?: string; end_date?: string } }
+
+export function computeWIExpansions(
+  items: { kind: string; work_item_id: string | null | undefined; newStart: string; newEnd: string }[],
+  workItemMap: Map<string, WorkItem>,
+): WIExpansion[] {
+  const agg = new Map<string, { minS: string; maxE: string; wi: WorkItem }>()
+  for (const item of items) {
+    if (item.kind !== 'work' || !item.work_item_id) continue
+    const wi = workItemMap.get(item.work_item_id)
+    if (!wi) continue
+    const closed = (wi.status ?? wi.project_status ?? 'open') === 'closed'
+    if (closed) continue
+    const cur = agg.get(item.work_item_id)
+    if (!cur) {
+      agg.set(item.work_item_id, { minS: item.newStart, maxE: item.newEnd, wi })
+    } else {
+      if (dateToNum(item.newStart) < dateToNum(cur.minS)) cur.minS = item.newStart
+      if (dateToNum(item.newEnd)   > dateToNum(cur.maxE)) cur.maxE = item.newEnd
+    }
+  }
+  const out: WIExpansion[] = []
+  for (const [wiId, { minS, maxE, wi }] of agg) {
+    const patch: { start?: string; end_date?: string } = {}
+    if (dateToNum(maxE) > dateToNum(wi.end_date))  patch.end_date = maxE
+    if (dateToNum(minS) < dateToNum(wi.start))     patch.start    = minS
+    if (!patch.start && !patch.end_date) continue
+    out.push({ wiId, wi, patch })
+  }
+  return out
+}
+
+// E-5 (v2.116): warn-then-confirm before expanding a work item to cover an out-of-range
+// assignment period. Replaces the old silent auto-expand.
+function WorkItemExpandConfirmModal({
+  expansions, onConfirm, onCancel,
+}: {
+  expansions: WIExpansion[]
+  onConfirm:  () => void
+  onCancel:   () => void
+}) {
+  return (
+    <Modal title="작업항목 기간 확장" onClose={onCancel} size="sm">
+      <div className="space-y-3 text-sm text-gray-700">
+        <p>이 배정 기간이 작업항목의 설정 기간을 벗어납니다:</p>
+        <ul className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs">
+          {expansions.map(({ wiId, wi, patch }) => (
+            <li key={wiId}>
+              <div className="font-medium text-gray-800">{wi.name}</div>
+              <div className="text-muted">현재: {wi.start} ~ {wi.end_date}</div>
+              <div className="text-amber-700">
+                확장 후: {patch.start ?? wi.start} ~ {patch.end_date ?? wi.end_date}
+              </div>
+            </li>
+          ))}
+        </ul>
+        <p>작업항목 기간도 함께 확장하시겠습니까?</p>
+      </div>
+      <div className="flex gap-2 pt-4">
+        <button type="button" onClick={onConfirm} className="btn-primary flex-1">확장하고 저장</button>
+        <button type="button" onClick={onCancel} className="btn-secondary flex-1">취소</button>
+      </div>
+    </Modal>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main component: TimelineView
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1717,6 +1788,13 @@ export default function TimelineView() {
   // T-23: workitem-band kebab menu + delete confirmation
   const [wiCtxMenu,      setWiCtxMenu]      = useState<{ workItem: WorkItem; x: number; y: number } | null>(null)
   const [deleteConfirmWI, setDeleteConfirmWI] = useState<WorkItem | null>(null)
+
+  // E-5 (v2.116): pending work-item-expansion confirmation
+  const [pendingExpand, setPendingExpand] = useState<{
+    expansions: WIExpansion[]
+    onConfirm:  () => void
+    onCancel:   () => void
+  } | null>(null)
 
   // T-14: multi-select
   const [selectedIds,          setSelectedIds]          = useState<Set<string>>(new Set())
@@ -2232,8 +2310,10 @@ export default function TimelineView() {
   }, [])
 
   // Modal helpers
-  function openCreate(row: RowData, startNum: number, endNum: number) {
-    const prefill: ModalState['prefill'] = { startNum, endNum }
+  // E-7: datesLocked=true means startNum/endNum came from a deliberate drag-select and must
+  // survive picking a work item afterward (unlike double-click, which stays unlocked).
+  function openCreate(row: RowData, startNum: number, endNum: number, datesLocked = false) {
+    const prefill: ModalState['prefill'] = { startNum, endNum, datesLocked }
     if (row.kind === 'person') {
       prefill.personId = row.person.id
       // §5.3 #5: find the most recent project work-assignment end for this person
@@ -2375,6 +2455,7 @@ export default function TimelineView() {
         leaveType:  a.leave_type ?? undefined,
         startNum:   newStart,
         endNum:     newEnd,
+        datesLocked: true,   // same mechanism as E-7 drag: keep the computed shifted period
       },
     })
   }
@@ -2475,8 +2556,7 @@ export default function TimelineView() {
     }
     if (allPairs.length > 0) {
       const asgnEntry = makeAssignmentDrag('다중 배정 이동', allPairs)
-      const wiExps = buildWIExpansions(wiExpItems)
-      push(wiExps.length ? combine('다중 배정 이동', asgnEntry, ...wiExps) : asgnEntry)
+      gateWithExpansionConfirm(wiExpItems, asgnEntry, '다중 배정 이동')
     }
     setSelectedIds(new Set())
   }
@@ -2533,8 +2613,7 @@ export default function TimelineView() {
 
     if (allPairs.length > 0) {
       const asgnEntry = makeAssignmentDrag('다중 배정 리사이즈', allPairs)
-      const wiExps = buildWIExpansions(wiExpItems)
-      push(wiExps.length ? combine('다중 배정 리사이즈', asgnEntry, ...wiExps) : asgnEntry)
+      gateWithExpansionConfirm(wiExpItems, asgnEntry, '다중 배정 리사이즈')
     }
     setSelectedIds(new Set())
   }
@@ -2588,9 +2667,11 @@ export default function TimelineView() {
       const asgnEntry = makeAssignmentDrag('배정 이동', [{
         id, oldStart: moved.start, oldEnd: moved.end_date, newStart: patch.start, newEnd: patch.end_date,
       }])
-      // E-5: auto-expand work item if assignment goes out of bounds
-      const wiExps = buildWIExpansions([{ kind: moved.kind, work_item_id: moved.work_item_id, newStart: patch.start, newEnd: patch.end_date }])
-      push(wiExps.length ? combine('배정 이동', asgnEntry, ...wiExps) : asgnEntry)
+      // E-5: gate work item expansion behind confirmation if the new period is out of bounds
+      gateWithExpansionConfirm(
+        [{ kind: moved.kind, work_item_id: moved.work_item_id, newStart: patch.start, newEnd: patch.end_date }],
+        asgnEntry, '배정 이동',
+      )
       return
     }
 
@@ -2671,7 +2752,7 @@ export default function TimelineView() {
         return { id: pp.id, oldStart: orig?.start ?? pp.start, oldEnd: orig?.end_date ?? pp.end_date, newStart: pp.start, newEnd: pp.end_date }
       }),
     ]
-    // E-5: auto-expand work items for moved + cascaded work assignments
+    // E-5: gate work item expansion behind confirmation for moved + cascaded work assignments
     const asgnEntry = makeAssignmentDrag('배정 이동', allPairs)
     const wiExpItems = [
       { kind: moved.kind, work_item_id: moved.work_item_id, newStart: effectivePatch.start, newEnd: effectivePatch.end_date },
@@ -2680,8 +2761,7 @@ export default function TimelineView() {
         return { kind: orig?.kind ?? '', work_item_id: orig?.work_item_id, newStart: pp.start, newEnd: pp.end_date }
       }),
     ]
-    const wiExps = buildWIExpansions(wiExpItems)
-    push(wiExps.length ? combine('배정 이동', asgnEntry, ...wiExps) : asgnEntry)
+    gateWithExpansionConfirm(wiExpItems, asgnEntry, '배정 이동')
   }
   function handleUpdateWorkItem(
     id: string,
@@ -2692,36 +2772,47 @@ export default function TimelineView() {
     if (wi) push(makeWorkItemUpdate(wi, patch))
   }
 
-  // E-5: compute work item expansion patches for a batch of assignment changes.
-  // Returns one entry per affected work item (collapsed to min start / max end).
-  // Fires updateWorkItem mutations as a side effect; returns HistoryEntry[] for bundling.
-  function buildWIExpansions(
-    items: { kind: string; work_item_id: string | null | undefined; newStart: string; newEnd: string }[],
-  ): HistoryEntry[] {
-    // Collect max end / min start per wiId across all items
-    const agg = new Map<string, { minS: string; maxE: string; wi: WorkItem }>()
-    for (const item of items) {
-      if (item.kind !== 'work' || !item.work_item_id) continue
-      const wi = workItemMap.get(item.work_item_id)
-      if (!wi || isWIClosed(wi)) continue
-      const cur = agg.get(item.work_item_id)
-      if (!cur) {
-        agg.set(item.work_item_id, { minS: item.newStart, maxE: item.newEnd, wi })
-      } else {
-        if (dateToNum(item.newStart) < dateToNum(cur.minS)) cur.minS = item.newStart
-        if (dateToNum(item.newEnd)   > dateToNum(cur.maxE)) cur.maxE = item.newEnd
-      }
-    }
-    const entries: HistoryEntry[] = []
-    for (const [wiId, { minS, maxE, wi }] of agg) {
-      const patch: { start?: string; end_date?: string } = {}
-      if (dateToNum(maxE) > dateToNum(wi.end_date))  patch.end_date = maxE
-      if (dateToNum(minS) < dateToNum(wi.start))     patch.start    = minS
-      if (!patch.start && !patch.end_date) continue
+  // E-5 (v2.116 재설계): work item 범위를 벗어나는 배정 변경을 더 이상 말없이 자동 확장하지
+  // 않는다 — 경고 후 확인을 받는다. 계산(순수, 모듈 레벨 computeWIExpansions)과 적용(mutation)을 분리한다.
+
+  /** Fires the work-item update mutations (only called after user confirms). */
+  function applyWIExpansions(expansions: WIExpansion[]): HistoryEntry[] {
+    return expansions.map(({ wiId, wi, patch }) => {
       updateWorkItem.mutate({ id: wiId, ...patch })
-      entries.push(makeWorkItemUpdate(wi, patch))
+      return makeWorkItemUpdate(wi, patch)
+    })
+  }
+
+  // E-5: gate an assignment change (already applied to the DB by the caller, exactly like
+  // every other optimistic mutation in this file) behind a work-item-expansion confirmation.
+  // No expansion needed → push immediately, unchanged from before. Expansion needed → ask;
+  // "확장" applies the work item patch(es) and pushes a combined history entry; "취소" undoes
+  // the assignment change via asgnEntry.undo() (nothing pushed — there's nothing to redo).
+  function gateWithExpansionConfirm(
+    wiExpItems: { kind: string; work_item_id: string | null | undefined; newStart: string; newEnd: string }[],
+    asgnEntry: HistoryEntry,
+    label: string,
+    onDone?: () => void,   // called once fully finalized (immediately, or after confirm) — NOT on cancel
+  ) {
+    const expansions = computeWIExpansions(wiExpItems, workItemMap)
+    if (expansions.length === 0) {
+      push(asgnEntry)
+      onDone?.()
+      return
     }
-    return entries
+    setPendingExpand({
+      expansions,
+      onConfirm: () => {
+        const wiExps = applyWIExpansions(expansions)
+        push(combine(label, asgnEntry, ...wiExps))
+        setPendingExpand(null)
+        onDone?.()
+      },
+      onCancel: () => {
+        asgnEntry.undo().catch(e => window.alert(`되돌리기 실패: ${e instanceof Error ? e.message : '서버 오류'}`))
+        setPendingExpand(null)
+      },
+    })
   }
 
   // ─── Per-row grid content renderer ────────────────────────────────────────
@@ -3275,12 +3366,20 @@ export default function TimelineView() {
         assignments={assignments}
         canEditPipeline={canEditPipeline}
         onClose={closeModal}
-        onWorkItemExpand={(wiId, newStart, newEnd) => {
-          // E-5: modal create/edit path — fire expansion and return HistoryEntry for bundling
-          const exps = buildWIExpansions([{ kind: 'work', work_item_id: wiId, newStart, newEnd }])
-          return exps[0] ?? null
+        onWorkItemExpandConfirm={(wiId, newStart, newEnd, asgnEntry, label, onDone) => {
+          // E-5: modal create/edit/conflict-exclude path — same confirm gate as canvas drag/resize
+          gateWithExpansionConfirm([{ kind: 'work', work_item_id: wiId, newStart, newEnd }], asgnEntry, label, onDone)
         }}
       />
+
+      {/* ── E-5 (v2.116): work item expansion confirmation ── */}
+      {pendingExpand && (
+        <WorkItemExpandConfirmModal
+          expansions={pendingExpand.expansions}
+          onConfirm={pendingExpand.onConfirm}
+          onCancel={pendingExpand.onCancel}
+        />
+      )}
 
       {/* ── Work item detail modal (§5.7) ── */}
       {detailWorkItem && (() => {
@@ -3418,7 +3517,7 @@ interface GridRowProps {
   virtualLeaveBlocks?: Array<{ start: number; end: number }>
   onUpdate:       (id: string, patch: { start: string; end_date: string }, dragKind?: 'move' | 'resize-left' | 'resize-right') => void
   onUpdateWI:     (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
-  onOpenCreate:   (row: RowData, startNum: number, endNum: number) => void
+  onOpenCreate:   (row: RowData, startNum: number, endNum: number, datesLocked?: boolean) => void
   onOpenEdit:     (a: Assignment) => void
   onDropPerson:    (personId: string, row: RowData) => void
   onOpenDetail?:   (wi: WorkItem) => void
@@ -3519,7 +3618,8 @@ function GridRow({
     const en  = Math.max(createRef.current.anchor, day)
     createRef.current = null
     setGhost(null)
-    onOpenCreate(row, s, en)
+    // E-7: this period was deliberately drag-selected — keep it even after a work item is picked
+    onOpenCreate(row, s, en, true)
   }
 
   function handleDblClick(e: ReactMouseEvent) {

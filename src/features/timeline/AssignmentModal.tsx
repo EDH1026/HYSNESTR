@@ -149,12 +149,19 @@ interface Props {
   canEditPipeline: boolean   // hides pipeline items in selector when false
   readOnly?:       boolean   // true → view only (no save button)
   onClose:         () => void
-  // E-5: called after save when assignment is kind=work; returns HistoryEntry or null
-  onWorkItemExpand?: (wiId: string, newStart: string, newEnd: string) => HistoryEntry | null
+  // E-5 (v2.116): asgnEntry's mutation(s) are ALREADY applied when this fires. If the period
+  // falls inside the work item's current range, the caller pushes asgnEntry and calls onDone
+  // immediately. If it falls outside, the caller asks the user to confirm expanding the work
+  // item: accept → expands + pushes a combined entry + calls onDone; cancel → undoes asgnEntry
+  // and does NOT call onDone (the modal is expected to stay open so dates can be adjusted).
+  onWorkItemExpandConfirm?: (
+    wiId: string, newStart: string, newEnd: string,
+    asgnEntry: HistoryEntry, label: string, onDone: () => void,
+  ) => void
 }
 
 export default function AssignmentModal({
-  state, people, workItems, accruals, assignments, canEditPipeline, readOnly = false, onClose, onWorkItemExpand,
+  state, people, workItems, accruals, assignments, canEditPipeline, readOnly = false, onClose, onWorkItemExpandConfirm,
 }: Props) {
   const create = useCreateAssignment()
   const excludeConflicts = useCreateAssignmentExcludingConflicts()
@@ -216,7 +223,8 @@ export default function AssignmentModal({
   useEffect(() => {
     if (!state.open || state.mode !== 'create') return
     setForm(blankForm())
-    setDatesLocked(false)
+    // E-7: a drag-selected (or duplicated) period must survive picking a work item afterward
+    setDatesLocked(!!state.prefill.datesLocked)
     setErr(null)
     setConflict(null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -350,23 +358,29 @@ export default function AssignmentModal({
     await submitCreateOrUpdate(base)
   }
 
+  // E-5 (v2.116): asgnEntry's mutation has already succeeded. If this is a work assignment,
+  // hand off to the parent's confirm gate (no expansion needed → pushes + onDone immediately;
+  // out of range → asks the user; cancel undoes asgnEntry and leaves this modal open, i.e.
+  // onDone is intentionally NOT called in that branch). Otherwise push + finish right away.
+  function finalizeWithExpansion(base: CreateAssignmentInput, asgnEnt: HistoryEntry, label: string, onDone: () => void) {
+    if (base.kind === 'work' && base.work_item_id && onWorkItemExpandConfirm) {
+      onWorkItemExpandConfirm(base.work_item_id, base.start, base.end_date, asgnEnt, label, onDone)
+    } else {
+      push(asgnEnt)
+      onDone()
+    }
+  }
+
   /** Normal single-record create/update path (no conflict, or Partner overlapping anyway). */
   async function submitCreateOrUpdate(base: CreateAssignmentInput) {
     try {
-      // E-5: compute work item expansion (fires mutation inside callback, returns HistoryEntry)
-      const wiEnt = base.kind === 'work' && base.work_item_id
-        ? onWorkItemExpand?.(base.work_item_id, base.start, base.end_date) ?? null
-        : null
       if (state.mode === 'create') {
         const created = await create.mutateAsync(base)
-        const asgnEnt = makeAssignmentCreate(created)
-        push(wiEnt ? combine('배정 생성', asgnEnt, wiEnt) : asgnEnt)
+        finalizeWithExpansion(base, makeAssignmentCreate(created), '배정 생성', onClose)
       } else if (state.editTarget) {
         await update.mutateAsync({ id: state.editTarget.id, ...base })
-        const asgnEnt = makeAssignmentModalEdit(state.editTarget, base)
-        push(wiEnt ? combine('배정 수정', asgnEnt, wiEnt) : asgnEnt)
+        finalizeWithExpansion(base, makeAssignmentModalEdit(state.editTarget, base), '배정 수정', onClose)
       }
-      onClose()
     } catch (err) {
       setErr(err instanceof Error ? err.message : 'Save failed')
     }
@@ -377,16 +391,19 @@ export default function AssignmentModal({
     if (!conflict) return
     try {
       const createdList = await excludeConflicts.mutateAsync(conflict.base)
-      let wiEnt: HistoryEntry | null = null
+      const combinedEnt = combine('배정 생성 (충돌 제외)', ...createdList.map(makeAssignmentCreate))
+      const onDone = () => { setConflict(null); onClose() }
       if (conflict.base.kind === 'work' && conflict.base.work_item_id && createdList.length > 0) {
         const minStart = createdList.reduce((m, c) => (c.start < m ? c.start : m), createdList[0].start)
         const maxEnd   = createdList.reduce((m, c) => (c.end_date > m ? c.end_date : m), createdList[0].end_date)
-        wiEnt = onWorkItemExpand?.(conflict.base.work_item_id, minStart, maxEnd) ?? null
+        finalizeWithExpansion(
+          { ...conflict.base, start: minStart, end_date: maxEnd },
+          combinedEnt, '배정 생성 (충돌 제외)', onDone,
+        )
+      } else {
+        push(combinedEnt)
+        onDone()
       }
-      const asgnEntries = createdList.map(makeAssignmentCreate)
-      push(combine('배정 생성 (충돌 제외)', ...asgnEntries, ...(wiEnt ? [wiEnt] : [])))
-      setConflict(null)
-      onClose()
     } catch (err) {
       setErr(err instanceof Error ? err.message : 'Save failed')
       setConflict(null)

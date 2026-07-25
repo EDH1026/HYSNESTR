@@ -22,6 +22,10 @@ export interface ModalState {
     startNum?:           number
     endNum?:             number
     lastProjectEndNum?:  number   // for '종료 후 잔여 소진' auto-date
+    // E-7: true → the caller already picked an explicit period (drag, duplicate) and it
+    // must survive selecting a work item afterward. false/undefined → the usual "no dates
+    // chosen yet, guess from the work item once picked" behavior.
+    datesLocked?:        boolean
   }
   editTarget?: Assignment
 }
