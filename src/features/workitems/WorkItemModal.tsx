@@ -3,11 +3,15 @@ import { Loader2, Trash2, X as XIcon, LockKeyhole } from 'lucide-react'
 import Modal from '@/components/Modal'
 import WorkItemDeleteConfirmModal from './WorkItemDeleteConfirmModal'
 import { useCreateWorkItem, useUpdateWorkItem, useDeleteWorkItem } from './hooks'
-import { useAssignmentsByWorkItem } from '@/features/timeline/hooks'
+import { useAssignmentsByWorkItem, useCreateAssignment, useDeleteAssignment } from '@/features/timeline/hooks'
 import { useAllPeople } from '@/features/people/hooks'
 import { useHistory } from '@/lib/history'
-import { makeWorkItemCreate, makeWorkItemUpdate, makeWorkItemDelete } from '@/lib/historyOps'
-import type { WorkItem, WorkItemType } from '@/types'
+import type { HistoryEntry } from '@/lib/history'
+import {
+  makeWorkItemCreate, makeWorkItemUpdate, makeWorkItemDelete,
+  makeAssignmentCreate, makeAssignmentDelete, combine,
+} from '@/lib/historyOps'
+import type { WorkItem, WorkItemType, Assignment } from '@/types'
 
 const WI_TYPES: { value: WorkItemType; label: string }[] = [
   { value: 'project',  label: 'Project'  },
@@ -52,11 +56,35 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
     status:             (workItem?.status ?? workItem?.project_status ?? 'open') as 'open' | 'closed',
     confidential:        workItem?.confidential ?? false,
   })
-  // TSG-15 / W-3: proposal NBD 자동 채움
+  // TSG-15 / W-3: proposal 담당 파트너 — 실제 assignment(kind='work')에 연결.
+  // resolveTimesheetCode.ts는 engagement_number가 아니라 이 assignment를 통해 NBD 코드를 조회한다.
   const { data: allPeople = [] } = useAllPeople()
   const partners = useMemo(() => allPeople.filter(p => p.rank === 'Partner'), [allPeople])
-  const [proposalPartner, setProposalPartner] = useState('')
-  const autoFilledCode = useRef<string | null>(null)
+  const partnerIds = useMemo(() => new Set(partners.map(p => p.id)), [partners])
+
+  // 기존 proposal: 실제 배정에서 담당 파트너 목록을 읽는다.
+  const { data: waAssignments = [] } = useAssignmentsByWorkItem(isEdit ? workItem!.id : undefined)
+  const assignedPartners = useMemo(
+    () => waAssignments.filter(a => a.kind === 'work' && partnerIds.has(a.person_id)),
+    [waAssignments, partnerIds],
+  )
+  // 신규 proposal: work_item_id가 생기기 전이므로 선택을 로컬에 보류했다가 생성 성공 시 배정한다.
+  const [pendingPartnerIds, setPendingPartnerIds] = useState<string[]>([])
+  const createAssignment = useCreateAssignment()
+  const deleteAssignment = useDeleteAssignment()
+  const [addPartnerSel, setAddPartnerSel] = useState('')
+
+  const unassignedPartnerCandidates = useMemo(() => {
+    const already = new Set(isEdit ? assignedPartners.map(a => a.person_id) : pendingPartnerIds)
+    return partners.filter(p => !already.has(p.id))
+  }, [partners, isEdit, assignedPartners, pendingPartnerIds])
+
+  const partnerChips = useMemo(
+    () => isEdit
+      ? assignedPartners.map(a => ({ key: a.id, personId: a.person_id, assignment: a as Assignment | null }))
+      : pendingPartnerIds.map(id => ({ key: id, personId: id, assignment: null as Assignment | null })),
+    [isEdit, assignedPartners, pendingPartnerIds],
+  )
 
   const [hashInput, setHashInput] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -73,17 +101,38 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
     return v && !/^(?:E-\d{8}|C\d{6}[A-Z]{2}|I-\d{8})$/.test(v) ? '형식 권장: E-00000000, C000000AA, 또는 I-00000000' : null
   }, [form.engagement_number, form.type])
 
-  // ── TSG-15: Partner NBD 자동 채움 ─────────────────────────
-  function handlePartnerSelect(partnerId: string) {
-    setProposalPartner(partnerId)
+  // ── TSG-15: 담당 파트너 추가/제거 → assignment(kind='work') 생성/삭제 ──
+  async function handleAddPartner(partnerId: string) {
+    setAddPartnerSel('')
     if (!partnerId) return
-    const partner = allPeople.find(p => p.id === partnerId)
-    const nbdCode = partner?.nbd_code ?? ''
-    // 필드가 비어 있거나 이전 자동 채움 값과 같을 때만 덮어씀
-    if (!form.engagement_number || form.engagement_number === autoFilledCode.current) {
-      setForm(f => ({ ...f, engagement_number: nbdCode }))
-      autoFilledCode.current = nbdCode
+    if (isEdit) {
+      const created = await createAssignment.mutateAsync({
+        person_id:     partnerId,
+        kind:          'work',
+        work_item_id:  workItem!.id,
+        weekend_dates: [],
+        leave_type:    null,
+        start:         form.start,
+        end_date:      form.end_date,
+        note:          null,
+        daily_hours:   null,
+      })
+      push(makeAssignmentCreate(created))
+    } else {
+      setPendingPartnerIds(ids => [...ids, partnerId])
     }
+  }
+
+  async function handleRemovePartner(a: Assignment) {
+    // 이 assignment가 daily_hours 등 실제 배정 데이터를 담고 있을 수 있으므로
+    // 다른 배정 삭제(AssignmentModal)와 동일하게 확인을 거친다.
+    if (!confirm('이 담당 파트너 배정을 삭제할까요?')) return
+    await deleteAssignment.mutateAsync(a.id)
+    push(makeAssignmentDelete(a))
+  }
+
+  function handleRemovePendingPartner(partnerId: string) {
+    setPendingPartnerIds(ids => ids.filter(id => id !== partnerId))
   }
 
   // ── Hashtag helpers ────────────────────────────────────────
@@ -152,7 +201,25 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
         push(makeWorkItemUpdate(workItem, payload))
       } else {
         const created = await create.mutateAsync(payload as any)
-        push(makeWorkItemCreate(created))
+        // TSG-15: 신규 proposal 생성 시 보류해둔 담당 파트너 선택을 실제 assignment로 확정한다.
+        const partnerEntries: HistoryEntry[] = []
+        for (const partnerId of pendingPartnerIds) {
+          const asgn = await createAssignment.mutateAsync({
+            person_id:     partnerId,
+            kind:          'work',
+            work_item_id:  created.id,
+            weekend_dates: [],
+            leave_type:    null,
+            start:         created.start,
+            end_date:      created.end_date,
+            note:          null,
+            daily_hours:   null,
+          })
+          partnerEntries.push(makeAssignmentCreate(asgn))
+        }
+        push(partnerEntries.length
+          ? combine(`작업항목 생성 "${created.name}"`, makeWorkItemCreate(created), ...partnerEntries)
+          : makeWorkItemCreate(created))
       }
       onClose()
     } catch (err) {
@@ -300,25 +367,47 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
           </div>
         </div>
 
-        {/* Proposal: 담당 파트너 → NBD 자동 채움 (TSG-15 / W-3) */}
+        {/* Proposal: 담당 파트너 (TSG-15 / W-3) — assignment(kind='work')로 저장, 타임시트 NBD 코드의 원천 */}
         {form.type === 'proposal' && !readOnly && (
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-700">
               담당 파트너
-              <span className="ml-1 text-[10px] text-muted">선택 시 Engagement No.에 NBD 코드 자동 채움</span>
+              <span className="ml-1 text-[10px] text-muted">타임시트 생성 시 이 배정으로 NBD 코드를 조회함</span>
             </label>
-            <select
-              className="input"
-              value={proposalPartner}
-              onChange={e => handlePartnerSelect(e.target.value)}
-            >
-              <option value="">— 선택 안 함 —</option>
-              {partners.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.name}{p.nbd_code ? ` (${p.nbd_code})` : ''}
-                </option>
-              ))}
-            </select>
+            <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-white p-2 min-h-[38px]">
+              {partnerChips.map(chip => {
+                const p = partners.find(pp => pp.id === chip.personId)
+                return (
+                  <span
+                    key={chip.key}
+                    className="inline-flex items-center gap-1 rounded-full bg-brand-100 text-brand-700 px-2 py-0.5 text-xs font-medium"
+                  >
+                    {p?.name ?? '(알 수 없음)'}{p?.nbd_code ? ` (${p.nbd_code})` : ''}
+                    <button
+                      type="button"
+                      onClick={() => chip.assignment ? handleRemovePartner(chip.assignment) : handleRemovePendingPartner(chip.personId)}
+                      className="hover:text-brand-900 leading-none"
+                    >
+                      <XIcon size={10} />
+                    </button>
+                  </span>
+                )
+              })}
+              {unassignedPartnerCandidates.length > 0 && (
+                <select
+                  className="border-none bg-transparent text-xs text-gray-500 focus:outline-none"
+                  value={addPartnerSel}
+                  onChange={e => handleAddPartner(e.target.value)}
+                >
+                  <option value="">+ 담당 파트너 추가</option>
+                  {unassignedPartnerCandidates.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.nbd_code ? ` (${p.nbd_code})` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
           </div>
         )}
 
