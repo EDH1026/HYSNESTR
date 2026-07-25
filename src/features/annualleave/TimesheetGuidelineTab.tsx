@@ -1994,14 +1994,15 @@ export default function TimesheetGuidelineTab() {
                                   {codeRows.map(row => (
                                     <tr key={row.code} className={`${zebraRow} border-b border-border/20 hover:brightness-[0.97]`}>
                                       <td
-                                        className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20`}
-                                        title={row.detail ? `${row.code} ${row.detail}` : undefined}
+                                        className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20 align-top`}
                                       >
-                                        <span className="flex items-center gap-1">
-                                          <span className="truncate">{row.code}</span>
+                                        {/* TSG-17⑤: 병기 정보는 숨김 UI(툴팁 등) 없이 항상 그대로 노출 — 좁으면 줄바꿈 */}
+                                        <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                                          <span className="break-words">{row.code}</span>
+                                          {row.detail && <span className="font-sans text-[9px] text-muted break-words">{row.detail}</span>}
                                           {row.provisional && <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" />}
                                           {row.isManual && <span className="text-[9px] bg-purple-100 text-purple-700 rounded px-1">관리자</span>}
-                                        </span>
+                                        </div>
                                       </td>
                                       {week.columns.map(col => renderCell(person, col, row.code, row.cells.get(col.date), zebraRow))}
                                     </tr>
@@ -2088,14 +2089,15 @@ export default function TimesheetGuidelineTab() {
                             {codeRows.map(row => (
                               <tr key={row.code} className={`${zebraRow} border-b border-border/20 hover:brightness-[0.97]`}>
                                 <td
-                                  className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20`}
-                                  title={row.detail ? `${row.code} ${row.detail}` : undefined}
+                                  className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20 align-top`}
                                 >
-                                  <span className="flex items-center gap-1">
-                                    <span className="truncate">{row.code}</span>
+                                  {/* TSG-17⑤: 병기 정보는 숨김 UI(툴팁 등) 없이 항상 그대로 노출 — 좁으면 줄바꿈 */}
+                                  <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
+                                    <span className="break-words">{row.code}</span>
+                                    {row.detail && <span className="font-sans text-[9px] text-muted break-words">{row.detail}</span>}
                                     {row.provisional && <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" />}
                                     {row.isManual && <span className="text-[9px] bg-purple-100 text-purple-700 rounded px-1">관리자</span>}
-                                  </span>
+                                  </div>
                                 </td>
                                 {displayAllCols.map(col => renderCell(person, col, row.code, row.cells.get(col.date), zebraRow))}
                               </tr>

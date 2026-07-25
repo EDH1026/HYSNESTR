@@ -198,6 +198,37 @@ describe('TSG-17 코드 오기 방지용 식별 정보 병기 (PRD v2.115)', () 
     expect(resolveTimesheetCode(p, DATE, ctx)).toEqual([{ code: '유급휴가' }])
   })
 
+  it('③ 특별휴가는 비고(note)가 있으면 유형명 뒤에 괄호로 병기, 없으면 유형명만', () => {
+    const p = person({ rank: 'Staff' })
+    const withNote = assignment({ kind: 'leave', leave_type: '특별휴가', note: '예비군 훈련' })
+    expect(resolveTimesheetCode(p, DATE, ctxFor(p, [withNote], []))).toEqual([{ code: '특별휴가(예비군 훈련)' }])
+
+    const noNote = assignment({ kind: 'leave', leave_type: '특별휴가', note: null })
+    expect(resolveTimesheetCode(p, DATE, ctxFor(p, [noNote], []))).toEqual([{ code: '특별휴가' }])
+  })
+
+  it('① 미발급 대체 코드(temp_engagement_code)는 detail 끝에 "*대체"가 붙고, ' +
+     '정식 코드가 있으면 붙지 않는다', () => {
+    const p = person({ rank: 'Staff' })
+    const tempOnly = workItem({
+      engagement_number: null, temp_engagement_code: 'TEMP0007',
+      client: '삼성전자', name: 'TV OS 경쟁사 조사',
+    })
+    const rTemp = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [tempOnly]))
+    expect(rTemp).toEqual([{
+      code: 'TEMP0007', detail: '[삼성전자]TV OS 경쟁사 조사 *대체', provisional: true,
+    }])
+
+    const official = workItem({
+      engagement_number: 'E-00012345', temp_engagement_code: 'TEMP0007',
+      client: '삼성전자', name: 'TV OS 경쟁사 조사',
+    })
+    const rOfficial = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [official]))
+    expect(rOfficial).toEqual([{
+      code: 'E-00012345', detail: '[삼성전자]TV OS 경쟁사 조사',
+    }])
+  })
+
   it('④ 휴일/unassigned는 병기 없이 기존처럼 표시된다', () => {
     const p = person({ rank: 'Staff' })
     const ctx = ctxFor(p, [], [])

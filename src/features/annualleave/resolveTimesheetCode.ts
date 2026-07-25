@@ -7,13 +7,14 @@
  * 3. 주말/휴일대체 사용일 → "유급휴가" (TSG-17③, v2.115 — 원천 코드는 더 이상 표시하지 않는다.
  *    LV-8 FIFO 차감 원천 자체는 ledger.ts/computeLedger에서 그대로 계산·보존되며 이 표시
  *    단순화와 무관하다)
- * 4. 특별휴가 → "특별휴가"
+ * 4. 특별휴가 → "특별휴가", assignment.note가 있으면 "특별휴가(note)" (TSG-17③, v2.115)
  * 5. 프로젝트휴가·포상·지연보상·지정휴가 → A vs S 비교 (AL-7 ②③④ 재사용)
  *    A≥S → "유급휴가" (TSG-17③). A<S → 가장 최근 engagement code(①과 동일하게 detail 병기)
  * 6. 프로젝트 배정 → engagement_number (없으면 provisional flag)
  *    Partner + 다중 프로젝트 배정: daily_hours 기준 분할 (TSG-14, PRD v2.78)
  *    engagement_code_splits 설정 시: 그 project 시간을 코드별 비율로 재분할 (W-10, PRD v2.114)
- *    코드 오기 방지용 [클라이언트]작업항목명을 detail로 병기 (TSG-17①, v2.115)
+ *    코드 오기 방지용 [클라이언트]작업항목명을 detail로 병기, temp_engagement_code(대체 코드)면
+ *    끝에 "*대체" 추가 (TSG-17①, v2.115) — 매트릭스·HTML 모두 항상 노출(숨김 UI 없음)
  * 7. 제안 배정 → 배정된 Partner의 nbd_code, [담당 파트너명]을 detail로 병기 (TSG-17②, v2.115)
  * 8. 그 외 → "unassigned"
  *
@@ -83,9 +84,10 @@ export function resolveTimesheetCode(
     return [{ code: '유급휴가' }]
   }
 
-  // Priority 4: 특별휴가
-  if (onDate.some(a => a.kind === 'leave' && a.leave_type === '특별휴가')) {
-    return [{ code: '특별휴가' }]
+  // Priority 4: 특별휴가 — TSG-17③: 비고(note)가 있으면 유형명 뒤에 괄호로 병기.
+  const specialLeave = onDate.find(a => a.kind === 'leave' && a.leave_type === '특별휴가')
+  if (specialLeave) {
+    return [{ code: specialLeave.note ? `특별휴가(${specialLeave.note})` : '특별휴가' }]
   }
 
   // Priority 5: vacation leave types — compare A (statutory) vs S (cumulative ②③④)
@@ -139,7 +141,7 @@ export function resolveTimesheetCode(
         return splitByCodeRatio(8, wi.engagement_code_splits).map(r => ({ ...r, detail: projectDetail(wi) }))
       }
       if (wi.engagement_number)    return [{ code: wi.engagement_number, detail: projectDetail(wi) }]
-      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, detail: projectDetail(wi), provisional: true }]
+      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, detail: projectDetail(wi, true), provisional: true }]
       return [{ code: '(코드 미정)', provisional: true }]
     }
 
@@ -154,8 +156,9 @@ export function resolveTimesheetCode(
       if (wi.engagement_code_splits?.length) {
         results.push(...splitByCodeRatio(wa.daily_hours!, wi.engagement_code_splits).map(r => ({ ...r, detail: projectDetail(wi) })))
       } else {
-        const code = wi.engagement_number ?? (wi.temp_engagement_code ?? '(코드 미정)')
-        const detail = (wi.engagement_number || wi.temp_engagement_code) ? projectDetail(wi) : undefined
+        const code   = wi.engagement_number ?? (wi.temp_engagement_code ?? '(코드 미정)')
+        const isTemp = !wi.engagement_number && !!wi.temp_engagement_code
+        const detail = (wi.engagement_number || wi.temp_engagement_code) ? projectDetail(wi, isTemp) : undefined
         results.push({ code, hours: wa.daily_hours!, provisional: wi.engagement_number ? undefined : true, detail })
       }
       totalH += wa.daily_hours!
@@ -178,7 +181,7 @@ export function resolveTimesheetCode(
         return splitByCodeRatio(workAsgn.daily_hours ?? 8, wi.engagement_code_splits).map(r => ({ ...r, detail: projectDetail(wi) }))
       }
       if (wi.engagement_number)    return [{ code: wi.engagement_number, detail: projectDetail(wi) }]
-      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, detail: projectDetail(wi), provisional: true }]
+      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, detail: projectDetail(wi, true), provisional: true }]
       return [{ code: '(코드 미정)', provisional: true }]
     }
     if (wi?.type === 'proposal') {
@@ -210,9 +213,15 @@ export function resolveTimesheetCode(
 
 // ── Internal helpers ──────────────────────────────────────────
 
-/** TSG-17①: project 코드 오기 방지용 식별 정보 — "[클라이언트]작업항목명". client가 없으면 제목만. */
-function projectDetail(wi: WorkItem): string {
-  return wi.client ? `[${wi.client}]${wi.name}` : wi.name
+/**
+ * TSG-17①: project 코드 오기 방지용 식별 정보 — "[클라이언트]작업항목명"(client 없으면 제목만).
+ * isTemp=true(정식 engagement_number가 아니라 TSG-3③ 대체 코드 temp_engagement_code)면
+ * 끝에 "*대체"를 추가로 붙인다 — 정식 코드가 발급되면 호출부가 engagement_number를 쓰게 되므로
+ * 이 마커도 자연히 사라진다.
+ */
+function projectDetail(wi: WorkItem, isTemp = false): string {
+  const base = wi.client ? `[${wi.client}]${wi.name}` : wi.name
+  return isTemp ? `${base} *대체` : base
 }
 
 /**
