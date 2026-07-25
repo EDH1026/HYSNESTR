@@ -54,20 +54,20 @@ function ctxFor(p: Person, assignments: Assignment[], workItems: WorkItem[], all
 const DATE = '2026-03-02' // a Monday, not a holiday
 
 describe('W-10 engagement_code_splits — non-Partner project path (TSG-1⑥)', () => {
-  it('regression: no splits → single code, full day (hours undefined)', () => {
+  it('regression: no splits → single code, full day (hours undefined), no client → no detail', () => {
     const p = person({ rank: 'Staff' })
     const wi = workItem({ engagement_code_splits: null })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [wi]))
-    expect(results).toEqual([{ code: 'E-00000001', detail: 'Test Project' }])
+    expect(results).toEqual([{ code: 'E-00000001' }])
   })
 
-  it('splits 75/25 on an 8h day → 6h + 2h, exact sum', () => {
+  it('splits 75/25 on an 8h day → 6h + 2h, exact sum, client detail on every split row', () => {
     const p = person({ rank: 'Staff' })
-    const wi = workItem({ engagement_code_splits: [{ code: 'A', percent: 75 }, { code: 'B', percent: 25 }] })
+    const wi = workItem({ client: '삼성전자', engagement_code_splits: [{ code: 'A', percent: 75 }, { code: 'B', percent: 25 }] })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [wi]))
     expect(results).toEqual([
-      { code: 'A', hours: 6, detail: 'Test Project' },
-      { code: 'B', hours: 2, detail: 'Test Project' },
+      { code: 'A', hours: 6, detail: '삼성전자' },
+      { code: 'B', hours: 2, detail: '삼성전자' },
     ])
     expect(results.reduce((s, r) => s + (r.hours ?? 0), 0)).toBe(8)
   })
@@ -77,8 +77,8 @@ describe('W-10 engagement_code_splits — non-Partner project path (TSG-1⑥)', 
     const wi = workItem({ engagement_code_splits: [{ code: 'A', percent: 75 }, { code: 'B', percent: 25 }] })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment({ daily_hours: 5 })], [wi]))
     expect(results).toEqual([
-      { code: 'A', hours: 3.75, detail: 'Test Project' },
-      { code: 'B', hours: 1.25, detail: 'Test Project' },
+      { code: 'A', hours: 3.75 },
+      { code: 'B', hours: 1.25 },
     ])
     expect(results.reduce((s, r) => s + (r.hours ?? 0), 0)).toBe(5)
   })
@@ -104,7 +104,7 @@ describe('W-10 engagement_code_splits — Partner multi-project path (TSG-14②)
     const wi = workItem({ engagement_code_splits: null })
     const asgn = assignment({ id: 'a1', person_id: 'partner1' })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
-    expect(results).toEqual([{ code: 'E-00000001', detail: 'Test Project' }])
+    expect(results).toEqual([{ code: 'E-00000001' }])
   })
 
   it('Partner, single project, no explicit daily_hours, splits set → full 8h split', () => {
@@ -113,8 +113,8 @@ describe('W-10 engagement_code_splits — Partner multi-project path (TSG-14②)
     const asgn = assignment({ id: 'a1', person_id: 'partner1' })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
     expect(results).toEqual([
-      { code: 'A', hours: 6, detail: 'Test Project' },
-      { code: 'B', hours: 2, detail: 'Test Project' },
+      { code: 'A', hours: 6 },
+      { code: 'B', hours: 2 },
     ])
   })
 
@@ -124,8 +124,8 @@ describe('W-10 engagement_code_splits — Partner multi-project path (TSG-14②)
     const asgn = assignment({ id: 'a1', person_id: 'partner1', daily_hours: 5 })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
     expect(results).toEqual([
-      { code: 'A', hours: 3.75, detail: 'Test Project' },
-      { code: 'B', hours: 1.25, detail: 'Test Project' },
+      { code: 'A', hours: 3.75 },
+      { code: 'B', hours: 1.25 },
       { code: 'NBD-1', hours: 3, provisional: undefined },
     ])
     expect(results.reduce((s, r) => s + (r.hours ?? 0), 0)).toBe(8)
@@ -137,25 +137,25 @@ describe('W-10 engagement_code_splits — Partner multi-project path (TSG-14②)
     const asgn = assignment({ id: 'a1', person_id: 'partner1', daily_hours: 5 })
     const results = resolveTimesheetCode(p, DATE, ctxFor(p, [asgn], [wi]))
     expect(results).toEqual([
-      { code: 'E-00000001', hours: 5, provisional: undefined, detail: 'Test Project' },
+      { code: 'E-00000001', hours: 5, provisional: undefined },
       { code: 'NBD-1', hours: 3, provisional: undefined },
     ])
   })
 })
 
-describe('TSG-17 코드 오기 방지용 식별 정보 병기 (PRD v2.115)', () => {
-  it('① project code: detail은 [client]작업항목명, client 없으면 작업항목명만', () => {
+describe('TSG-17 코드/부가정보 컬럼 분리 (PRD v2.115)', () => {
+  it('① project code: code는 코드값만, detail은 클라이언트명만(작업항목명 없음). client 없으면 detail 없음', () => {
     const p = person({ rank: 'Staff' })
     const withClient = workItem({ client: '삼성전자', name: 'TV OS 경쟁사 조사' })
     const r1 = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [withClient]))
-    expect(r1).toEqual([{ code: 'E-00000001', detail: '[삼성전자]TV OS 경쟁사 조사' }])
+    expect(r1).toEqual([{ code: 'E-00000001', detail: '삼성전자' }])
 
     const noClient = workItem({ client: null, name: 'TV OS 경쟁사 조사' })
     const r2 = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [noClient]))
-    expect(r2).toEqual([{ code: 'E-00000001', detail: 'TV OS 경쟁사 조사' }])
+    expect(r2).toEqual([{ code: 'E-00000001' }])
   })
 
-  it('② proposal NBD code: 복수 파트너면 코드-이름이 정확히 짝지어 병기된다', () => {
+  it('② proposal NBD code: code는 코드값만(콤마 join), detail은 "{파트너명} NBD" 형식만 — 코드 중복 없음', () => {
     const partner1 = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD00123', name: '김재승' })
     const partner2 = person({ id: 'partner2', rank: 'Partner', nbd_code: 'NBD00456', name: '박정인' })
     const staff = person({ id: 'staff1', rank: 'Staff' })
@@ -181,55 +181,55 @@ describe('TSG-17 코드 오기 방지용 식별 정보 병기 (PRD v2.115)', () 
     const results = resolveTimesheetCode(staff, DATE, ctx)
     expect(results).toEqual([{
       code:   'NBD00123, NBD00456',
-      detail: 'NBD00123[김재승], NBD00456[박정인]',
+      detail: '김재승 NBD, 박정인 NBD',
     }])
+    // 코드 값이 detail 안에 다시 등장하지 않아야 한다 (과거 버그: "I-00000000 파트너명" 식 중복)
+    expect(results[0].detail).not.toContain('NBD00123')
+    expect(results[0].detail).not.toContain('NBD00456')
   })
 
-  it('③ 휴가 유형은 코드·detail 없이 단순 라벨만 반환한다', () => {
+  it('③ 무급휴가/유급휴가는 code만, detail 없음', () => {
     const p = person({ rank: 'Staff' })
     const unpaid = assignment({ kind: 'leave', leave_type: '리프레시' })
     expect(resolveTimesheetCode(p, DATE, ctxFor(p, [unpaid], []))).toEqual([{ code: '무급휴가' }])
 
-    const special = assignment({ kind: 'leave', leave_type: '특별휴가' })
-    expect(resolveTimesheetCode(p, DATE, ctxFor(p, [special], []))).toEqual([{ code: '특별휴가' }])
-
     const weekendSub = assignment({ id: 'wsub', kind: 'leave', leave_type: '주말/휴일대체' })
-    const ctx = ctxFor(p, [weekendSub], [])
-    expect(resolveTimesheetCode(p, DATE, ctx)).toEqual([{ code: '유급휴가' }])
+    expect(resolveTimesheetCode(p, DATE, ctxFor(p, [weekendSub], []))).toEqual([{ code: '유급휴가' }])
   })
 
-  it('③ 특별휴가는 비고(note)가 있으면 유형명 뒤에 괄호로 병기, 없으면 유형명만', () => {
+  it('③ 특별휴가는 code가 항상 "특별휴가"이고, 비고(note)는 별도 detail 컬럼에만 담긴다', () => {
     const p = person({ rank: 'Staff' })
     const withNote = assignment({ kind: 'leave', leave_type: '특별휴가', note: '예비군 훈련' })
-    expect(resolveTimesheetCode(p, DATE, ctxFor(p, [withNote], []))).toEqual([{ code: '특별휴가(예비군 훈련)' }])
+    expect(resolveTimesheetCode(p, DATE, ctxFor(p, [withNote], []))).toEqual([{ code: '특별휴가', detail: '예비군 훈련' }])
 
     const noNote = assignment({ kind: 'leave', leave_type: '특별휴가', note: null })
     expect(resolveTimesheetCode(p, DATE, ctxFor(p, [noNote], []))).toEqual([{ code: '특별휴가' }])
   })
 
   it('① 미발급 대체 코드(temp_engagement_code)는 detail 끝에 "*대체"가 붙고, ' +
-     '정식 코드가 있으면 붙지 않는다', () => {
+     '정식 코드가 있으면 붙지 않는다(둘 다 detail은 클라이언트명 기준)', () => {
     const p = person({ rank: 'Staff' })
     const tempOnly = workItem({
       engagement_number: null, temp_engagement_code: 'TEMP0007',
       client: '삼성전자', name: 'TV OS 경쟁사 조사',
     })
     const rTemp = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [tempOnly]))
-    expect(rTemp).toEqual([{
-      code: 'TEMP0007', detail: '[삼성전자]TV OS 경쟁사 조사 *대체', provisional: true,
-    }])
+    expect(rTemp).toEqual([{ code: 'TEMP0007', detail: '삼성전자 *대체', provisional: true }])
+
+    const tempNoClient = workItem({
+      engagement_number: null, temp_engagement_code: 'TEMP0007', client: null,
+    })
+    const rTempNoClient = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [tempNoClient]))
+    expect(rTempNoClient).toEqual([{ code: 'TEMP0007', detail: '*대체', provisional: true }])
 
     const official = workItem({
-      engagement_number: 'E-00012345', temp_engagement_code: 'TEMP0007',
-      client: '삼성전자', name: 'TV OS 경쟁사 조사',
+      engagement_number: 'E-00012345', temp_engagement_code: 'TEMP0007', client: '삼성전자',
     })
     const rOfficial = resolveTimesheetCode(p, DATE, ctxFor(p, [assignment()], [official]))
-    expect(rOfficial).toEqual([{
-      code: 'E-00012345', detail: '[삼성전자]TV OS 경쟁사 조사',
-    }])
+    expect(rOfficial).toEqual([{ code: 'E-00012345', detail: '삼성전자' }])
   })
 
-  it('④ 휴일/unassigned는 병기 없이 기존처럼 표시된다', () => {
+  it('④ 휴일/unassigned는 부가정보 없이 기존처럼 표시된다', () => {
     const p = person({ rank: 'Staff' })
     const ctx = ctxFor(p, [], [])
     expect(resolveTimesheetCode(p, DATE, { ...ctx, isHoliday: () => true })).toEqual([{ code: '휴일' }])

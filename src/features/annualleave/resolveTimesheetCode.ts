@@ -7,16 +7,19 @@
  * 3. 주말/휴일대체 사용일 → "유급휴가" (TSG-17③, v2.115 — 원천 코드는 더 이상 표시하지 않는다.
  *    LV-8 FIFO 차감 원천 자체는 ledger.ts/computeLedger에서 그대로 계산·보존되며 이 표시
  *    단순화와 무관하다)
- * 4. 특별휴가 → "특별휴가", assignment.note가 있으면 "특별휴가(note)" (TSG-17③, v2.115)
+ * 4. 특별휴가 → code: "특별휴가", detail: assignment.note(있으면) (TSG-17③, v2.115)
  * 5. 프로젝트휴가·포상·지연보상·지정휴가 → A vs S 비교 (AL-7 ②③④ 재사용)
  *    A≥S → "유급휴가" (TSG-17③). A<S → 가장 최근 engagement code(①과 동일하게 detail 병기)
- * 6. 프로젝트 배정 → engagement_number (없으면 provisional flag)
+ * 6. 프로젝트 배정 → code: engagement_number(없으면 provisional flag), detail: 클라이언트명만
  *    Partner + 다중 프로젝트 배정: daily_hours 기준 분할 (TSG-14, PRD v2.78)
  *    engagement_code_splits 설정 시: 그 project 시간을 코드별 비율로 재분할 (W-10, PRD v2.114)
- *    코드 오기 방지용 [클라이언트]작업항목명을 detail로 병기, temp_engagement_code(대체 코드)면
- *    끝에 "*대체" 추가 (TSG-17①, v2.115) — 매트릭스·HTML 모두 항상 노출(숨김 UI 없음)
- * 7. 제안 배정 → 배정된 Partner의 nbd_code, [담당 파트너명]을 detail로 병기 (TSG-17②, v2.115)
+ *    temp_engagement_code(대체 코드)면 detail 끝에 "*대체" 추가 (TSG-17①, v2.115)
+ * 7. 제안 배정 → code: 배정된 Partner의 nbd_code(들, 콤마 join), detail: "{파트너명} NBD"(들, 콤마 join)
+ *    — detail에 코드 값을 다시 넣지 않는다 (TSG-17②, v2.115)
  * 8. 그 외 → "unassigned"
+ *
+ * TSG-17: code와 detail은 서로 다른 컬럼에 렌더링되는 별개 값 — 절대 하나의 문자열로 합치지 않는다.
+ * 매트릭스·HTML 모두 항상 노출(숨김 UI 없음).
  *
  * 반환: TimesheetCodeResult[] (항상 배열)
  *   단일 코드면 길이 1, Partner 다중 분할이면 길이 ≥2
@@ -31,7 +34,9 @@ import type { Person, Assignment, WorkItem, AnnualLeaveAdjustment } from '@/type
 
 export interface TimesheetCodeResult {
   code:         string
-  detail?:      string    // TSG-17: 코드 오기 방지용 식별 정보 — [클라이언트]작업항목명 또는 [담당 파트너명]
+  // TSG-17: 코드 컬럼과 분리 표기하는 부가정보 — 클라이언트명(project) / "{파트너명} NBD"(proposal) /
+  // 특별휴가 비고. code 문자열과 절대 합치지 않는다(별도 컬럼에서만 렌더링).
+  detail?:      string
   provisional?: boolean   // "대체 코드(추후 정정)" flag
   hours?:       number    // undefined → caller treats as 8h
 }
@@ -84,10 +89,10 @@ export function resolveTimesheetCode(
     return [{ code: '유급휴가' }]
   }
 
-  // Priority 4: 특별휴가 — TSG-17③: 비고(note)가 있으면 유형명 뒤에 괄호로 병기.
+  // Priority 4: 특별휴가 — TSG-17③: code는 항상 "특별휴가"만, 비고(note)는 부가정보 컬럼(detail)에 분리.
   const specialLeave = onDate.find(a => a.kind === 'leave' && a.leave_type === '특별휴가')
   if (specialLeave) {
-    return [{ code: specialLeave.note ? `특별휴가(${specialLeave.note})` : '특별휴가' }]
+    return [{ code: '특별휴가', detail: specialLeave.note || undefined }]
   }
 
   // Priority 5: vacation leave types — compare A (statutory) vs S (cumulative ②③④)
@@ -185,9 +190,8 @@ export function resolveTimesheetCode(
       return [{ code: '(코드 미정)', provisional: true }]
     }
     if (wi?.type === 'proposal') {
-      // TSG-17②: 담당 파트너별 코드-이름 쌍을 각각 나란히 병기한다 — 코드만 먼저 나열하고
-      // 이름들을 뒤에 뭉뚱그려 붙이지 않는다. code 필드 자체는(스냅샷 dedup 키로도 쓰이므로)
-      // 기존과 동일한 콤마 join 값을 유지하고, 파트너 이름 병기는 detail에만 담는다.
+      // TSG-17②: code 컬럼 = 코드 값만(복수 파트너면 기존처럼 콤마 join). detail 컬럼 = "{파트너명} NBD"
+      // 형식만 — 코드 문자열은 절대 다시 넣지 않는다(과거 detail에 nbd_code를 또 넣던 중복 버그 수정).
       const partners = ctx.allPeople
         .filter(p => p.rank === 'Partner')
         .filter(p =>
@@ -200,7 +204,7 @@ export function resolveTimesheetCode(
       if (partners.length) {
         return [{
           code:   partners.map(p => p.nbd_code).join(', '),
-          detail: partners.map(p => `${p.nbd_code}[${p.name}]`).join(', '),
+          detail: partners.map(p => `${p.name} NBD`).join(', '),
         }]
       }
       return [{ code: '(NBD코드 없음)', provisional: true }]
@@ -214,14 +218,16 @@ export function resolveTimesheetCode(
 // ── Internal helpers ──────────────────────────────────────────
 
 /**
- * TSG-17①: project 코드 오기 방지용 식별 정보 — "[클라이언트]작업항목명"(client 없으면 제목만).
+ * TSG-17①: project 코드의 부가정보(detail) 컬럼 — 클라이언트명만(작업항목명은 넣지 않는다).
  * isTemp=true(정식 engagement_number가 아니라 TSG-3③ 대체 코드 temp_engagement_code)면
  * 끝에 "*대체"를 추가로 붙인다 — 정식 코드가 발급되면 호출부가 engagement_number를 쓰게 되므로
- * 이 마커도 자연히 사라진다.
+ * 이 마커도 자연히 사라진다. 클라이언트도 없고 대체 코드도 아니면 undefined(부가정보 칸 비움).
  */
-function projectDetail(wi: WorkItem, isTemp = false): string {
-  const base = wi.client ? `[${wi.client}]${wi.name}` : wi.name
-  return isTemp ? `${base} *대체` : base
+function projectDetail(wi: WorkItem, isTemp = false): string | undefined {
+  const parts: string[] = []
+  if (wi.client) parts.push(wi.client)
+  if (isTemp) parts.push('*대체')
+  return parts.length ? parts.join(' ') : undefined
 }
 
 /**

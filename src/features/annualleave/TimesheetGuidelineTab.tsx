@@ -36,8 +36,9 @@ const DAY_NAMES = ['월', '화', '수', '목', '금'] as const
 const RANK_ORDER: Record<Rank, number> = { Partner: 0, SM: 1, M: 2, Senior: 3, Staff: 4, Intern: 5 }
 const ZEBRA_ROW = ['bg-white', 'bg-slate-50/60'] as const
 const ZEBRA_HDR = ['bg-slate-100/70', 'bg-slate-200/50'] as const
-const CODE_COL_W = 160
-const DAY_COL_W  = 80
+const CODE_COL_W   = 160
+const DETAIL_COL_W = 130   // TSG-17: 코드 옆 부가정보(클라이언트명/파트너명 NBD/특별휴가 비고) 전용 컬럼
+const DAY_COL_W    = 80
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -307,7 +308,7 @@ function generateGuidelineHtml(
   const generated       = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
   const sorted          = sortPeople(people)
   const colW            = `width:${DAY_COL_W}px;text-align:center`
-  const tblW            = (nCols: number) => `${CODE_COL_W + nCols * DAY_COL_W}px`
+  const tblW            = (nCols: number) => `${CODE_COL_W + DETAIL_COL_W + nCols * DAY_COL_W}px`
   const latestWeekStart = numToStr(weekStart(dateToNum(todayStr)))
 
   // 전체 변경 건수
@@ -373,16 +374,16 @@ function generateGuidelineHtml(
       const codeRows = buildCodeRows(person.id, week.columns, entries)
       if (codeRows.length === 0) return
       const bg = pi % 2 === 0 ? '' : 'background:#f8fafc'
-      rows.push(`<tr class="person-hdr" style="${bg}"><td colspan="${week.columns.length + 1}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
+      rows.push(`<tr class="person-hdr" style="${bg}"><td colspan="${week.columns.length + 2}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
       for (const row of codeRows) {
         const cells = week.columns.map(col => cellHtml(col, row.cells.get(col.date))).join('')
-        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${row.detail ? ` <span class="code-detail">${escHtml(row.detail)}</span>` : ''}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`)
+        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td><td class="detail-lbl">${row.detail ? escHtml(row.detail) : ''}</td>${cells}</tr>`)
       }
     })
-    if (rows.length === 0) rows.push(`<tr><td colspan="${week.columns.length + 1}" class="empty">해당 항목 없음</td></tr>`)
+    if (rows.length === 0) rows.push(`<tr><td colspan="${week.columns.length + 2}" class="empty">해당 항목 없음</td></tr>`)
     return `<section>
 <div class="sec-hdr" onclick="tog('${sid}')"><span>${escHtml(week.label)}${sectionBadges(wNew, wCorr, wManual, isLatest)}</span><span class="arr" id="a-${sid}">▶</span></div>
-<div class="sec-body closed" id="${sid}"><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
+<div class="sec-body closed" id="${sid}"><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th><th style="min-width:${DETAIL_COL_W}px">부가정보</th>${colHeaders}</tr></thead><tbody>${rows.join('')}</tbody></table></div>
 </section>`
   })
 
@@ -414,9 +415,9 @@ function generateGuidelineHtml(
       ).join('')
       const tableRows = codeRows.map(row => {
         const cells = week.columns.map(col => cellHtml(col, row.cells.get(col.date))).join('')
-        return `<tr><td class="code-lbl">${escHtml(row.code)}${row.detail ? ` <span class="code-detail">${escHtml(row.detail)}</span>` : ''}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`
+        return `<tr><td class="code-lbl">${escHtml(row.code)}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td><td class="detail-lbl">${row.detail ? escHtml(row.detail) : ''}</td>${cells}</tr>`
       }).join('')
-      weekParts.push(`<div class="pw-week"><h4>${escHtml(week.label)}</h4><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${tableRows}</tbody></table></div>`)
+      weekParts.push(`<div class="pw-week"><h4>${escHtml(week.label)}</h4><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th><th style="min-width:${DETAIL_COL_W}px">부가정보</th>${colHeaders}</tr></thead><tbody>${tableRows}</tbody></table></div>`)
     }
     pwSections.push(`<section>
 <div class="sec-hdr" onclick="tog('${sid}')"><span><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span>${sectionBadges(pNew, pCorr, pManual, false)}</span><span class="arr" id="a-${sid}">▶</span></div>
@@ -449,7 +450,7 @@ section{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom
 .person-hdr td{font-size:12px;padding:5px 8px;border-top:2px solid #cbd5e1}
 .rank{font-size:10px;color:#6b7280;font-weight:400}
 .code-lbl{font-family:monospace;font-size:11px;min-width:${CODE_COL_W}px;padding:4px 8px}
-.code-detail{font-family:sans-serif;color:#6b7280;font-weight:400}
+.detail-lbl{font-family:sans-serif;font-size:10px;color:#6b7280;font-weight:400;min-width:${DETAIL_COL_W}px;padding:4px 8px}
 .holiday{background:#f9fafb;color:#9ca3af}
 .empty{color:#94a3b8;text-align:center;padding:12px}
 .pw-week{padding:12px 16px 4px;border-bottom:1px solid #f1f5f9}
@@ -686,6 +687,8 @@ function AddCodeForm({ state, weekCols, onConfirm, onCancel }: {
           onKeyDown={e => { if (e.key === 'Escape') onCancel() }}
         />
       </td>
+      {/* TSG-17: 부가정보 컬럼과 열을 맞추기 위한 빈 셀 — 수동 추가 코드는 부가정보를 입력받지 않는다 */}
+      <td className="sticky bg-purple-50 z-10 border-r border-purple-200" style={{ width: DETAIL_COL_W, left: CODE_COL_W }} />
       {weekCols.map(col => (
         <td key={col.date} className="px-0.5 py-1.5 text-center" style={{ width: DAY_COL_W }}>
           {col.isHoliday ? (
@@ -1939,14 +1942,16 @@ export default function TimesheetGuidelineTab() {
                     {isOpen && (
                       <div className="overflow-x-auto">
                         <table className="border-t border-border"
-                          style={{ tableLayout: 'fixed', width: `${CODE_COL_W + week.columns.length * DAY_COL_W}px` }}>
+                          style={{ tableLayout: 'fixed', width: `${CODE_COL_W + DETAIL_COL_W + week.columns.length * DAY_COL_W}px` }}>
                           <colgroup>
                             <col style={{ width: CODE_COL_W }} />
+                            <col style={{ width: DETAIL_COL_W }} />
                             {week.columns.map(col => <col key={col.date} style={{ width: DAY_COL_W }} />)}
                           </colgroup>
                           <thead>
                             <tr className="bg-surface-50 border-b border-border">
                               <th className="px-3 py-2 text-left text-xs font-medium text-muted sticky left-0 bg-surface-50 z-10">코드</th>
+                              <th className="px-3 py-2 text-left text-xs font-medium text-muted sticky bg-surface-50 z-10" style={{ left: CODE_COL_W }}>부가정보</th>
                               {week.columns.map(col => (
                                 <th key={col.date} className={['py-2 text-center text-xs font-medium', col.isHoliday ? 'text-gray-400 bg-gray-50' : 'text-gray-700'].join(' ')}>
                                   <div>{col.label}</div>
@@ -1966,7 +1971,7 @@ export default function TimesheetGuidelineTab() {
                               return (
                                 <Fragment key={person.id}>
                                   <tr className={`${zebraHdr} border-t-2 border-slate-300/60`}>
-                                    <td colSpan={week.columns.length + 1} className={`px-3 py-1.5 sticky left-0 ${zebraHdr}`}>
+                                    <td colSpan={week.columns.length + 2} className={`px-3 py-1.5 sticky left-0 ${zebraHdr}`}>
                                       <div className="flex items-center gap-2">
                                         <span className="font-semibold text-gray-700 text-xs">{person.name}</span>
                                         <span className="text-[10px] text-muted font-normal">{person.rank}</span>
@@ -1993,16 +1998,16 @@ export default function TimesheetGuidelineTab() {
 
                                   {codeRows.map(row => (
                                     <tr key={row.code} className={`${zebraRow} border-b border-border/20 hover:brightness-[0.97]`}>
-                                      <td
-                                        className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20 align-top`}
-                                      >
-                                        {/* TSG-17⑤: 병기 정보는 숨김 UI(툴팁 등) 없이 항상 그대로 노출 — 좁으면 줄바꿈 */}
+                                      <td className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20 align-top`}>
                                         <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
                                           <span className="break-words">{row.code}</span>
-                                          {row.detail && <span className="font-sans text-[9px] text-muted break-words">{row.detail}</span>}
                                           {row.provisional && <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" />}
                                           {row.isManual && <span className="text-[9px] bg-purple-100 text-purple-700 rounded px-1">관리자</span>}
                                         </div>
+                                      </td>
+                                      {/* TSG-17⑤: 부가정보는 코드와 별도 컬럼, 숨김 UI(툴팁 등) 없이 항상 노출 */}
+                                      <td className={`px-3 py-1.5 font-sans text-[10px] text-muted sticky ${zebraRow} z-10 border-r border-border/20 align-top break-words`} style={{ left: CODE_COL_W }}>
+                                        {row.detail}
                                       </td>
                                       {week.columns.map(col => renderCell(person, col, row.code, row.cells.get(col.date), zebraRow))}
                                     </tr>
@@ -2012,7 +2017,7 @@ export default function TimesheetGuidelineTab() {
                             })}
                             {displayPeople.every(p => buildCodeRows(p.id, week.columns, displayEntries).length === 0) && (
                               <tr>
-                                <td colSpan={week.columns.length + 1} className="px-3 py-4 text-center text-xs text-muted">
+                                <td colSpan={week.columns.length + 2} className="px-3 py-4 text-center text-xs text-muted">
                                   {nameSearch ? '검색 결과 없음' : '해당 주 데이터 없음'}
                                 </td>
                               </tr>
@@ -2058,15 +2063,17 @@ export default function TimesheetGuidelineTab() {
 
                     {isOpen && (
                       <div className="overflow-x-auto border-t border-border">
-                        <table style={{ tableLayout: 'fixed', width: `${CODE_COL_W + displayAllCols.length * DAY_COL_W}px` }}>
+                        <table style={{ tableLayout: 'fixed', width: `${CODE_COL_W + DETAIL_COL_W + displayAllCols.length * DAY_COL_W}px` }}>
                           <colgroup>
                             <col style={{ width: CODE_COL_W }} />
+                            <col style={{ width: DETAIL_COL_W }} />
                             {displayAllCols.map(col => <col key={col.date} style={{ width: DAY_COL_W }} />)}
                           </colgroup>
                           <thead>
                             {/* Week group header */}
                             <tr className="bg-surface-50 border-b border-border/50">
                               <th rowSpan={2} className="px-3 py-2 text-left text-xs font-medium text-muted sticky left-0 bg-surface-50 z-10 align-middle">코드</th>
+                              <th rowSpan={2} className="px-3 py-2 text-left text-xs font-medium text-muted sticky bg-surface-50 z-10 align-middle" style={{ left: CODE_COL_W }}>부가정보</th>
                               {displayWeeks.map(week => (
                                 <th key={week.weekStart} colSpan={week.columns.length}
                                   className="py-1 text-center text-[10px] font-medium text-gray-600 border-l border-border/30">
@@ -2088,16 +2095,16 @@ export default function TimesheetGuidelineTab() {
                           <tbody>
                             {codeRows.map(row => (
                               <tr key={row.code} className={`${zebraRow} border-b border-border/20 hover:brightness-[0.97]`}>
-                                <td
-                                  className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20 align-top`}
-                                >
-                                  {/* TSG-17⑤: 병기 정보는 숨김 UI(툴팁 등) 없이 항상 그대로 노출 — 좁으면 줄바꿈 */}
+                                <td className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20 align-top`}>
                                   <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
                                     <span className="break-words">{row.code}</span>
-                                    {row.detail && <span className="font-sans text-[9px] text-muted break-words">{row.detail}</span>}
                                     {row.provisional && <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" />}
                                     {row.isManual && <span className="text-[9px] bg-purple-100 text-purple-700 rounded px-1">관리자</span>}
                                   </div>
+                                </td>
+                                {/* TSG-17⑤: 부가정보는 코드와 별도 컬럼, 숨김 UI(툴팁 등) 없이 항상 노출 */}
+                                <td className={`px-3 py-1.5 font-sans text-[10px] text-muted sticky ${zebraRow} z-10 border-r border-border/20 align-top break-words`} style={{ left: CODE_COL_W }}>
+                                  {row.detail}
                                 </td>
                                 {displayAllCols.map(col => renderCell(person, col, row.code, row.cells.get(col.date), zebraRow))}
                               </tr>
