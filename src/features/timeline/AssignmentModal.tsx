@@ -211,8 +211,6 @@ export default function AssignmentModal({
 
   const [form, setForm] = useState(blankForm)
   const [err, setErr] = useState<string | null>(null)
-  // Track whether user has manually overridden the auto-filled dates
-  const [datesLocked, setDatesLocked] = useState(false)
   // E-3b: pending conflict confirmation (create mode only)
   const [conflict, setConflict] = useState<ConflictState | null>(null)
 
@@ -223,8 +221,6 @@ export default function AssignmentModal({
   useEffect(() => {
     if (!state.open || state.mode !== 'create') return
     setForm(blankForm())
-    // E-7: a drag-selected (or duplicated) period must survive picking a work item afterward
-    setDatesLocked(!!state.prefill.datesLocked)
     setErr(null)
     setConflict(null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -245,19 +241,20 @@ export default function AssignmentModal({
         note:         a.note          ?? '',
         dailyHours:   a.daily_hours != null ? String(a.daily_hours) : '',
       })
-      setDatesLocked(true)  // edit mode: don't auto-fill dates
     }
     setErr(null)
   }, [state.editTarget, state.mode])
 
-  // Auto-fill dates when a work item is selected (create mode only)
-  useEffect(() => {
-    if (state.mode !== 'create' || datesLocked || form.kind !== 'work' || !form.workItemId) return
+  // E-7 (v2.117): dates are NEVER auto-filled from a work item selection anymore — whatever
+  // is already in the date fields (drag-selected period, duplicated period, or blank) survives
+  // picking/changing a work item. Applying a work item's own period is now an explicit,
+  // one-shot action via the "workitem 설정 기간 적용" button below (not a lock — the user can
+  // still freely edit the dates afterward).
+  function applyWorkItemDates() {
     const wi = workItems.find(w => w.id === form.workItemId)
-    if (wi) {
-      setForm(f => ({ ...f, start: wi.start, end: wi.end_date }))
-    }
-  }, [form.workItemId])  // eslint-disable-line react-hooks/exhaustive-deps
+    if (!wi) return
+    setForm(f => ({ ...f, start: wi.start, end: wi.end_date }))
+  }
 
   // §5.3 #5: auto-set start to next workday after last project end when leave type
   // '종료 후 잔여 소진' is selected and prefill carries lastProjectEndNum
@@ -501,10 +498,7 @@ export default function AssignmentModal({
                 className="input"
                 value={form.workItemId}
                 disabled={effectiveReadOnly || (!!state.prefill.workItemId && !isEdit)}
-                onChange={e => {
-                  setForm(f => ({ ...f, workItemId: e.target.value }))
-                  setDatesLocked(false)   // allow re-fill when user picks new item
-                }}
+                onChange={e => setForm(f => ({ ...f, workItemId: e.target.value }))}
               >
                 <option value="">— select work item —</option>
                 {selectableWorkItems.map(w => (
@@ -515,7 +509,8 @@ export default function AssignmentModal({
               </select>
             </div>
 
-            {/* Dates (auto-filled, editable) */}
+            {/* Dates — never auto-filled; "workitem 설정 기간 적용" is the only way to pull
+                the selected work item's period in, and it's a one-shot fill, not a lock (E-7) */}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-gray-700">Start *</label>
@@ -523,10 +518,7 @@ export default function AssignmentModal({
                   required type="date" className="input"
                   value={form.start}
                   disabled={effectiveReadOnly}
-                  onChange={e => {
-                    setDatesLocked(true)
-                    setForm(f => ({ ...f, start: e.target.value }))
-                  }}
+                  onChange={e => setForm(f => ({ ...f, start: e.target.value }))}
                 />
               </div>
               <div>
@@ -535,13 +527,20 @@ export default function AssignmentModal({
                   required type="date" className="input"
                   value={form.end}
                   disabled={effectiveReadOnly}
-                  onChange={e => {
-                    setDatesLocked(true)
-                    setForm(f => ({ ...f, end: e.target.value }))
-                  }}
+                  onChange={e => setForm(f => ({ ...f, end: e.target.value }))}
                 />
               </div>
             </div>
+            {!effectiveReadOnly && (
+              <button
+                type="button"
+                onClick={applyWorkItemDates}
+                disabled={!form.workItemId}
+                className="btn-secondary text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                workitem 설정 기간 적용
+              </button>
+            )}
 
             {/* Partner 하루 투입 시간 (다중 배정 분할용) */}
             {people.find(p => p.id === form.personId)?.rank === 'Partner' && (

@@ -2310,10 +2310,8 @@ export default function TimelineView() {
   }, [])
 
   // Modal helpers
-  // E-7: datesLocked=true means startNum/endNum came from a deliberate drag-select and must
-  // survive picking a work item afterward (unlike double-click, which stays unlocked).
-  function openCreate(row: RowData, startNum: number, endNum: number, datesLocked = false) {
-    const prefill: ModalState['prefill'] = { startNum, endNum, datesLocked }
+  function openCreate(row: RowData, startNum: number, endNum: number) {
+    const prefill: ModalState['prefill'] = { startNum, endNum }
     if (row.kind === 'person') {
       prefill.personId = row.person.id
       // §5.3 #5: find the most recent project work-assignment end for this person
@@ -2455,7 +2453,6 @@ export default function TimelineView() {
         leaveType:  a.leave_type ?? undefined,
         startNum:   newStart,
         endNum:     newEnd,
-        datesLocked: true,   // same mechanism as E-7 drag: keep the computed shifted period
       },
     })
   }
@@ -3517,7 +3514,7 @@ interface GridRowProps {
   virtualLeaveBlocks?: Array<{ start: number; end: number }>
   onUpdate:       (id: string, patch: { start: string; end_date: string }, dragKind?: 'move' | 'resize-left' | 'resize-right') => void
   onUpdateWI:     (id: string, patch: { start?: string; end_date?: string; main_start?: string | null }) => void
-  onOpenCreate:   (row: RowData, startNum: number, endNum: number, datesLocked?: boolean) => void
+  onOpenCreate:   (row: RowData, startNum: number, endNum: number) => void
   onOpenEdit:     (a: Assignment) => void
   onDropPerson:    (personId: string, row: RowData) => void
   onOpenDetail?:   (wi: WorkItem) => void
@@ -3618,8 +3615,7 @@ function GridRow({
     const en  = Math.max(createRef.current.anchor, day)
     createRef.current = null
     setGhost(null)
-    // E-7: this period was deliberately drag-selected — keep it even after a work item is picked
-    onOpenCreate(row, s, en, true)
+    onOpenCreate(row, s, en)
   }
 
   function handleDblClick(e: ReactMouseEvent) {
