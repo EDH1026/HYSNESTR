@@ -24,7 +24,7 @@ import type { GuidelineDocument }             from './hooks'
 import { computeLedger, buildHolidaySet }     from '@/features/leave/ledger'
 import { resolveTimesheetCode }               from './resolveTimesheetCode'
 import type { ResolveContext }                from './resolveTimesheetCode'
-import { today, numToStr, dateToNum, isWeekend, weekStart } from '@/lib/date'
+import { today, numToStr, dateToNum, isWeekend, weekStart, getEmploymentStatus } from '@/lib/date'
 import { parseSearchQuery }                   from '@/lib/searchQuery'
 import { supabase }                           from '@/lib/supabase'
 import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
@@ -54,12 +54,14 @@ interface SnapshotEntry {
   provisional:   boolean
   existingHours: number | null   // null = not in snapshot
   kind:          'new' | 'correction' | 'unchanged' | 'to_remove' | 'manual_edit' | 'manual_add'
+  detail?:       string   // TSG-17: 코드 오기 방지용 식별 정보 ([클라이언트]작업항목명 / [담당 파트너명])
 }
 
 type ChangeKind = 'new' | 'replaced' | 'removed' | 'unchanged' | 'manual'
 
 interface CodeRowData {
   code:        string
+  detail?:     string
   provisional: boolean
   isManual:    boolean
   cells:       Map<string, { hours: number; changeKind: ChangeKind }>
@@ -100,25 +102,37 @@ function parseSnapKey(key: string): [string, string, string] {
 }
 
 /**
- * P-1 per-date employment check. (v2.65)
+ * P-1 per-date employment check. (v2.65, revised TSG-18 / v2.115)
  *
- * hire_date — applies to 'upcoming' ONLY.
- *   For 'active'/'resigned', hire_date in the DB may be the system registration
- *   date (e.g. the day the record was created), NOT the actual employment start.
- *   Applying it to all statuses caused the "+8 days" bug (v2.64): people whose
- *   record was created on 2026-07-02 appeared to start then, blanking 30 earlier days.
- *   For 'upcoming', hire_date IS their authoritative future start date — use it.
+ * hire_date — trusted only for people who were still 'upcoming' AS OF the
+ *   generation window's start date (windowStartNum), i.e. people who
+ *   genuinely joined during this window. For anyone already 'active' at
+ *   windowStart, hire_date is NOT used as a per-date cutoff: the DB value
+ *   may be a system registration date rather than the true employment
+ *   start, and applying it unconditionally caused the "+8 days" bug
+ *   (v2.64) — long-tenured people whose record was (re)created recently
+ *   had weeks of legitimate earlier days wrongly blanked out.
+ *   Evaluating status "as of windowStart" instead of "as of today" (via
+ *   getEmploymentStatus's refDate param) narrows the check to people who
+ *   are verifiably new within this window — this fixes TSG-18 (new hires
+ *   showing "unassigned" before their hire_date) without reopening v2.64:
+ *   a long-tenured active person's hire_date, trustworthy or not, is
+ *   irrelevant here because they were already 'active' before the window
+ *   even started.
  *
- * termination_date — applies to 'resigned' ONLY.
- *   Active people's termination_date may be a future planned date; trust status.
- *   snapshotPeople already gates resigned people by termination_date >= windowStart,
- *   so this just clips their dates precisely within the window.
+ * termination_date — applies to 'resigned' (as of today) ONLY, unchanged
+ *   from v2.65: active people's termination_date may be a future planned
+ *   date, and by the time status is actually 'resigned' the date has
+ *   already passed (snapshotPeople already gates resigned people by
+ *   termination_date >= windowStart), so it's safe to trust here.
  *
- * Loop note: all callers (computeCodes, handleReset diagnostic, missing-rows check)
- * are synchronous for-of / .filter() / .reduce() loops — no async closure risk.
+ * Loop note: all callers (computeCodes, handleReset diagnostic, TSG-9 hours
+ * validation) are synchronous for-of / .filter() / .reduce() loops — no
+ * async closure risk.
  */
-function isEmployedOnDate(person: Person, dateStr: string): boolean {
-  if (person.status === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
+export function isEmployedOnDate(person: Person, dateStr: string, windowStartNum: number): boolean {
+  const statusAtWindowStart = getEmploymentStatus(person.hire_date, person.termination_date, windowStartNum)
+  if (statusAtWindowStart === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
   if (person.status === 'resigned' && person.termination_date && person.termination_date < dateStr) return false
   return true
 }
@@ -178,7 +192,7 @@ function buildCodeRows(
   cols:     ColInfo[],
   entries:  Map<string, SnapshotEntry>,
 ): CodeRowData[] {
-  const codeMap = new Map<string, { provisional: boolean; isManual: boolean; cells: Map<string, { hours: number; changeKind: ChangeKind }> }>()
+  const codeMap = new Map<string, { detail?: string; provisional: boolean; isManual: boolean; cells: Map<string, { hours: number; changeKind: ChangeKind }> }>()
 
   const ensure = (code: string) => {
     if (!codeMap.has(code)) codeMap.set(code, { provisional: false, isManual: false, cells: new Map() })
@@ -194,6 +208,7 @@ function buildCodeRows(
       const row = ensure(code)
       if (entry.provisional) row.provisional = true
       if (entry.kind === 'manual_edit' || entry.kind === 'manual_add') row.isManual = true
+      if (entry.detail && !row.detail) row.detail = entry.detail
       row.cells.set(col.date, { hours: entry.hours, changeKind: entryKindToChangeKind(entry.kind) })
     }
   }
@@ -361,7 +376,7 @@ function generateGuidelineHtml(
       rows.push(`<tr class="person-hdr" style="${bg}"><td colspan="${week.columns.length + 1}"><strong>${escHtml(person.name)}</strong> <span class="rank">${escHtml(person.rank)}</span></td></tr>`)
       for (const row of codeRows) {
         const cells = week.columns.map(col => cellHtml(col, row.cells.get(col.date))).join('')
-        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`)
+        rows.push(`<tr style="${bg}"><td class="code-lbl">${escHtml(row.code)}${row.detail ? ` <span class="code-detail">${escHtml(row.detail)}</span>` : ''}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`)
       }
     })
     if (rows.length === 0) rows.push(`<tr><td colspan="${week.columns.length + 1}" class="empty">해당 항목 없음</td></tr>`)
@@ -399,7 +414,7 @@ function generateGuidelineHtml(
       ).join('')
       const tableRows = codeRows.map(row => {
         const cells = week.columns.map(col => cellHtml(col, row.cells.get(col.date))).join('')
-        return `<tr><td class="code-lbl">${escHtml(row.code)}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`
+        return `<tr><td class="code-lbl">${escHtml(row.code)}${row.detail ? ` <span class="code-detail">${escHtml(row.detail)}</span>` : ''}${row.provisional ? ' ⚠' : ''}${row.isManual ? ' [관리자]' : ''}</td>${cells}</tr>`
       }).join('')
       weekParts.push(`<div class="pw-week"><h4>${escHtml(week.label)}</h4><table style="width:${tblW(week.columns.length)}"><thead><tr><th style="min-width:${CODE_COL_W}px">코드</th>${colHeaders}</tr></thead><tbody>${tableRows}</tbody></table></div>`)
     }
@@ -434,6 +449,7 @@ section{border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom
 .person-hdr td{font-size:12px;padding:5px 8px;border-top:2px solid #cbd5e1}
 .rank{font-size:10px;color:#6b7280;font-weight:400}
 .code-lbl{font-family:monospace;font-size:11px;min-width:${CODE_COL_W}px;padding:4px 8px}
+.code-detail{font-family:sans-serif;color:#6b7280;font-weight:400}
 .holiday{background:#f9fafb;color:#9ca3af}
 .empty{color:#94a3b8;text-align:center;padding:12px}
 .pw-week{padding:12px 16px 4px;border-bottom:1px solid #f1f5f9}
@@ -978,7 +994,7 @@ export default function TimesheetGuidelineTab() {
     days:   string[],
     maps:   ReturnType<typeof buildByPersonMaps>,
   ): {
-    computed:    Map<string, { hours: number; provisional: boolean }>
+    computed:    Map<string, { hours: number; provisional: boolean; detail?: string }>
     rowErrors:   { date: string; error: string }[]
     ledgerError: string | null
   } {
@@ -996,15 +1012,15 @@ export default function TimesheetGuidelineTab() {
     }
 
     const ctx: ResolveContext = { allPeople, assignments: pa, allAssignments, workItems: allWorkItems, isHoliday, ledger, adjustments: pj, hireDate: person.hire_date }
-    const computed  = new Map<string, { hours: number; provisional: boolean }>()
+    const computed  = new Map<string, { hours: number; provisional: boolean; detail?: string }>()
     const rowErrors: { date: string; error: string }[] = []
 
     for (const dateStr of days) {
-      if (!isEmployedOnDate(person, dateStr)) continue
+      if (!isEmployedOnDate(person, dateStr, windowStartNum)) continue
       try {
         const results = resolveTimesheetCode(person, dateStr, ctx)
         for (const r of results) {
-          computed.set(snapKey(person.id, dateStr, r.code), { hours: r.hours ?? 8, provisional: r.provisional ?? false })
+          computed.set(snapKey(person.id, dateStr, r.code), { hours: r.hours ?? 8, provisional: r.provisional ?? false, detail: r.detail })
         }
       } catch (e) {
         const msg = formatError(e)
@@ -1060,7 +1076,7 @@ export default function TimesheetGuidelineTab() {
         setResetProgress({ current: person.name, done: i, total: snapshotPeople.length })
 
         // b. 이 인력의 대상 영업일 (P-1 재직 판정)
-        const personDays = targetWorkingDays.filter(d => isEmployedOnDate(person, d))
+        const personDays = targetWorkingDays.filter(d => isEmployedOnDate(person, d, windowStartNum))
 
         const { computed, rowErrors, ledgerError } = computeCodesForPerson(person, personDays, maps)
 
@@ -1174,7 +1190,7 @@ export default function TimesheetGuidelineTab() {
 
     try {
       const maps       = buildByPersonMaps()
-      const allComputed = new Map<string, { hours: number; provisional: boolean }>()
+      const allComputed = new Map<string, { hours: number; provisional: boolean; detail?: string }>()
       const allRowErrors: { personName: string; personId: string; date: string; error: string }[] = []
       const skippedPeople: { personName: string; personId: string; error: string }[] = []
 
@@ -1216,7 +1232,7 @@ export default function TimesheetGuidelineTab() {
         const kind: SnapshotEntry['kind'] =
           existingHours === null       ? 'new' :
           existingHours !== comp.hours ? 'correction' : 'unchanged'
-        entries.set(key, { hours: comp.hours, provisional: comp.provisional, existingHours, kind })
+        entries.set(key, { hours: comp.hours, provisional: comp.provisional, existingHours, kind, detail: comp.detail })
       }
       for (const [key, hours] of snapMap) {
         if (!allComputed.has(key)) {
@@ -1243,7 +1259,7 @@ export default function TimesheetGuidelineTab() {
     try {
       const content: GuidelineDocument['content'] = {
         entries:     [...effectiveEntries.entries()].map(([k, v]) => [k, {
-          hours: v.hours, provisional: v.provisional, existingHours: v.existingHours, kind: v.kind,
+          hours: v.hours, provisional: v.provisional, existingHours: v.existingHours, kind: v.kind, detail: v.detail,
         }]),
         people:      filteredPeople.map(p => ({
           id: p.id, name: p.name, rank: p.rank, status: p.status,
@@ -1479,7 +1495,7 @@ export default function TimesheetGuidelineTab() {
     const alerts: { personName: string; weekLabel: string; workdays: number; totalHours: number }[] = []
     for (const week of displayWeeks) {
       for (const person of displayPeople) {
-        const workdays = week.columns.filter(c => !c.isHoliday && isEmployedOnDate(person, c.date)).length
+        const workdays = week.columns.filter(c => !c.isHoliday && isEmployedOnDate(person, c.date, windowStartNum)).length
         if (workdays === 0) continue
         let totalHours = 0
         for (const col of week.columns) {
@@ -1977,7 +1993,10 @@ export default function TimesheetGuidelineTab() {
 
                                   {codeRows.map(row => (
                                     <tr key={row.code} className={`${zebraRow} border-b border-border/20 hover:brightness-[0.97]`}>
-                                      <td className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20`}>
+                                      <td
+                                        className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20`}
+                                        title={row.detail ? `${row.code} ${row.detail}` : undefined}
+                                      >
                                         <span className="flex items-center gap-1">
                                           <span className="truncate">{row.code}</span>
                                           {row.provisional && <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" />}
@@ -2068,7 +2087,10 @@ export default function TimesheetGuidelineTab() {
                           <tbody>
                             {codeRows.map(row => (
                               <tr key={row.code} className={`${zebraRow} border-b border-border/20 hover:brightness-[0.97]`}>
-                                <td className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20`}>
+                                <td
+                                  className={`px-3 py-1.5 font-mono text-[11px] text-gray-700 sticky left-0 ${zebraRow} z-10 border-r border-border/20`}
+                                  title={row.detail ? `${row.code} ${row.detail}` : undefined}
+                                >
                                   <span className="flex items-center gap-1">
                                     <span className="truncate">{row.code}</span>
                                     {row.provisional && <AlertTriangle size={9} className="text-amber-500 flex-shrink-0" />}

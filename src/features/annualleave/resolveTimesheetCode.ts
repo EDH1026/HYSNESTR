@@ -4,13 +4,17 @@
  * 우선순위:
  * 1. 공휴일 → "휴일"
  * 2. 무급휴가(리프레시·휴직) → "무급휴가"
- * 3. 주말/휴일대체 사용일 → LV-8 FIFO 차감 원천 engagement code
+ * 3. 주말/휴일대체 사용일 → "유급휴가" (TSG-17③, v2.115 — 원천 코드는 더 이상 표시하지 않는다.
+ *    LV-8 FIFO 차감 원천 자체는 ledger.ts/computeLedger에서 그대로 계산·보존되며 이 표시
+ *    단순화와 무관하다)
  * 4. 특별휴가 → "특별휴가"
  * 5. 프로젝트휴가·포상·지연보상·지정휴가 → A vs S 비교 (AL-7 ②③④ 재사용)
+ *    A≥S → "유급휴가" (TSG-17③). A<S → 가장 최근 engagement code(①과 동일하게 detail 병기)
  * 6. 프로젝트 배정 → engagement_number (없으면 provisional flag)
  *    Partner + 다중 프로젝트 배정: daily_hours 기준 분할 (TSG-14, PRD v2.78)
  *    engagement_code_splits 설정 시: 그 project 시간을 코드별 비율로 재분할 (W-10, PRD v2.114)
- * 7. 제안 배정 → 배정된 Partner의 nbd_code
+ *    코드 오기 방지용 [클라이언트]작업항목명을 detail로 병기 (TSG-17①, v2.115)
+ * 7. 제안 배정 → 배정된 Partner의 nbd_code, [담당 파트너명]을 detail로 병기 (TSG-17②, v2.115)
  * 8. 그 외 → "unassigned"
  *
  * 반환: TimesheetCodeResult[] (항상 배열)
@@ -26,6 +30,7 @@ import type { Person, Assignment, WorkItem, AnnualLeaveAdjustment } from '@/type
 
 export interface TimesheetCodeResult {
   code:         string
+  detail?:      string    // TSG-17: 코드 오기 방지용 식별 정보 — [클라이언트]작업항목명 또는 [담당 파트너명]
   provisional?: boolean   // "대체 코드(추후 정정)" flag
   hours?:       number    // undefined → caller treats as 8h
 }
@@ -71,19 +76,11 @@ export function resolveTimesheetCode(
     return [{ code: '무급휴가' }]
   }
 
-  // Priority 3: 주말/휴일대체
-  const weekendSub = onDate.find(a => a.kind === 'leave' && a.leave_type === '주말/휴일대체')
-  if (weekendSub) {
-    const usage = ctx.ledger.usages.find(u => u.assignmentId === weekendSub.id)
-    if (usage) {
-      for (const d of usage.deductions) {
-        if (d.sourceId) {
-          const wi = ctx.workItems.find(w => w.id === d.sourceId)
-          if (wi?.engagement_number) return [{ code: wi.engagement_number }]
-        }
-      }
-    }
-    return [{ code: '(주말대체 원천 미확인)', provisional: true }]
+  // Priority 3: 주말/휴일대체 — TSG-17③: 원천 code 대신 "유급휴가"로 표시.
+  // LV-8 FIFO 차감 원천(ctx.ledger.usages[].deductions)은 computeLedger가 별도로 계산·보존하며,
+  // 여기서는 그 값을 더 이상 표시용으로 조회하지 않는다.
+  if (onDate.some(a => a.kind === 'leave' && a.leave_type === '주말/휴일대체')) {
+    return [{ code: '유급휴가' }]
   }
 
   // Priority 4: 특별휴가
@@ -109,10 +106,14 @@ export function resolveTimesheetCode(
     const A = figs.statutoryThisYear
     const S = figs.projectLeaveUsed + figs.designatedFromProject + figs.designatedShortfall
 
-    if (A >= S) return [{ code: '휴가' }]
+    // TSG-17③: 잔여 범위 내 사용(A≥S)은 "유급휴가"로 단순 표기.
+    if (A >= S) return [{ code: '유급휴가' }]
 
-    const code = mostRecentEngagementCode(ctx.assignments, ctx.workItems, dateStr)
-    return code ? [{ code }] : [{ code: '휴가' }]
+    // A<S: 휴가가 아니라 "가장 최근 engagement code"로 대체 — TSG-17①과 동일하게 detail 병기.
+    const recentWi = mostRecentEngagementWorkItem(ctx.assignments, ctx.workItems, dateStr)
+    return recentWi
+      ? [{ code: recentWi.engagement_number!, detail: projectDetail(recentWi) }]
+      : [{ code: '유급휴가' }]
   }
 
   // Priority 6 & 7: work assignment
@@ -134,9 +135,11 @@ export function resolveTimesheetCode(
     // Project(s) present but none have explicit hours → full 8 h on first project
     if (projectAsgns.length > 0 && withHours.length === 0) {
       const wi = ctx.workItems.find(w => w.id === projectAsgns[0].work_item_id)!
-      if (wi.engagement_code_splits?.length) return splitByCodeRatio(8, wi.engagement_code_splits)
-      if (wi.engagement_number)    return [{ code: wi.engagement_number }]
-      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, provisional: true }]
+      if (wi.engagement_code_splits?.length) {
+        return splitByCodeRatio(8, wi.engagement_code_splits).map(r => ({ ...r, detail: projectDetail(wi) }))
+      }
+      if (wi.engagement_number)    return [{ code: wi.engagement_number, detail: projectDetail(wi) }]
+      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, detail: projectDetail(wi), provisional: true }]
       return [{ code: '(코드 미정)', provisional: true }]
     }
 
@@ -149,10 +152,11 @@ export function resolveTimesheetCode(
       const wi = ctx.workItems.find(w => w.id === wa.work_item_id)!
       // W-10: 이 project에 코드 비율 배분이 설정돼 있으면 daily_hours를 다시 비율대로 세분화 (TSG-14②)
       if (wi.engagement_code_splits?.length) {
-        results.push(...splitByCodeRatio(wa.daily_hours!, wi.engagement_code_splits))
+        results.push(...splitByCodeRatio(wa.daily_hours!, wi.engagement_code_splits).map(r => ({ ...r, detail: projectDetail(wi) })))
       } else {
         const code = wi.engagement_number ?? (wi.temp_engagement_code ?? '(코드 미정)')
-        results.push({ code, hours: wa.daily_hours!, provisional: wi.engagement_number ? undefined : true })
+        const detail = (wi.engagement_number || wi.temp_engagement_code) ? projectDetail(wi) : undefined
+        results.push({ code, hours: wa.daily_hours!, provisional: wi.engagement_number ? undefined : true, detail })
       }
       totalH += wa.daily_hours!
     }
@@ -171,24 +175,31 @@ export function resolveTimesheetCode(
       // W-10: 코드 비율 배분이 설정된 project는 그날 기록 시간(기본 8h, daily_hours 설정 시 그 값)을
       // 비율대로 나눠 코드별 별도 행으로 반환한다 (TSG-1⑥).
       if (wi.engagement_code_splits?.length) {
-        return splitByCodeRatio(workAsgn.daily_hours ?? 8, wi.engagement_code_splits)
+        return splitByCodeRatio(workAsgn.daily_hours ?? 8, wi.engagement_code_splits).map(r => ({ ...r, detail: projectDetail(wi) }))
       }
-      if (wi.engagement_number)    return [{ code: wi.engagement_number }]
-      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, provisional: true }]
+      if (wi.engagement_number)    return [{ code: wi.engagement_number, detail: projectDetail(wi) }]
+      if (wi.temp_engagement_code) return [{ code: wi.temp_engagement_code, detail: projectDetail(wi), provisional: true }]
       return [{ code: '(코드 미정)', provisional: true }]
     }
     if (wi?.type === 'proposal') {
-      const partnerCodes = ctx.allPeople
+      // TSG-17②: 담당 파트너별 코드-이름 쌍을 각각 나란히 병기한다 — 코드만 먼저 나열하고
+      // 이름들을 뒤에 뭉뚱그려 붙이지 않는다. code 필드 자체는(스냅샷 dedup 키로도 쓰이므로)
+      // 기존과 동일한 콤마 join 값을 유지하고, 파트너 이름 병기는 detail에만 담는다.
+      const partners = ctx.allPeople
         .filter(p => p.rank === 'Partner')
         .filter(p =>
           ctx.allAssignments.some(a =>
             a.work_item_id === wi.id && a.person_id === p.id && a.kind === 'work'
           )
         )
-        .map(p => p.nbd_code)
-        .filter((c): c is string => !!c)
+        .filter((p): p is typeof p & { nbd_code: string } => !!p.nbd_code)
 
-      if (partnerCodes.length) return [{ code: partnerCodes.join(', ') }]
+      if (partners.length) {
+        return [{
+          code:   partners.map(p => p.nbd_code).join(', '),
+          detail: partners.map(p => `${p.nbd_code}[${p.name}]`).join(', '),
+        }]
+      }
       return [{ code: '(NBD코드 없음)', provisional: true }]
     }
   }
@@ -198,6 +209,11 @@ export function resolveTimesheetCode(
 }
 
 // ── Internal helpers ──────────────────────────────────────────
+
+/** TSG-17①: project 코드 오기 방지용 식별 정보 — "[클라이언트]작업항목명". client가 없으면 제목만. */
+function projectDetail(wi: WorkItem): string {
+  return wi.client ? `[${wi.client}]${wi.name}` : wi.name
+}
 
 /**
  * W-10: totalHours를 engagement_code_splits의 percent 비율대로 나눈다.
@@ -221,18 +237,18 @@ function splitByCodeRatio(
   return results
 }
 
-function mostRecentEngagementCode(
+function mostRecentEngagementWorkItem(
   assignments: Assignment[],
   workItems:   WorkItem[],
   asOf:        string,
-): string | null {
+): WorkItem | null {
   const candidates = [...assignments]
     .filter(a => a.kind === 'work' && a.work_item_id && a.start <= asOf)
     .sort((a, b) => b.start.localeCompare(a.start) || b.end_date.localeCompare(a.end_date))
 
   for (const a of candidates) {
     const wi = workItems.find(w => w.id === a.work_item_id)
-    if (wi?.type === 'project' && wi.engagement_number) return wi.engagement_number
+    if (wi?.type === 'project' && wi.engagement_number) return wi
   }
   return null
 }

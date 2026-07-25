@@ -93,7 +93,7 @@ export interface GuidelineDocument {
   window_start: string
   window_end:   string
   content: {
-    entries:  [string, { hours: number; provisional: boolean; existingHours: number | null; kind: string }][]
+    entries:  [string, { hours: number; provisional: boolean; existingHours: number | null; kind: string; detail?: string }][]
     people:   { id: string; name: string; rank: string; status: string; hire_date: string | null; termination_date: string | null }[]
     windowStart: string
     windowEnd:   string
