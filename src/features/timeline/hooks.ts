@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 import { queryKeys } from '@/lib/queryKeys'
+import { fetchAllRows } from '@/lib/fetchAll'
 import {
   toAssignment,
   type CreateAssignmentInput,
@@ -28,12 +29,10 @@ export function useAllAssignments() {
   return useQuery({
     queryKey: queryKeys.assignments.all(),
     queryFn: async (): Promise<Assignment[]> => {
-      const { data, error } = await supabase
-        .from('assignments')
-        .select('*')
-        .order('start')
-      if (error) throw error
-      return (data ?? []).map(toAssignment)
+      const rows = await fetchAllRows((from, to) =>
+        supabase.from('assignments').select('*').order('start').range(from, to),
+      )
+      return rows.map(toAssignment)
     },
   })
 }

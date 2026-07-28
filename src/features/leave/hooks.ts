@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { supabase } from '@/lib/supabase'
 import { queryKeys } from '@/lib/queryKeys'
+import { fetchAllRows } from '@/lib/fetchAll'
 import {
   toAccrual,
   toAssignment,
@@ -23,12 +24,10 @@ export function useAllAccruals() {
   return useQuery({
     queryKey: queryKeys.accruals.all(),
     queryFn: async (): Promise<Accrual[]> => {
-      const { data, error } = await supabase
-        .from('accruals')
-        .select('*')
-        .order('date', { ascending: false })
-      if (error) throw error
-      return (data ?? []).map(toAccrual)
+      const rows = await fetchAllRows((from, to) =>
+        supabase.from('accruals').select('*').order('date', { ascending: false }).range(from, to),
+      )
+      return rows.map(toAccrual)
     },
   })
 }
