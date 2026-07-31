@@ -157,7 +157,7 @@ describe('TSG-17 코드/부가정보 컬럼 분리 (PRD v2.115)', () => {
     expect(r2).toEqual([{ code: 'E-00000001' }])
   })
 
-  it('② proposal NBD code: code는 코드값만(콤마 join), detail은 "{파트너명} NBD" 형식만 — 코드 중복 없음', () => {
+  it('TSG-19 ②③: 담당 파트너 2명인 proposal — 스태프의 8h가 4h+4h로 N등분, 파트너별 별도 행(콤마 join 폐지)', () => {
     const partner1 = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD00123', name: '김재승' })
     const partner2 = person({ id: 'partner2', rank: 'Partner', nbd_code: 'NBD00456', name: '박정인' })
     const staff = person({ id: 'staff1', rank: 'Staff' })
@@ -181,13 +181,133 @@ describe('TSG-17 코드/부가정보 컬럼 분리 (PRD v2.115)', () => {
       hireDate: null,
     }
     const results = resolveTimesheetCode(staff, DATE, ctx)
-    expect(results).toEqual([{
-      code:   'NBD00123, NBD00456',
-      detail: '김재승 NBD, 박정인 NBD',
-    }])
+    expect(results).toEqual([
+      { code: 'NBD00123', detail: '김재승 NBD', hours: 4 },
+      { code: 'NBD00456', detail: '박정인 NBD', hours: 4 },
+    ])
+    expect(results.reduce((s, r) => s + (r.hours ?? 0), 0)).toBe(8)
     // 코드 값이 detail 안에 다시 등장하지 않아야 한다 (과거 버그: "I-00000000 파트너명" 식 중복)
     expect(results[0].detail).not.toContain('NBD00123')
-    expect(results[0].detail).not.toContain('NBD00456')
+    expect(results[1].detail).not.toContain('NBD00456')
+    // 어느 한 행에도 다른 파트너와 콤마로 묶인 값이 없어야 한다
+    for (const r of results) {
+      expect(r.code).not.toContain(',')
+      expect(r.detail).not.toContain(',')
+    }
+  })
+
+  it('TSG-19: 담당 파트너 3명·나누어떨어지지 않는 7h → 세 행의 합이 정확히 7h(반올림 오차 없음)', () => {
+    const partner1 = person({ id: 'partnerA', rank: 'Partner', nbd_code: 'NBD-A', name: 'A' })
+    const partner2 = person({ id: 'partnerB', rank: 'Partner', nbd_code: 'NBD-B', name: 'B' })
+    const partner3 = person({ id: 'partnerC', rank: 'Partner', nbd_code: 'NBD-C', name: 'C' })
+    const staff = person({ id: 'staff1', rank: 'Staff' })
+    const proposal = workItem({ id: 'wiProp', type: 'proposal' })
+    const asgnStaff = assignment({ id: 'a1', person_id: 'staff1', work_item_id: 'wiProp', daily_hours: 7 })
+    const asgnP1 = assignment({ id: 'a2', person_id: 'partnerA', work_item_id: 'wiProp' })
+    const asgnP2 = assignment({ id: 'a3', person_id: 'partnerB', work_item_id: 'wiProp' })
+    const asgnP3 = assignment({ id: 'a4', person_id: 'partnerC', work_item_id: 'wiProp' })
+    const ctx: ResolveContext = {
+      allPeople: [partner1, partner2, partner3, staff],
+      assignments: [asgnStaff],
+      allAssignments: [asgnStaff, asgnP1, asgnP2, asgnP3],
+      workItems: [proposal],
+      isHoliday: () => false,
+      ledger: {
+        asOf: 0, accruals: [], usages: [], unpaid: [],
+        totalAccrued: 0, totalUsed: 0, remaining: 0, byType: {},
+        actualAccrued: 0, scheduledAccrued: 0, actualUsed: 0, scheduledUsed: 0,
+        currentRemaining: 0, projectedRemaining: 0,
+      },
+      adjustments: [],
+      hireDate: null,
+    }
+    const results = resolveTimesheetCode(staff, DATE, ctx)
+    expect(results).toHaveLength(3)
+    expect(results.reduce((s, r) => s + (r.hours ?? 0), 0)).toBe(7)
+    // 마지막(id 오름차순 partnerC)이 나머지를 흡수
+    expect(results[2]).toEqual({ code: 'NBD-C', detail: 'C NBD', hours: 7 - 2 * (Math.round((7 / 3) * 100) / 100) })
+  })
+
+  it('TSG-19: 파트너/배정 배열 순서를 뒤섞어도 항상 id 오름차순으로 동일하게 분할된다(일관된 순서)', () => {
+    const partner1 = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD00123', name: '김재승' })
+    const partner2 = person({ id: 'partner2', rank: 'Partner', nbd_code: 'NBD00456', name: '박정인' })
+    const staff = person({ id: 'staff1', rank: 'Staff' })
+    const proposal = workItem({ id: 'wiProp', type: 'proposal' })
+    const asgnStaff = assignment({ id: 'a1', person_id: 'staff1', work_item_id: 'wiProp' })
+    const asgnP1 = assignment({ id: 'a2', person_id: 'partner1', work_item_id: 'wiProp' })
+    const asgnP2 = assignment({ id: 'a3', person_id: 'partner2', work_item_id: 'wiProp' })
+    const ctx: ResolveContext = {
+      // 입력 순서를 일부러 원래와 반대로 뒤섞는다 — id 정렬이 없으면 결과 순서/흡수 대상이 흔들려야 정상.
+      allPeople: [staff, partner2, partner1],
+      assignments: [asgnStaff],
+      allAssignments: [asgnP2, asgnP1, asgnStaff],
+      workItems: [proposal],
+      isHoliday: () => false,
+      ledger: {
+        asOf: 0, accruals: [], usages: [], unpaid: [],
+        totalAccrued: 0, totalUsed: 0, remaining: 0, byType: {},
+        actualAccrued: 0, scheduledAccrued: 0, actualUsed: 0, scheduledUsed: 0,
+        currentRemaining: 0, projectedRemaining: 0,
+      },
+      adjustments: [],
+      hireDate: null,
+    }
+    const results = resolveTimesheetCode(staff, DATE, ctx)
+    expect(results).toEqual([
+      { code: 'NBD00123', detail: '김재승 NBD', hours: 4 },
+      { code: 'NBD00456', detail: '박정인 NBD', hours: 4 },
+    ])
+  })
+
+  it('regression: 담당 파트너가 1명뿐이면 분할 없이 그 한 명의 코드 전체로 기록된다', () => {
+    const partner1 = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD00123', name: '김재승' })
+    const staff = person({ id: 'staff1', rank: 'Staff' })
+    const proposal = workItem({ id: 'wiProp', type: 'proposal' })
+    const asgnStaff = assignment({ id: 'a1', person_id: 'staff1', work_item_id: 'wiProp' })
+    const asgnP1 = assignment({ id: 'a2', person_id: 'partner1', work_item_id: 'wiProp' })
+    const ctx: ResolveContext = {
+      allPeople: [partner1, staff],
+      assignments: [asgnStaff],
+      allAssignments: [asgnStaff, asgnP1],
+      workItems: [proposal],
+      isHoliday: () => false,
+      ledger: {
+        asOf: 0, accruals: [], usages: [], unpaid: [],
+        totalAccrued: 0, totalUsed: 0, remaining: 0, byType: {},
+        actualAccrued: 0, scheduledAccrued: 0, actualUsed: 0, scheduledUsed: 0,
+        currentRemaining: 0, projectedRemaining: 0,
+      },
+      adjustments: [],
+      hireDate: null,
+    }
+    const results = resolveTimesheetCode(staff, DATE, ctx)
+    expect(results).toEqual([{ code: 'NBD00123', detail: '김재승 NBD', hours: 8 }])
+  })
+
+  it('TSG-19 ①: 담당 파트너 본인의 proposal 배정일은 분할되지 않고 본인 NBD 코드 전체로 기록된다', () => {
+    const partner1 = person({ id: 'partner1', rank: 'Partner', nbd_code: 'NBD00123', name: '김재승' })
+    const partner2 = person({ id: 'partner2', rank: 'Partner', nbd_code: 'NBD00456', name: '박정인' })
+    const proposal = workItem({ id: 'wiProp', type: 'proposal' })
+    // partner1 본인이 그 proposal에 배정된 날 — partner2도 담당 파트너로 함께 있지만 분할 대상 아님
+    const asgnP1 = assignment({ id: 'a1', person_id: 'partner1', work_item_id: 'wiProp' })
+    const asgnP2 = assignment({ id: 'a2', person_id: 'partner2', work_item_id: 'wiProp' })
+    const ctx: ResolveContext = {
+      allPeople: [partner1, partner2],
+      assignments: [asgnP1],
+      allAssignments: [asgnP1, asgnP2],
+      workItems: [proposal],
+      isHoliday: () => false,
+      ledger: {
+        asOf: 0, accruals: [], usages: [], unpaid: [],
+        totalAccrued: 0, totalUsed: 0, remaining: 0, byType: {},
+        actualAccrued: 0, scheduledAccrued: 0, actualUsed: 0, scheduledUsed: 0,
+        currentRemaining: 0, projectedRemaining: 0,
+      },
+      adjustments: [],
+      hireDate: null,
+    }
+    const results = resolveTimesheetCode(partner1, DATE, ctx)
+    expect(results).toEqual([{ code: 'NBD00123', hours: 8, provisional: undefined, detail: '김재승 NBD' }])
   })
 
   it('② Partner 자동 NBD 잔여 시간(TSG-14②)도 "{본인 이름} NBD"로 부가정보 병기된다', () => {

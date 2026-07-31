@@ -15,8 +15,9 @@
  *    engagement_code_splits 설정 시: 그 project 시간을 코드별 비율로 재분할 (W-10, PRD v2.114)
  *    temp_engagement_code(대체 코드)면 detail 끝에 "*대체" 추가 (TSG-17①, v2.115)
  *    TSG-14② 잔여 시간을 본인 NBD 코드로 자동 채우는 행도 detail: "{본인 이름} NBD" 병기 (v2.116)
- * 7. 제안 배정 → code: 배정된 Partner의 nbd_code(들, 콤마 join), detail: "{파트너명} NBD"(들, 콤마 join)
- *    — detail에 코드 값을 다시 넣지 않는다 (TSG-17②, v2.115)
+ * 7. 제안 배정 → 담당 Partner N명에게 그날 시간을 균등 분할(N등분, 마지막 파트너가 나머지 흡수):
+ *    파트너별로 code: 그 Partner의 nbd_code만, detail: "{파트너명} NBD"만 (콤마 join 폐지, TSG-19 v2.119)
+ *    — detail에 코드 값을 다시 넣지 않는다. 담당 Partner 1명이면 분할 없이 기존과 동일.
  * 8. 그 외 → "unassigned"
  *
  * TSG-17: code와 detail은 서로 다른 컬럼에 렌더링되는 별개 값 — 절대 하나의 문자열로 합치지 않는다.
@@ -193,8 +194,11 @@ export function resolveTimesheetCode(
       return [{ code: '(코드 미정)', provisional: true }]
     }
     if (wi?.type === 'proposal') {
-      // TSG-17②: code 컬럼 = 코드 값만(복수 파트너면 기존처럼 콤마 join). detail 컬럼 = "{파트너명} NBD"
-      // 형식만 — 코드 문자열은 절대 다시 넣지 않는다(과거 detail에 nbd_code를 또 넣던 중복 버그 수정).
+      // TSG-19: 담당 파트너가 2명 이상이면 콤마 join 대신 그 인원수(N)로 균등 분할해
+      // 파트너별 별도 코드-시간 행을 반환한다(TSG-17②를 대체). code 컬럼 = 그 파트너의
+      // NBD 코드만, detail 컬럼 = "{파트너명} NBD"만 — 다른 파트너와 합치지 않는다.
+      // 파트너 순서는 id 오름차순으로 고정해 "마지막 파트너가 나머지를 흡수"하는 대상이
+      // 매번 같도록 보장한다(순서가 흔들리면 반올림 흡수 대상이 매번 바뀜).
       const partners = ctx.allPeople
         .filter(p => p.rank === 'Partner')
         .filter(p =>
@@ -203,12 +207,10 @@ export function resolveTimesheetCode(
           )
         )
         .filter((p): p is typeof p & { nbd_code: string } => !!p.nbd_code)
+        .sort((a, b) => a.id.localeCompare(b.id))
 
       if (partners.length) {
-        return [{
-          code:   partners.map(p => p.nbd_code).join(', '),
-          detail: partners.map(p => `${p.name} NBD`).join(', '),
-        }]
+        return splitEvenlyAmongPartners(workAsgn.daily_hours ?? 8, partners)
       }
       return [{ code: '(NBD코드 없음)', provisional: true }]
     }
@@ -250,6 +252,30 @@ function splitByCodeRatio(
       ? Math.round((totalHours - allocated) * 100) / 100
       : Math.round((totalHours * s.percent / 100) * 100) / 100
     results.push({ code: s.code, hours })
+    allocated += hours
+  })
+  return results
+}
+
+/**
+ * TSG-19: totalHours를 담당 파트너 N명에게 균등 분할한다 — splitByCodeRatio(W-10)와
+ * 동일한 반올림 방식(마지막 항목이 나머지를 흡수해 합계가 totalHours와 정확히 일치)을
+ * 재사용하되, 비율이 아니라 파트너별로 code/detail이 다르므로 별도 헬퍼로 둔다.
+ * 호출부가 partners를 이미 id 오름차순으로 고정해 넘기므로 마지막 파트너는 항상 동일하다.
+ */
+function splitEvenlyAmongPartners(
+  totalHours: number,
+  partners:   { nbd_code: string; name: string }[],
+): TimesheetCodeResult[] {
+  const n = partners.length
+  const results: TimesheetCodeResult[] = []
+  let allocated = 0
+  partners.forEach((p, i) => {
+    const isLast = i === n - 1
+    const hours = isLast
+      ? Math.round((totalHours - allocated) * 100) / 100
+      : Math.round((totalHours / n) * 100) / 100
+    results.push({ code: p.nbd_code, detail: `${p.name} NBD`, hours })
     allocated += hours
   })
   return results
