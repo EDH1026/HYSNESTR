@@ -499,6 +499,13 @@ export function buildHolidaySet(
  * up to `count` workdays that are neither weekend/holiday nor in `occupied`, then
  * groups the collected days into contiguous ranges — a range only breaks where an
  * occupied day falls between two collected days (weekends/holidays don't break it).
+ *
+ * LV-21 (v2.120): `isEmployed`, if given, additionally excludes days outside the
+ * person's employment window (before hire_date / after termination_date) from the
+ * collected set — same treatment as weekend/holiday (never included, but since
+ * employment status is monotonic over a forward scan it can only ever exclude a
+ * leading/trailing run, never open a gap between two already-collected days, so it
+ * doesn't need to participate in the gap-detection pass below).
  */
 export function findEmptyWorkdayRanges(
   fromDay:     number,
@@ -506,6 +513,7 @@ export function findEmptyWorkdayRanges(
   occupied:    ReadonlySet<number>,
   isHoliday:   (n: number) => boolean,
   maxScanDays = 730,
+  isEmployed?: (n: number) => boolean,
 ): Array<{ start: number; end: number }> {
   if (count <= 0) return []
 
@@ -513,7 +521,7 @@ export function findEmptyWorkdayRanges(
   const maxScan = fromDay + maxScanDays
   let scan = fromDay
   while (days.length < count && scan <= maxScan) {
-    if (!isWeekend(scan) && !isHoliday(scan) && !occupied.has(scan)) days.push(scan)
+    if (!isWeekend(scan) && !isHoliday(scan) && !occupied.has(scan) && (!isEmployed || isEmployed(scan))) days.push(scan)
     scan++
   }
   if (days.length === 0) return []

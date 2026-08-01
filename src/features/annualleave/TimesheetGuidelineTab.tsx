@@ -24,7 +24,7 @@ import type { GuidelineDocument }             from './hooks'
 import { computeLedger, buildHolidaySet }     from '@/features/leave/ledger'
 import { resolveTimesheetCode }               from './resolveTimesheetCode'
 import type { ResolveContext }                from './resolveTimesheetCode'
-import { today, numToStr, dateToNum, isWeekend, weekStart, getEmploymentStatus } from '@/lib/date'
+import { today, numToStr, dateToNum, isWeekend, weekStart, isEmployedOnDate } from '@/lib/date'
 import { parseSearchQuery }                   from '@/lib/searchQuery'
 import { supabase }                           from '@/lib/supabase'
 import { escHtml, triggerDownload, HTML_EXPORT_CSS } from '@/lib/htmlExport'
@@ -102,43 +102,9 @@ function parseSnapKey(key: string): [string, string, string] {
   return [key.slice(0, i1), key.slice(i1 + 2, i2), key.slice(i2 + 2)]
 }
 
-/**
- * P-1 per-date employment check. (v2.65, revised TSG-18 / v2.115)
- *
- * hire_date — trusted only for people who were still 'upcoming' AS OF the
- *   generation window's start date (windowStartNum), i.e. people who
- *   genuinely joined during this window. For anyone already 'active' at
- *   windowStart, hire_date is NOT used as a per-date cutoff: the DB value
- *   may be a system registration date rather than the true employment
- *   start, and applying it unconditionally caused the "+8 days" bug
- *   (v2.64) — long-tenured people whose record was (re)created recently
- *   had weeks of legitimate earlier days wrongly blanked out.
- *   Evaluating status "as of windowStart" instead of "as of today" (via
- *   getEmploymentStatus's refDate param) narrows the check to people who
- *   are verifiably new within this window — this fixes TSG-18 (new hires
- *   showing "unassigned" before their hire_date) without reopening v2.64:
- *   a long-tenured active person's hire_date, trustworthy or not, is
- *   irrelevant here because they were already 'active' before the window
- *   even started.
- *
- * termination_date — applies to 'resigned' (as of today) ONLY, unchanged
- *   from v2.65: active people's termination_date may be a future planned
- *   date, and by the time status is actually 'resigned' the date has
- *   already passed (snapshotPeople already gates resigned people by
- *   termination_date >= windowStart), so it's safe to trust here.
- *
- * Loop note: all callers (computeCodes, handleReset diagnostic, TSG-9 hours
- * validation) are synchronous for-of / .filter() / .reduce() loops — no
- * async closure risk.
- */
-export function isEmployedOnDate(person: Person, dateStr: string, windowStartNum: number): boolean {
-  const statusAtWindowStart = getEmploymentStatus(person.hire_date, person.termination_date, windowStartNum)
-  if (statusAtWindowStart === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
-  if (person.status === 'resigned' && person.termination_date && person.termination_date < dateStr) return false
-  return true
-}
-
 // ── Pure helpers ───────────────────────────────────────────────
+// isEmployedOnDate moved to @/lib/date (LV-21, v2.120) — shared with the timeline
+// leave-simulation and Leave Ledger's '잔여 소진 배정' (see date.ts for full doc).
 
 function monthDay(s: string): string {
   return `${parseInt(s.slice(5, 7), 10)}/${parseInt(s.slice(8, 10), 10)}`

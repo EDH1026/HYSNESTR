@@ -118,6 +118,40 @@ export function getEmploymentStatus(
   return 'active'
 }
 
+/**
+ * P-1 per-date employment check (v2.65, revised TSG-18 / v2.115). Moved here from
+ * TimesheetGuidelineTab.tsx (LV-21, v2.120) so it can be shared with any code that
+ * needs a per-day employment gate without a cross-feature/circular import — e.g.
+ * the timeline leave-simulation and Leave Ledger's '잔여 소진 배정', which both
+ * scan forward filling empty workdays and must not do so before hire_date or after
+ * termination_date.
+ *
+ * hire_date — trusted only for people who were still 'upcoming' AS OF the
+ *   caller's reference date (windowStartNum — e.g. a batch generation window's
+ *   start, or "today" for a forward-scanning simulation), i.e. people who
+ *   genuinely joined during/after that reference point. For anyone already
+ *   'active' as of windowStartNum, hire_date is NOT used as a per-date cutoff:
+ *   the DB value may be a system registration date rather than the true
+ *   employment start, and applying it unconditionally caused the "+8 days" bug
+ *   (v2.64) — long-tenured people whose record was (re)created recently had
+ *   weeks of legitimate earlier days wrongly blanked out.
+ *
+ * termination_date — applies to 'resigned' (as of today, via person.status) ONLY,
+ *   unchanged from v2.65: active people's termination_date may be a future
+ *   planned date, and by the time status is actually 'resigned' the date has
+ *   already passed, so it's safe to trust here.
+ */
+export function isEmployedOnDate(
+  person: { hire_date: string | null; termination_date: string | null; status: string },
+  dateStr: string,
+  windowStartNum: number,
+): boolean {
+  const statusAtWindowStart = getEmploymentStatus(person.hire_date, person.termination_date, windowStartNum)
+  if (statusAtWindowStart === 'upcoming' && person.hire_date && person.hire_date > dateStr) return false
+  if (person.status === 'resigned' && person.termination_date && person.termination_date < dateStr) return false
+  return true
+}
+
 // ---------------------------------------------------------------------------
 // Week boundaries (ISO weeks start on Monday)
 // ---------------------------------------------------------------------------

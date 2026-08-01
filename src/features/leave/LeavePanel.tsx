@@ -21,7 +21,7 @@ import { useCreateAssignment } from '@/features/timeline/hooks'
 import { useAuthz } from '@/hooks/useAuthz'
 import { useHistory } from '@/lib/history'
 import { makeAccrualCreate, makeAccrualDelete } from '@/lib/historyOps'
-import { dateToNum, numToStr, today, nextWorkday } from '@/lib/date'
+import { dateToNum, numToStr, today, nextWorkday, isEmployedOnDate } from '@/lib/date'
 import type { Person, AccrualType, WorkItem } from '@/types'
 
 const MANUAL_TYPES: AccrualType[] = ['포상휴가', '특별휴가', '지연보상', '프로젝트휴가', '주말/휴일대체']
@@ -452,7 +452,12 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
 
       // §7.4 LV-1 v2.88: 항상 프로젝트휴가 유형 하나로 배정 생성
       // 차감 원천 FIFO(주말대체→프로젝트→포상→지연보상)는 computeLedger에서 독립적으로 계산
-      const ranges = findEmptyWorkdayRanges(searchFrom, totalDays, occupied, isHoliday)
+      // LV-21 (v2.120): hire_date 이전/termination_date 이후 날짜는 채우지 않는다 — asOf가
+      // 이 조회의 기준일이므로 isEmployedOnDate의 windowStart로 그대로 사용한다.
+      const ranges = findEmptyWorkdayRanges(
+        searchFrom, totalDays, occupied, isHoliday, 730,
+        n => isEmployedOnDate(person, numToStr(n), asOf),
+      )
       if (ranges.length === 0) return
 
       for (const { start: s, end: e } of ranges) {

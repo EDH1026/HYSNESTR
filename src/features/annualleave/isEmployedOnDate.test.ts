@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isEmployedOnDate } from './TimesheetGuidelineTab'
-import { dateToNum } from '@/lib/date'
+import { isEmployedOnDate, dateToNum } from '@/lib/date'
 import type { Person } from '@/types'
 
 // TSG-18 (PRD v2.115): per-date employment check must clip a genuinely new

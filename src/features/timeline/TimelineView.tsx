@@ -32,7 +32,7 @@ import {
   dateToNum, numToStr, today, isWeekend, isSaturday,
   monthBoundaries, weekBoundaries, nextMonthStart,
   monthYearLabel, dayOfMonthLabel, weekdayLabel, numToDate,
-  snapLeaveEnd, workdayCount, nextWorkday,
+  snapLeaveEnd, workdayCount, nextWorkday, isEmployedOnDate,
 } from '@/lib/date'
 import { useAllPeople }                          from '@/features/people/hooks'
 import {
@@ -102,7 +102,7 @@ class TimelineErrorBoundary extends Component<
 
 // T-17: virtual leave preview — fill empty workdays with phantom leave blocks
 function computeVirtualLeaveBlocks(
-  personId:           string,
+  person:             Person,
   projectedRemaining: number,
   allAssignments:     Assignment[],
   todayNum:           number,
@@ -114,7 +114,7 @@ function computeVirtualLeaveBlocks(
   // Mark every calendar day covered by a real assignment for this person
   const occupied = new Set<number>()
   for (const a of allAssignments) {
-    if (a.person_id !== personId) continue
+    if (a.person_id !== person.id) continue
     const s = dateToNum(a.start)
     const e = dateToNum(a.end_date)
     for (let d = s; d <= e; d++) occupied.add(d)
@@ -123,7 +123,14 @@ function computeVirtualLeaveBlocks(
   // PRD v2.109 LV-19: scan starts AT todayNum (inclusive) so a genuinely empty today
   // is filled instead of skipped — was todayNum + 1. Shared with LeavePanel's
   // '잔여 소진 배정' via findEmptyWorkdayRanges (src/features/leave/ledger.ts).
-  return findEmptyWorkdayRanges(todayNum, daysToFill, occupied, n => holidaySet.has(n))
+  // LV-21 (v2.120): never fill before hire_date / after termination_date — an
+  // upcoming hire has no employment relationship yet, so no leave can accrue or be
+  // taken. "today" doubles as this scan's reference point (there's no separate
+  // batch window here, unlike TSG-2), matching isEmployedOnDate's windowStart param.
+  return findEmptyWorkdayRanges(
+    todayNum, daysToFill, occupied, n => holidaySet.has(n), 730,
+    n => isEmployedOnDate(person, numToStr(n), todayNum),
+  )
 }
 import {
   TYPE_FAMILY, LEAVE_GREEN, buildWorkItemColorMap, barColorOf,
@@ -2032,7 +2039,7 @@ export default function TimelineView() {
         personRank: p.rank,
       })
       const blocks = computeVirtualLeaveBlocks(
-        p.id, ledger.projectedRemaining, ledgerAssignments, todayNum, holidaySet,
+        p, ledger.projectedRemaining, ledgerAssignments, todayNum, holidaySet,
       )
       if (blocks.length > 0) map.set(p.id, blocks)
     }
