@@ -9,6 +9,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error,    setError]    = useState<string | null>(null)
   const [loading,  setLoading]  = useState(false)
+  // AuthContext's idle timer sets this flag right before signing out (§ idle timeout).
+  const [idleLogout] = useState(() => {
+    const flagged = sessionStorage.getItem('eyp_idle_logout') === '1'
+    if (flagged) sessionStorage.removeItem('eyp_idle_logout')
+    return flagged
+  })
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -39,6 +45,11 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {idleLogout && !error && (
+            <div className="rounded-md bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-700">
+              30분간 활동이 없어 자동으로 로그아웃되었습니다. 다시 로그인해주세요.
+            </div>
+          )}
           {error && (
             <div className="rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
               {error}

@@ -1,13 +1,29 @@
 import { Navigate, Outlet } from 'react-router-dom'
-import { useAuth } from '@/context/AuthContext'
+import { useAuth, clearReloadRecord } from '@/context/AuthContext'
 
 export default function AuthGuard() {
-  const { session, profile, isLoading } = useAuth()
+  const { session, profile, isLoading, loadError } = useAuth()
 
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-brand-600 border-t-transparent" />
+      </div>
+    )
+  }
+
+  // Initial session/profile load failed or timed out (flaky network etc.) — show a
+  // recoverable error instead of leaving the caller on an indefinite spinner.
+  if (loadError) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 p-4 text-center">
+        <p className="text-sm text-gray-600">{loadError}</p>
+        <button
+          onClick={() => { clearReloadRecord(); window.location.reload() }}
+          className="btn-primary"
+        >
+          새로고침
+        </button>
       </div>
     )
   }
