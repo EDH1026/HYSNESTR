@@ -60,6 +60,8 @@ function validateRows(rows: ParsedRow[]): RowError[] {
     if (!r.name)                          e.push('name 필수')
     if (!r.start)                         e.push('start 필수')
     else if (!DATE_RE.test(r.start))      e.push(`start 날짜 형식 불일치 (YYYY-MM-DD): "${r.start}"`)
+    if (r.type === 'project' && !r.main_start)
+                                          e.push('main_start 필수 (project 유형)')
     if (r.main_start && !DATE_RE.test(r.main_start))
                                           e.push(`main_start 날짜 형식 불일치: "${r.main_start}"`)
     if (!r.end_date)                      e.push('end_date 필수')

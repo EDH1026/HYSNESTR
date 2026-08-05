@@ -179,7 +179,9 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
   function validate(): string | null {
     if (form.start && form.end_date && form.start > form.end_date)
       return 'Start date must be before or equal to end date'
-    if (form.type === 'project' && form.main_start) {
+    if (form.type === 'project') {
+      if (!form.main_start)
+        return 'Main Phase Start is required for project type items'
       if (form.start && form.main_start < form.start)
         return 'Main start must be ≥ overall start'
       if (form.end_date && form.main_start > form.end_date)
@@ -333,11 +335,10 @@ export default function WorkItemModal({ workItem, readOnly, canToggleStatus, loc
           {form.type === 'project' && (
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-700">
-                Main Phase Start
-                <span className="ml-1 text-[10px] text-muted">(project only)</span>
+                Main Phase Start *
               </label>
               <input
-                type="date" className="input"
+                required type="date" className="input"
                 value={form.main_start}
                 onChange={e => setForm(f => ({ ...f, main_start: e.target.value }))}
                 disabled={readOnly}
