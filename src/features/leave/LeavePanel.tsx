@@ -47,6 +47,12 @@ function fmtDeducSrc(type: string, note: string | null | undefined, wi: WorkItem
   return val ? `[${type}] ${val} ${days}일` : `[${type}] ${days}일`
 }
 
+/** Portion of this usage that FIFO couldn't match to any accrual — used ahead of accrual (선사용). */
+function unfundedUsageDays(u: Pick<LedgerUsageEntry, 'days' | 'deductions'>): number {
+  const funded = u.deductions.reduce((s, d) => s + d.days, 0)
+  return Math.round((u.days - funded) * 10) / 10
+}
+
 function generateLeaveLedgerHtml(
   person:  Person,
   refDate: string,
@@ -108,6 +114,8 @@ function generateLeaveLedgerHtml(
           const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
           return escHtml(fmtDeducSrc(acc.type, acc.note, wi, d.days))
         }).filter(Boolean)
+        const unfunded = unfundedUsageDays(u)
+        if (unfunded > 0) deducParts.push(`<span class="pill pill-red">선사용 ${escHtml(unfunded)}일</span>`)
         const deducText = deducParts.length ? deducParts.join(', ') : '—'
         const typeTag   = u.isManual
           ? `<span class="pill pill-red">${escHtml(u.type)}</span> <span class="pill pill-red" style="font-size:10px">수동차감</span>`
@@ -152,6 +160,8 @@ function generateLeaveLedgerHtml(
       const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
       return fmtDeducSrc(acc.type, acc.note, wi, d.days)
     }).filter(Boolean)
+    const unfunded = unfundedUsageDays(u)
+    if (unfunded > 0) deducParts.push(`선사용 ${unfunded}일`)
     combinedRaw.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(', ') || '—', change: -u.days, balance: 0 })
   }
   for (const u of ledger.unpaid) {
@@ -541,6 +551,8 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
         const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
         return fmtDeducSrc(acc.type, acc.note, wi, d.days)
       }).filter(Boolean)
+      const unfunded = unfundedUsageDays(u)
+      if (unfunded > 0) deducParts.push(`선사용 ${unfunded}일`)
       rows.push({ kind: 'usage', date: u.start, period, type: u.type, source: deducParts.join(', ') || '—', change: -u.days, balance: 0 })
     }
     for (const u of ledger.unpaid) {
@@ -886,7 +898,7 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                               </td>
                               <td className="px-3 py-2 text-right font-medium">{u.days}일</td>
                               <td className="px-3 py-2 text-muted text-[11px]">
-                                {u.deductions.length === 0
+                                {u.deductions.length === 0 && unfundedUsageDays(u) <= 0
                                   ? '—'
                                   : <span className="flex flex-wrap gap-x-1 gap-y-0.5">
                                       {u.deductions.map((d, i) => {
@@ -894,6 +906,11 @@ export default function LeavePanel({ person, onClose, inline }: Props) {
                                         const wi  = d.sourceId ? wiMap.get(d.sourceId) : undefined
                                         return <span key={i}>{acc ? fmtDeducSrc(acc.type, acc.note, wi, d.days) : `? ${d.days}일`}</span>
                                       })}
+                                      {unfundedUsageDays(u) > 0 && (
+                                        <span className="pill bg-red-100 text-red-700 text-[10px]">
+                                          선사용 {unfundedUsageDays(u)}일
+                                        </span>
+                                      )}
                                     </span>
                                 }
                               </td>
