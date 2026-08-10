@@ -126,10 +126,15 @@ export default function MfaSetupModal({ onClose }: Props) {
       return
     }
     const { error: unenrollErr } = await supabase.auth.mfa.unenroll({ factorId: enrolledId })
-    setBusy(false)
-    if (unenrollErr) { setErr(unenrollErr.message); return }
-    setEnrolledId(null)
-    setStep('start')
+    if (unenrollErr) {
+      setBusy(false)
+      setErr(unenrollErr.message)
+      return
+    }
+    // MFA is mandatory, not opt-in — reload so AuthContext re-derives mfaSetupRequired
+    // from scratch and AuthGuard immediately routes to the mandatory /mfa-setup instead
+    // of leaving this session sitting unprotected until the next natural page load.
+    window.location.reload()
   }
 
   async function handleCancelEnrolling() {

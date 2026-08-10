@@ -80,17 +80,32 @@ function markActivity() {
 }
 
 // ── MFA (TOTP) assurance check ──────────────────────────────────
-// A user who has enrolled a verified TOTP factor gets a session at aal1 right
-// after password sign-in; nextLevel only becomes aal2 once they complete the
-// TOTP challenge (supabase.auth.mfa.challenge + .verify). Until then the app
-// must treat them as not-fully-authenticated and route them to /mfa-challenge
-// (AuthGuard) rather than into the protected app — this is purely a UX gate;
-// the RLS-side enforcement (server can't be tricked by skipping this) is a
-// separate migration, see supabase/migrations for the app_can() AAL2 gate.
-async function checkMfaRequired(): Promise<boolean> {
+// MFA is mandatory (not opt-in): every account must have a verified TOTP
+// factor before it can see any data. getAuthenticatorAssuranceLevel()'s
+// nextLevel tells us which case applies from a single call:
+//   nextLevel === 'aal1' → no verified factor exists at all → force enrollment
+//     (/mfa-setup, AuthGuard) — this is the mandatory case beyond the original
+//     opt-in design; without it an account that never enrolls sails through
+//     with password-only access forever.
+//   nextLevel === 'aal2' && currentLevel !== nextLevel → factor exists but this
+//     session hasn't completed the TOTP challenge yet → /mfa-challenge.
+//   currentLevel === nextLevel === 'aal2' → fully satisfied, proceed.
+// This is a UX gate only; the RLS-side enforcement (server can't be tricked by
+// skipping this) is a separate migration, see supabase/migrations for the
+// app_can()/my_role()/is_admin()/is_assistant() AAL2 gate.
+interface MfaStatus {
+  mfaRequired:      boolean   // factor enrolled, but this session hasn't completed the challenge
+  mfaSetupRequired: boolean   // no verified factor at all — enrollment itself is mandatory
+}
+
+async function checkMfaStatus(): Promise<MfaStatus> {
   const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-  if (error || !data) return false
-  return data.nextLevel === 'aal2' && data.currentLevel !== data.nextLevel
+  if (error || !data) return { mfaRequired: false, mfaSetupRequired: false }
+  const hasFactor = data.nextLevel === 'aal2'
+  return {
+    mfaSetupRequired: !hasFactor,
+    mfaRequired:      hasFactor && data.currentLevel !== data.nextLevel,
+  }
 }
 
 // ── Context shape ─────────────────────────────────────────────
@@ -100,9 +115,10 @@ interface AuthState {
   profile:      Profile | null
   grants:       Grant[]
   myPersonId:   string | null   // profiles.person_id — set by admin in AccountManager (PRD v2.5 §6.2)
-  isLoading:    boolean
-  mfaRequired:  boolean         // session at aal1 but a verified TOTP factor demands aal2
-  loadError:    string | null   // set when initial session/profile load fails or times out
+  isLoading:        boolean
+  mfaRequired:      boolean     // session at aal1 but a verified TOTP factor demands aal2
+  mfaSetupRequired: boolean     // no verified TOTP factor at all — enrollment is mandatory
+  loadError:        string | null   // set when initial session/profile load fails or times out
 }
 
 interface AuthContextValue extends AuthState {
@@ -119,9 +135,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     profile:     null,
     grants:      [],
     myPersonId:  null,
-    isLoading:   true,
-    mfaRequired: false,
-    loadError:   null,
+    isLoading:        true,
+    mfaRequired:      false,
+    mfaSetupRequired: false,
+    loadError:        null,
   })
 
   // Prevent stale-closure updates after unmount
@@ -170,19 +187,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             clearReloadRecord()
             await supabase.auth.signOut()
             if (mounted.current) {
-              setState({ session: null, profile: null, grants: [], myPersonId: null, isLoading: false, mfaRequired: false, loadError: null })
+              setState({ session: null, profile: null, grants: [], myPersonId: null, isLoading: false, mfaRequired: false, mfaSetupRequired: false, loadError: null })
             }
             return
           }
           try {
-            const [{ profile, grants, myPersonId }, mfaRequired] = await Promise.all([
+            const [{ profile, grants, myPersonId }, mfa] = await Promise.all([
               loadProfileAndGrants(session.user.id),
-              checkMfaRequired(),
+              checkMfaStatus(),
             ])
             if (settled || !mounted.current) return
             settled = true
             clearReloadRecord()
-            setState({ session, profile, grants, myPersonId, isLoading: false, mfaRequired, loadError: null })
+            setState({ session, profile, grants, myPersonId, isLoading: false, mfaRequired: mfa.mfaRequired, mfaSetupRequired: mfa.mfaSetupRequired, loadError: null })
           } catch {
             settled = true
             triggerReloadOrFail(setState, '사용자 정보를 불러오지 못했습니다. 새로고침해주세요.')
@@ -190,7 +207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } else {
           settled = true
           clearReloadRecord()
-          setState({ session: null, profile: null, grants: [], myPersonId: null, isLoading: false, mfaRequired: false, loadError: null })
+          setState({ session: null, profile: null, grants: [], myPersonId: null, isLoading: false, mfaRequired: false, mfaSetupRequired: false, loadError: null })
         }
       })
       .catch(() => {
@@ -213,15 +230,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             event === 'TOKEN_REFRESHED' ||
             event === 'USER_UPDATED' ||
             event === 'PASSWORD_RECOVERY' ||
-            event === 'MFA_CHALLENGE_VERIFIED')   // completed the TOTP step — re-derive mfaRequired
+            event === 'MFA_CHALLENGE_VERIFIED')   // completed the TOTP step — re-derive mfa status
         ) {
           try {
-            const [{ profile, grants, myPersonId }, mfaRequired] = await Promise.all([
+            const [{ profile, grants, myPersonId }, mfa] = await Promise.all([
               loadProfileAndGrants(session.user.id),
-              checkMfaRequired(),
+              checkMfaStatus(),
             ])
             if (mounted.current) {
-              setState({ session, profile, grants, myPersonId, isLoading: false, mfaRequired, loadError: null })
+              setState({ session, profile, grants, myPersonId, isLoading: false, mfaRequired: mfa.mfaRequired, mfaSetupRequired: mfa.mfaSetupRequired, loadError: null })
             }
           } catch (err) {
             if (!mounted.current) return
@@ -243,7 +260,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // immediately via the initial-load idle check above.
           localStorage.removeItem(ACTIVITY_KEY)
           if (mounted.current) {
-            setState({ session: null, profile: null, grants: [], myPersonId: null, isLoading: false, mfaRequired: false, loadError: null })
+            setState({ session: null, profile: null, grants: [], myPersonId: null, isLoading: false, mfaRequired: false, mfaSetupRequired: false, loadError: null })
           }
         }
       },

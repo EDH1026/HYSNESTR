@@ -2,7 +2,7 @@ import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth, clearReloadRecord } from '@/context/AuthContext'
 
 export default function AuthGuard() {
-  const { session, profile, isLoading, mfaRequired, loadError } = useAuth()
+  const { session, profile, isLoading, mfaRequired, mfaSetupRequired, loadError } = useAuth()
 
   if (isLoading) {
     return (
@@ -30,19 +30,22 @@ export default function AuthGuard() {
 
   if (!session) return <Navigate to="/login" replace />
 
-  // TOTP MFA: session is only at aal1 (password only) but this account has a verified
-  // factor demanding aal2 — hold here until the TOTP challenge is completed. Checked
-  // before the profile/must_set_password gates below on purpose: profiles_select's
-  // "id = auth.uid()" self-row clause bypasses the RLS-side aal2 gate so this read
-  // wouldn't itself fail at aal1, but a security gate shouldn't depend on that detail
-  // to be reachable — verify identity before evaluating anything else about the account.
-  if (mfaRequired) return <Navigate to="/mfa-challenge" replace />
-
   // PRD v2.98 ADM-10 fix: fail-closed. A missing profile row (query error, not-yet-
   // loaded edge case, or a row that genuinely doesn't exist yet) must block access,
   // not silently pass — the old `profile?.must_set_password` fell through to
-  // <Outlet/> whenever profile was null.
+  // <Outlet/> whenever profile was null. Checked first: an invited account should
+  // finish setting its real password before being asked to commit to a 2FA device.
   if (!profile || profile.must_set_password) return <Navigate to="/reset-password" replace />
+
+  // TOTP MFA is mandatory, not opt-in — an account with no verified factor at all
+  // must enroll before it can see anything (/mfa-setup, no skip). An account that
+  // already has a factor but whose current session hasn't completed this login's
+  // challenge yet goes to /mfa-challenge instead. mfaSetupRequired and mfaRequired
+  // are mutually exclusive (AuthContext derives both from one aal check), so order
+  // between these two doesn't matter — check setup first since it's the rarer,
+  // more consequential case (first login ever, or right after an unenroll).
+  if (mfaSetupRequired) return <Navigate to="/mfa-setup" replace />
+  if (mfaRequired) return <Navigate to="/mfa-challenge" replace />
 
   // PRD v2.99 ADM-10⑦: LoginPage stashes the just-typed password for ResetPasswordPage's
   // current_password handoff (see there). Wipe it here on every normal pass-through so it

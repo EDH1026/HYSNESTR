@@ -12,6 +12,7 @@ import LoginPage          from '@/pages/LoginPage'
 import ForgotPasswordPage from '@/pages/ForgotPasswordPage'
 import ResetPasswordPage  from '@/pages/ResetPasswordPage'
 import MfaChallengePage   from '@/pages/MfaChallengePage'
+import MfaSetupPage       from '@/pages/MfaSetupPage'
 import DashboardPage      from '@/pages/DashboardPage'
 import HashtagPage        from '@/pages/HashtagPage'
 import TimelinePage       from '@/pages/TimelinePage'
@@ -72,6 +73,7 @@ export default function App() {
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password"  element={<ResetPasswordPage />} />
             <Route path="/mfa-challenge"   element={<MfaChallengePage />} />
+            <Route path="/mfa-setup"       element={<MfaSetupPage />} />
 
             {/* ── Protected — requires Supabase session ───── */}
             <Route element={<AuthGuard />}>
