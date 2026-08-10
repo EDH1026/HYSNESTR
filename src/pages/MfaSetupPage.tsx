@@ -7,7 +7,7 @@
  * mfa_satisfied() gate) until enrollment is completed. Enrollment auto-starts
  * on mount; the only escape is signing out (e.g. wrong account).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ShieldCheck, Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
@@ -24,7 +24,15 @@ export default function MfaSetupPage() {
   const [code,     setCode]     = useState('')
   const [err,      setErr]      = useState<string | null>(null)
 
+  const startedRef = useRef(false)
+
   useEffect(() => {
+    // React 18 StrictMode double-invokes effects in dev — without this guard,
+    // two concurrent enroll() calls would race and orphan one factor before
+    // the stale-cleanup on the next mount ever runs.
+    if (startedRef.current) return
+    startedRef.current = true
+
     let cancelled = false
 
     async function run() {
