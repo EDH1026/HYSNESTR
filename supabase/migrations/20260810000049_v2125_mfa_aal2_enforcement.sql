@@ -182,10 +182,25 @@ COMMENT ON FUNCTION public.is_assistant() IS
 -- 기존 정책(20260620000009_settings.sql)은 app_can()/is_admin()을 거치지 않고
 -- profiles를 직접 조회해 admin 여부를 판단했다 — mfa_satisfied() 게이트를
 -- 우회하는 경로였으므로 is_admin() 호출로 교체한다.
+-- 존재 여부를 먼저 확인한다(0047의 패턴과 동일) — 최초 적용 시도에서
+-- public.settings 테이블 자체가 이 운영 DB에 없는 것으로 확인됐다
+-- (0009에서 만들어졌어야 하나 현재 부재 — 별도로 조사 필요한 이슈이며
+-- 이 마이그레이션의 본래 목적과 무관하므로 여기서는 막지 않고 건너뛴다).
 
-DROP POLICY IF EXISTS settings_update ON public.settings;
-CREATE POLICY settings_update ON public.settings
-  FOR UPDATE USING (public.is_admin());
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'settings'
+  ) THEN
+    EXECUTE 'DROP POLICY IF EXISTS settings_update ON public.settings';
+    EXECUTE 'CREATE POLICY settings_update ON public.settings FOR UPDATE USING (public.is_admin())';
+    RAISE NOTICE 'settings_update policy replaced with is_admin()';
+  ELSE
+    RAISE NOTICE 'public.settings table not found — skipping settings_update policy (see migration header)';
+  END IF;
+END;
+$$;
 
 NOTIFY pgrst, 'reload schema';
 
