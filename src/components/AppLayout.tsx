@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   Lock,
   Search,
+  ShieldCheck,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { useHistory } from '@/lib/history'
@@ -35,6 +36,7 @@ import { buildHolidaySet }   from '@/features/leave/ledger'
 import { buildWorkItemColorMap } from '@/lib/colors'
 import GlobalSearchPalette from './GlobalSearchPalette'
 import WorkItemDetailModal from '@/features/workitems/WorkItemDetailModal'
+import MfaSetupModal from '@/features/auth/MfaSetupModal'
 import type { GlobalRole, WorkItem } from '@/types'
 
 const NAV: {
@@ -78,6 +80,7 @@ export default function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [searchOpen,  setSearchOpen]  = useState(false)
   const [detailWI,    setDetailWI]    = useState<WorkItem | null>(null)
+  const [showMfaSetup, setShowMfaSetup] = useState(false)
   const { canUndo, canRedo, undoLabel, redoLabel, error, undo, redo, clearError } = useHistory()
   const isMobile = useMobile()
   const { canEdit, isAdmin: isAdminFn } = useAuthz()
@@ -231,6 +234,14 @@ export default function AppLayout() {
         </div>
 
         <button
+          onClick={() => setShowMfaSetup(true)}
+          className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted hover:bg-surface-100 hover:text-gray-900 transition-colors"
+        >
+          <ShieldCheck size={16} />
+          MFA 설정
+        </button>
+
+        <button
           onClick={signOut}
           className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted hover:bg-surface-100 hover:text-gray-900 transition-colors"
         >
@@ -334,6 +345,8 @@ export default function AppLayout() {
           />
         )
       })()}
+
+      {showMfaSetup && <MfaSetupModal onClose={() => setShowMfaSetup(false)} />}
     </div>
   )
 }

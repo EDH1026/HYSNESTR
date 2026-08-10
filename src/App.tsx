@@ -11,6 +11,7 @@ import AppLayout          from '@/components/AppLayout'
 import LoginPage          from '@/pages/LoginPage'
 import ForgotPasswordPage from '@/pages/ForgotPasswordPage'
 import ResetPasswordPage  from '@/pages/ResetPasswordPage'
+import MfaChallengePage   from '@/pages/MfaChallengePage'
 import DashboardPage      from '@/pages/DashboardPage'
 import HashtagPage        from '@/pages/HashtagPage'
 import TimelinePage       from '@/pages/TimelinePage'
@@ -70,6 +71,7 @@ export default function App() {
             <Route path="/login"           element={<LoginPage />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
             <Route path="/reset-password"  element={<ResetPasswordPage />} />
+            <Route path="/mfa-challenge"   element={<MfaChallengePage />} />
 
             {/* ── Protected — requires Supabase session ───── */}
             <Route element={<AuthGuard />}>
