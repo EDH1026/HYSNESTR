@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import logo from '@/assets/logo.png'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { isVersionStale } from '@/lib/version'
 
 export default function LoginPage() {
   const navigate  = useNavigate()
@@ -31,6 +32,15 @@ export default function LoginPage() {
       // just-verified password is handed off via sessionStorage (read once, then cleared —
       // see ResetPasswordPage). No-op for accounts that don't need it.
       sessionStorage.setItem('eyp_login_password', password)
+      // A tab left open since before the last deploy is still running the old
+      // bundle — an SPA navigate('/') here would run that old AuthGuard, which
+      // may predate mandatory-MFA (or any other) enforcement. Full reload
+      // instead: the session Supabase just persisted survives the reload, and
+      // the fresh bundle re-evaluates it from scratch.
+      if (await isVersionStale()) {
+        window.location.reload()
+        return
+      }
       navigate('/')
     }
   }

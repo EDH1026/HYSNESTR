@@ -8,3 +8,6 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+// Injected at build time (vite.config.ts) — current build's git short hash.
+declare const __APP_BUILD__: string
